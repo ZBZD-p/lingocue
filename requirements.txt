@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+
+# mcp_server.py 用它把字幕/播放查询暴露给 Claude Code CLI。
+# 只用 DeepSeek 引擎的话用不到，但装上不影响。
+mcp>=2.0.0

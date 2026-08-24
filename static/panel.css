@@ -1,0 +1,746 @@
+/*
+ * Styles for the tutor panel injected into Jellyfin's page.
+ *
+ * Loaded into a shadow root, which is the whole point: Jellyfin ships its own
+ * global stylesheet and we're a guest in its DOM. Shadow encapsulation means
+ * neither side can reach the other's rules, so this can use plain element
+ * selectors without worrying about collisions in either direction.
+ */
+
+:host {
+  --bg: #0a0b0f;
+  --panel: rgba(19, 21, 28, 0.97);
+  --panel-2: rgba(26, 29, 38, 0.92);
+  --surface-3: rgba(255, 255, 255, 0.055);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  --ink: #eef0f6;
+  --muted: #99a2b8;
+  --muted-2: #6c7488;
+  --accent: #7c93ff;
+  --accent-2: #b18aff;
+  --accent-grad: linear-gradient(135deg, #7c93ff, #b18aff);
+  --accent-soft: rgba(124, 147, 255, 0.14);
+  --user-bubble: linear-gradient(135deg, #34489a, #5341a1);
+  --ai-bubble: rgba(255, 255, 255, 0.04);
+  --danger: #ff8a8a;
+  --danger-soft: rgba(255, 138, 138, 0.12);
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --shadow-lift: 0 10px 30px rgba(0, 0, 0, 0.4);
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  position: fixed;
+  top: 0;
+  right: 0;
+  /* Single source of truth for the panel width: set on <html> by the panel
+     script, inherited in here, and reused by the rule that squeezes
+     Jellyfin's layout. Dragging the resize handle rewrites just this. */
+  width: var(--english-tutor-width, 440px);
+  height: 100vh;
+  z-index: 2147483000;
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  color: var(--ink);
+  display: block;
+  -webkit-font-smoothing: antialiased;
+}
+
+:host([hidden-panel]) { width: 0; }
+
+* { box-sizing: border-box; }
+
+.icon {
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: -3px;
+}
+
+.shell {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background:
+    radial-gradient(1200px 400px at 100% 0%, rgba(124, 147, 255, 0.05), transparent 55%),
+    var(--bg);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-lift);
+}
+:host([hidden-panel]) .shell { display: none; }
+
+.resizer {
+  position: absolute;
+  left: -2px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 30;
+  /* Without this the browser claims the drag as a scroll/pan gesture on
+     touch screens and the pointermove stream stops after the first event. */
+  touch-action: none;
+}
+.resizer::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.15s var(--ease);
+}
+.resizer:hover::after, .resizer.dragging::after { background: var(--accent); }
+:host([hidden-panel]) .resizer { display: none; }
+
+/* A 6px strip is a fine mouse target and an impossible finger target. */
+@media (pointer: coarse) {
+  .resizer { width: 20px; }
+  .resizer::after {
+    left: 50%;
+    top: 50%;
+    width: 3px;
+    height: 44px;
+    margin: -22px 0 0 -1.5px;
+    background: var(--line-strong);
+  }
+}
+
+/* Toggle lives outside .shell so it stays reachable when collapsed. */
+.toggle {
+  position: fixed;
+  top: 50%;
+  right: var(--english-tutor-width, 440px);
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 64px;
+  border: 1px solid var(--line-strong);
+  border-right: none;
+  border-radius: var(--radius) 0 0 var(--radius);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.25);
+  transition: color 0.15s var(--ease), background 0.15s var(--ease), right 0.2s var(--ease);
+}
+.toggle:hover { color: var(--ink); background: var(--panel-2); }
+.toggle svg { transition: transform 0.2s var(--ease); }
+:host([hidden-panel]) .toggle { right: 0; }
+:host([hidden-panel]) .toggle svg { transform: rotate(180deg); }
+
+/* Portrait on a touch device: the panel is unavailable, so leave no dead
+   button behind. Rotating to landscape brings both back. */
+:host([orientation-locked]) .toggle,
+:host([orientation-locked]) .shell { display: none; }
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 3px;
+}
+
+/* Author declarations outrank the UA stylesheet's `[hidden] { display: none }`
+   regardless of specificity -- origin wins before specificity is even
+   consulted -- so `button { display: inline-flex }` below silently defeats
+   every `el.hidden = true` in the panel script. Re-assert the attribute. */
+[hidden] { display: none !important; }
+
+button {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease),
+    color 0.15s var(--ease), transform 0.1s var(--ease);
+}
+button:hover { border-color: var(--line-strong); background: var(--surface-3); }
+button:active { transform: scale(0.97); }
+button:disabled { opacity: 0.5; cursor: default; transform: none; }
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+}
+
+/* Four tabs in a ~440px panel: let them shrink and clip rather than wrap
+   the row onto two lines. */
+.tab-btn {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+}
+.tab-btn span { overflow: hidden; text-overflow: ellipsis; }
+.tab-btn:hover { border-color: transparent; background: rgba(255, 255, 255, 0.05); color: var(--ink); }
+.tab-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.tab-btn.active:hover { background: var(--accent-soft); }
+
+.new-chat-btn, .icon-btn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+/* ---- settings page ----
+   One generic row shape, rendered from the SETTINGS declaration in
+   tutor-panel.js, so a new setting needs no new CSS. */
+.settings-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 14px;
+}
+
+.setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.setting-row:first-child { padding-top: 2px; }
+.setting-row:last-child { border-bottom: none; }
+
+.setting-label { font-size: 13px; font-weight: 600; letter-spacing: 0.01em; }
+.setting-hint { font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+/* The dropdown is width-constrained inside the topbar by flex; on the
+   settings page it should fill the row instead. */
+.setting-row .dropdown, .setting-row .setting-text-input { flex: none; width: 100%; }
+
+.setting-text-input {
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px 11px;
+  box-sizing: border-box;
+}
+.setting-text-input::placeholder { color: var(--muted-2); }
+.setting-text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Custom dropdown rather than <select>: keeps full styling control inside
+   the shadow root, where a native popup would render unstyled. */
+.dropdown {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px 11px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: border-color 0.15s var(--ease);
+  /* No overflow:hidden here -- .dropdown-menu is absolutely positioned
+     below this box, so clipping the overflow would hide the popup
+     entirely. The ellipsis lives on .dropdown-value instead. */
+}
+.dropdown:hover { border-color: var(--line-strong); }
+.dropdown.open { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.dropdown-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #1b1e27;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lift);
+  z-index: 20;
+  padding: 4px;
+}
+.dropdown.open .dropdown-menu { display: block; }
+.dropdown-item { padding: 8px 10px; border-radius: var(--radius-sm); transition: background 0.12s var(--ease); }
+.dropdown-item:hover { background: rgba(255, 255, 255, 0.07); }
+.dropdown-item.selected { color: var(--accent); font-weight: 600; }
+
+/* Diagnostic readout, now living inside the settings page rather than as a
+   permanent strip: it was eating a row of vertical space on every screen to
+   show something only looked at when something's wrong. Wraps here instead
+   of ellipsising, since there's no longer any pressure to keep it to one
+   line. */
+.context-bar {
+  padding: 9px 11px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+
+.body { position: relative; overflow: hidden; display: flex; min-height: 0; }
+
+.page {
+  display: none;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+}
+.page.active { display: flex; }
+
+/* ---- chat ---- */
+.chat { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px; }
+
+.msg {
+  margin-bottom: 12px;
+  padding: 10px 13px;
+  border-radius: var(--radius-lg);
+  line-height: 1.6;
+  word-break: break-word;
+}
+.msg.user {
+  background: var(--user-bubble);
+  margin-left: 32px;
+  border-bottom-right-radius: 5px;
+  box-shadow: 0 4px 14px rgba(52, 72, 154, 0.25);
+}
+.msg.ai {
+  background: var(--ai-bubble);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 5px;
+}
+.msg .meta { display: block; margin-top: 7px; font-size: 11px; color: var(--muted-2); }
+
+.status-line { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.pulse-icon {
+  display: inline-flex;
+  color: var(--accent-2);
+  animation: spin 1s linear infinite;
+}
+.pulse-icon.done { animation: none; color: var(--muted-2); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pulse-icon { animation: none; }
+}
+
+.thinking-box { margin: 9px 0; font-size: 12px; color: var(--muted); }
+.thinking-box summary { cursor: pointer; color: var(--muted-2); }
+.thinking-box summary:hover { color: var(--muted); }
+.thinking-content { white-space: pre-wrap; margin-top: 7px; padding-left: 10px; border-left: 2px solid var(--line); color: var(--muted); }
+
+.answer-content :first-child { margin-top: 0; }
+.answer-content :last-child { margin-bottom: 0; }
+.answer-content code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.answer-content pre { background: rgba(0, 0, 0, 0.35); padding: 11px; border-radius: var(--radius); overflow-x: auto; }
+.answer-content pre code { background: none; padding: 0; }
+
+.error-note {
+  margin-top: 9px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
+}
+.retry-btn { margin-top: 8px; color: var(--danger); border-color: rgba(255, 128, 128, 0.3); }
+.retry-btn:hover { background: var(--danger-soft); border-color: rgba(255, 128, 128, 0.45); }
+
+.composer { padding: 11px 12px; border-top: 1px solid var(--line); background: var(--panel); }
+.composer-inner {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 5px 5px 11px;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.composer-inner:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 0;
+  outline: none;
+  max-height: 120px;
+}
+.composer textarea::placeholder { color: var(--muted-2); }
+.composer button { flex-shrink: 0; }
+#sendBtn {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: #0c0e14;
+  font-weight: 600;
+}
+#sendBtn:hover { filter: brightness(1.08); }
+#sendBtn:disabled { background: var(--panel-2); color: var(--muted-2); filter: none; }
+
+/* ---- subtitle cards ---- */
+.subs-note {
+  padding: 7px 12px;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--line);
+}
+.subs-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 12px 64px; }
+/* With no cards in it the list must not still claim half the page, or
+   the "loading" message beside it gets pushed to the bottom. */
+.subs-scroll:empty { flex: 0; padding: 0; }
+/* A sibling of .subs-scroll rather than a child: the card list is rebuilt
+   with innerHTML, which would otherwise detach this permanently and leave
+   every "loading" and "failed" message rendering into nothing. */
+.subs-empty {
+  flex: 1;
+  min-height: 0;
+  justify-content: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 40px 16px;
+  line-height: 1.7;
+}
+.subs-hint { color: var(--muted-2); font-size: 11.5px; }
+
+/* Subtitle text is the thing actually being studied here, so it runs a few
+   sizes larger than the surrounding chrome rather than matching it. */
+.sub-card {
+  position: relative;
+  padding: 12px 66px 12px 14px;
+  margin-bottom: 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.015);
+  cursor: pointer;
+  /* Set by the 字幕字号 setting as a custom property on <html>. Left unset it
+     falls through to the per-breakpoint default below, which is why the size
+     lives in the fallback rather than in a separate rule. */
+  font-size: var(--english-tutor-sub-size, 16px);
+  line-height: 1.75;
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.sub-card:hover { background: var(--surface-3); border-color: var(--line-strong); }
+.sub-card.current {
+  background: var(--accent-soft);
+  border-color: rgba(124, 147, 255, 0.4);
+}
+/* Sized in em so it tracks the subtitle-size setting instead of needing its
+   own scale, and muted so the English line stays the thing being read. */
+.sub-text-2 {
+  margin-top: 5px;
+  font-size: 0.82em;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.sub-time { display: block; font-size: 11px; color: var(--muted-2); margin-bottom: 5px; font-variant-numeric: tabular-nums; }
+.sub-word { border-radius: 4px; padding: 0 1px; }
+.sub-word:hover { background: rgba(177, 138, 255, 0.28); cursor: pointer; }
+.sub-ask-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: var(--panel-2);
+  opacity: 0;
+}
+.sub-card:hover .sub-ask-btn { opacity: 1; }
+
+.sub-loop-btn {
+  position: absolute;
+  top: 8px;
+  right: 36px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: var(--panel-2);
+  opacity: 0;
+}
+.sub-card:hover .sub-loop-btn { opacity: 1; }
+
+/* A running loop is state you're working inside, not a control you reach
+   for once, so its cards keep the button visible without a hover. */
+.sub-card.in-loop {
+  border-color: rgba(177, 138, 255, 0.45);
+  background: rgba(177, 138, 255, 0.07);
+}
+.sub-card.in-loop .sub-loop-btn { opacity: 1; color: var(--accent-2); }
+/* Purple for the loop against the existing blue "currently playing", so a
+   line that is both still reads as both. */
+.sub-card.in-loop.current {
+  background: rgba(177, 138, 255, 0.16);
+  border-color: rgba(177, 138, 255, 0.7);
+}
+/* Marking just the ends makes a multi-line loop read as one bracketed
+   region instead of a run of identically tinted cards. */
+.sub-card.loop-edge { box-shadow: inset 3px 0 0 var(--accent-2); }
+
+.subs-float-bar {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  /* The bar itself is a click-through strip laid over the card list; only
+     the loop pill inside it takes pointer events. */
+  pointer-events: none;
+}
+
+.loop-pill {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 11px;
+  border-radius: 999px;
+  background: #1b1e27;
+  border: 1px solid rgba(177, 138, 255, 0.45);
+  box-shadow: var(--shadow-lift);
+  font-size: 12px;
+  color: var(--ink);
+  /* The lap counter ticks up in place; without this the pill would jitter
+     as the digits change width. */
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.loop-pill[hidden] { display: none; }
+.loop-pill-icon { display: flex; color: var(--accent-2); }
+.loop-pill-stop {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+}
+.loop-pill-stop:hover { background: var(--surface-3); color: var(--ink); }
+
+.word-popup {
+  position: fixed;
+  display: none;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px;
+  /* Wide enough for a couple of lines of gloss, capped so a word with a
+     dozen senses doesn't produce a popup taller than the screen. */
+  max-width: 320px;
+  background: #1b1e27;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lift);
+  z-index: 40;
+}
+.word-popup.open { display: flex; }
+
+.word-popup-def { font-size: 12.5px; line-height: 1.55; }
+.word-popup-def.loading, .word-popup-def.empty { color: var(--muted); font-size: 12px; }
+
+.word-popup-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.word-popup-word { font-weight: 700; color: var(--accent); font-size: 13.5px; }
+.word-popup-phonetic { color: var(--muted); font-size: 11.5px; }
+
+.word-popup-trans {
+  color: var(--ink);
+  /* ECDICT packs multiple senses into one field separated by newlines. */
+  white-space: pre-line;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.word-popup-actions { display: flex; gap: 5px; }
+.word-popup button { font-size: 11px; padding: 5px 9px; }
+
+/* ---- vocab ---- */
+.vocab-list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
+.vocab-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 40px 16px;
+  line-height: 1.7;
+}
+.vocab-card {
+  position: relative;
+  padding: 12px 34px 12px 14px;
+  margin-bottom: 9px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  transition: border-color 0.15s var(--ease);
+}
+.vocab-card:hover { border-color: var(--line-strong); }
+.vocab-meta { font-size: 10.5px; color: var(--muted-2); margin-bottom: 5px; letter-spacing: 0.01em; }
+.vocab-subtitle { font-size: 12px; color: var(--muted); font-style: italic; margin-bottom: 7px; line-height: 1.5; }
+.vocab-question { font-size: 13.5px; font-weight: 600; }
+.vocab-question.vocab-word { color: var(--accent); }
+.vocab-answer { margin-top: 7px; font-size: 12.5px; line-height: 1.6; color: var(--ink); }
+.vocab-ask-btn { margin-top: 9px; font-size: 11.5px; }
+.vocab-delete-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--muted-2);
+}
+.vocab-delete-btn:hover { color: var(--danger); background: var(--danger-soft); }
+
+/* ---- phones / narrow screens ----
+   The sidebar shape only makes sense next to a wide video area. On a phone
+   there isn't room for both, so the panel becomes a full-screen overlay
+   toggled on and off over Jellyfin's player, with bigger type and tap
+   targets. The body-squeeze rule is disabled to match (see the media query
+   for it in tutor-panel.js). */
+@media (max-width: 700px) {
+  :host {
+    width: 100vw;
+    /* Sits above Jellyfin's own fullscreen player chrome. */
+    height: 100dvh;
+  }
+
+  .shell { border-left: none; }
+
+  /* Anchored bottom-right as a floating button: at this size there's no
+     panel edge to hang a tab off, and the top corners collide with
+     Jellyfin's header and the player's own controls. */
+  .toggle {
+    right: 12px;
+    top: auto;
+    bottom: 16px;
+    transform: none;
+    width: 52px;
+    height: 52px;
+    border: 1px solid var(--line-strong);
+    border-radius: 50%;
+    background: var(--panel);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+  .toggle svg { transform: rotate(180deg); width: 20px; height: 20px; }
+  :host([hidden-panel]) .toggle { right: 12px; }
+  :host([hidden-panel]) .toggle svg { transform: rotate(0deg); }
+
+  /* Dragging to resize is meaningless at full width. */
+  .resizer { display: none; }
+
+  .topbar { padding: 12px; gap: 8px; }
+  .tab-btn { padding: 11px 6px; font-size: 14px; }
+  button { padding: 10px 13px; font-size: 14px; }
+  .new-chat-btn, .icon-btn { width: 40px; height: 40px; }
+  .dropdown { padding: 10px 13px; font-size: 14px; }
+  .dropdown-item { padding: 11px 13px; font-size: 14px; }
+
+  .context-bar { font-size: 12px; padding: 10px 13px; }
+
+  .msg { font-size: 15px; padding: 12px 15px; }
+  .composer textarea { font-size: 16px; }  /* 16px stops iOS zooming on focus */
+
+  .sub-card { font-size: var(--english-tutor-sub-size, 18px); padding: 14px 78px 14px 16px; }
+  .sub-time { font-size: 12px; }
+  /* Hover doesn't exist on touch, so the per-card ask button has to stay put. */
+  .sub-ask-btn { opacity: 1; width: 30px; height: 30px; }
+  .sub-loop-btn { opacity: 1; width: 30px; height: 30px; right: 42px; }
+  .loop-pill { font-size: 13px; padding: 7px 7px 7px 12px; }
+  .loop-pill-stop { width: 26px; height: 26px; }
+  .sub-word:hover { background: none; }
+
+  .word-popup button { padding: 10px 13px; font-size: 14px; }
+
+  .vocab-card { padding: 13px 42px 13px 15px; }
+  .vocab-question { font-size: 15px; }
+  .vocab-answer { font-size: 14px; }
+  .vocab-delete-btn { width: 32px; height: 32px; }
+}
+
+/* scrollbars */
+.chat::-webkit-scrollbar,
+.subs-scroll::-webkit-scrollbar,
+.vocab-list::-webkit-scrollbar,
+.settings-list::-webkit-scrollbar,
+.dropdown-menu::-webkit-scrollbar,
+.word-popup-trans::-webkit-scrollbar { width: 8px; }
+.chat::-webkit-scrollbar-thumb,
+.subs-scroll::-webkit-scrollbar-thumb,
+.vocab-list::-webkit-scrollbar-thumb,
+.settings-list::-webkit-scrollbar-thumb,
+.dropdown-menu::-webkit-scrollbar-thumb,
+.word-popup-trans::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+.chat::-webkit-scrollbar-thumb:hover,
+.subs-scroll::-webkit-scrollbar-thumb:hover,
+.vocab-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}

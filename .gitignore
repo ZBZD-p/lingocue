@@ -1,0 +1,31 @@
+# ---- 密钥 / 私人配置 ----------------------------------------------------
+# 每个都有对应的 *.example.json 说明字段结构。带真实密钥的绝不能提交。
+config.json
+jellyfin_config.json
+deepseek_config.json
+kimi_config.json
+
+# 启动时由 app.py 按本机路径重新生成（write_mcp_config），提交了也没用。
+mcp_config.json
+
+# ---- 个人数据 ------------------------------------------------------------
+# 生词本和播放状态都是你自己的学习记录，playback_state.json 里还有硬盘真实路径。
+vocab.json
+playback_state.json
+
+# ---- 生成物 --------------------------------------------------------------
+# 6.7MB 的 SQLite，由 build_dict.py 从 ECDICT 现下现建，不进仓库。
+dictionary.db
+ecdict.csv
+
+# YouTube 字幕缓存的默认位置（config.json 可以改到别处）。
+youtube/
+
+__pycache__/
+*.py[cod]
+
+# ---- 编辑器 / 系统 -------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

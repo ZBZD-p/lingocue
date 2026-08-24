@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<!-- Without this, a phone browser renders the page at a desktop-width
+     virtual viewport and scales the whole thing down to fit -- everything
+     shrinks to roughly half size and needs a pinch-zoom to read. Confirmed
+     on a real mobile viewport: visualViewport.scale was 0.48 without this
+     tag, 1 with it. -->
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>English Tutor — YouTube</title>
+<style>
+  /* Layout is deliberately thin here: the panel script mounts itself as a
+     fixed right-hand sidebar and injects its own rule squeezing <body> to
+     `calc(100% - var(--english-tutor-width))`. So everything on this page
+     just goes in <body> and follows the panel automatically -- including
+     when it's dragged wider or collapsed. */
+  :root { color-scheme: dark; }
+  html, body { margin: 0; min-height: 100%; background: #0b0d12; }
+  body {
+    color: #eef0f6;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
+    box-sizing: border-box;
+  }
+
+  .yt-bar { display: flex; gap: 8px; align-items: center; }
+  .yt-bar input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.05);
+    color: inherit;
+    font: inherit;
+  }
+  .yt-bar input:focus { outline: none; border-color: #7c93ff; }
+  .yt-bar button {
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: linear-gradient(135deg, #7c93ff, #b18aff);
+    color: #0b0d12;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .yt-bar button:disabled { opacity: 0.5; cursor: default; }
+  .yt-status { font-size: 12px; color: #99a2b8; min-height: 1.4em; }
+  .yt-status.error { color: #ff8a8a; }
+
+  /* 16:9 without a fixed height, so the player tracks the column width as
+     the panel beside it is resized. */
+  .yt-player {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .yt-player iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .yt-player-empty {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px;
+    color: #6c7488; font-size: 13px; text-align: center; padding: 20px;
+  }
+  .yt-embed-error-title { color: #eef0f6; font-size: 15px; font-weight: 600; }
+  .yt-embed-error-why { max-width: 34em; line-height: 1.7; }
+  .yt-embed-error-link {
+    color: #7c93ff; text-decoration: none;
+    border: 1px solid rgba(124, 147, 255, 0.4);
+    border-radius: 8px; padding: 7px 13px;
+  }
+  .yt-embed-error-link:hover { background: rgba(124, 147, 255, 0.12); }
+
+  .yt-library, .yt-results { display: flex; flex-direction: column; gap: 6px; }
+  .yt-library h2, .yt-results h2 {
+    margin: 0; font-size: 12px; font-weight: 600;
+    color: #6c7488; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  /* Search results carry a thumbnail; library rows don't (the library can
+     grow long, and re-fetching/laying out an image per row for videos
+     already added and already identified by title is wasted weight). */
+  .yt-result {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.015);
+    cursor: pointer;
+  }
+  .yt-result:hover { background: rgba(255, 255, 255, 0.055); }
+  .yt-result-thumb {
+    width: 96px; aspect-ratio: 16 / 9;
+    border-radius: 6px; object-fit: cover;
+    background: rgba(255, 255, 255, 0.05);
+    flex-shrink: 0;
+  }
+  .yt-result-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .yt-result-title {
+    overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    line-height: 1.35;
+  }
+  .yt-result-meta { font-size: 11px; color: #6c7488; }
+  .yt-result-added {
+    font-size: 10px; padding: 2px 6px; border-radius: 999px;
+    background: rgba(124, 147, 255, 0.16); color: #7c93ff;
+    flex-shrink: 0;
+  }
+  .yt-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.015);
+    cursor: pointer;
+  }
+  .yt-item:hover { background: rgba(255, 255, 255, 0.055); }
+  .yt-item.current { background: rgba(124, 147, 255, 0.14); border-color: rgba(124, 147, 255, 0.4); }
+  .yt-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .yt-item-meta { font-size: 11px; color: #6c7488; font-variant-numeric: tabular-nums; }
+  .yt-badge {
+    font-size: 10px; padding: 2px 6px; border-radius: 999px;
+    background: rgba(177, 138, 255, 0.18); color: #b18aff;
+  }
+  /* Amber rather than the accent colour: this one is a caveat, not a feature.
+     Auto-captions read cleanly after repair but their word accuracy is lower,
+     and a wrong word looks exactly like a right one. */
+  .yt-badge.auto { background: rgba(255, 196, 105, 0.16); color: #ffc469; }
+  .yt-empty { color: #6c7488; font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+  <div class="yt-bar">
+    <input id="urlInput" type="text" placeholder="粘贴 YouTube 链接，或输入关键词搜索…" />
+    <button id="addBtn">添加</button>
+  </div>
+  <div class="yt-status" id="status"></div>
+
+  <div class="yt-player" id="playerBox">
+    <div id="player"></div>
+    <div class="yt-player-empty" id="playerEmpty">从下面选一个视频，或者在上面搜索/粘贴链接</div>
+  </div>
+
+  <div class="yt-results" id="resultsSection" hidden>
+    <h2>搜索结果</h2>
+    <div id="results"></div>
+  </div>
+
+  <div class="yt-library">
+    <h2>已添加</h2>
+    <div id="library"><div class="yt-empty">还没有添加任何视频。</div></div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Read by tutor-panel.js, loaded below, so the panel talks to whichever
+  // origin served this page rather than assuming the default port.
+  window.__englishTutorApiBase = location.origin;
+
+  var player = null;         // the YT.Player instance, created on first use
+  var apiReady = false;
+  var pendingVideoId = null; // selected before the IFrame API finished loading
+  var currentVideoId = null; // what the player was last asked to show
+  var currentSource = null;  // placeholder path on disk, what the backend keys off
+  var currentId = null;
+
+  var urlInput = document.getElementById("urlInput");
+  var addBtn = document.getElementById("addBtn");
+  var statusEl = document.getElementById("status");
+  var libraryEl = document.getElementById("library");
+  var playerEmpty = document.getElementById("playerEmpty");
+  var resultsSection = document.getElementById("resultsSection");
+  var resultsEl = document.getElementById("results");
+
+  function setStatus(text, isError) {
+    statusEl.textContent = text || "";
+    statusEl.classList.toggle("error", !!isError);
+  }
+
+  function fmtDuration(seconds) {
+    if (!seconds) return "";
+    var s = Math.round(seconds);
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    var mm = h ? String(m).padStart(2, "0") : String(m);
+    return (h ? h + ":" : "") + mm + ":" + String(sec).padStart(2, "0");
+  }
+
+  function fmtViewCount(n) {
+    if (!n) return "";
+    if (n >= 1e8) return (n / 1e8).toFixed(1) + "亿次观看";
+    if (n >= 1e4) return (n / 1e4).toFixed(1) + "万次观看";
+    return n + "次观看";
+  }
+
+  // A pasted link should add directly; anything else is a search term.
+  // youtu.be/youtube.com covers the normal cases; a bare "www.youtube.com/..."
+  // with no scheme (people paste both ways) is covered by the youtube.com
+  // check alone since it doesn't require the scheme to be present.
+  function looksLikeUrl(text) {
+    return /^https?:\/\//i.test(text) || /(^|\.)youtu\.be\//i.test(text) ||
+           /(^|\.)youtube\.com\//i.test(text);
+  }
+
+  // ---- the bridge the panel reads ----
+  // tutor-panel.js looks for this object and, when it's present, drives
+  // playback through it instead of hunting for a <video> element. Position
+  // reporting, cue highlighting and the A-B loop all go through here, so the
+  // loop works on YouTube for free.
+  window.__englishTutorYouTube = {
+    ready: function () {
+      return !!(player && currentSource &&
+                typeof player.getDuration === "function" && player.getDuration() > 0);
+    },
+    source: function () { return currentSource; },
+    currentTime: function () { return player.getCurrentTime() || 0; },
+    duration: function () { return player.getDuration() || 0; },
+    // 1 is YT.PlayerState.PLAYING. Buffering counts as paused on purpose:
+    // the loop should sit still rather than fight a stall.
+    paused: function () { return player.getPlayerState() !== 1; },
+    seek: function (seconds) { player.seekTo(seconds, true); },
+  };
+
+  // Called by https://www.youtube.com/iframe_api once it has loaded.
+  window.onYouTubeIframeAPIReady = function () {
+    apiReady = true;
+    if (pendingVideoId) {
+      var id = pendingVideoId;
+      pendingVideoId = null;
+      showVideo(id);
+    }
+  };
+
+  // YouTube's embed shows a bare "Video unavailable" box and says nothing
+  // about why, which reads as a bug in this page rather than a restriction on
+  // the video. The API does say why, so it gets translated into something
+  // actionable. Note that yt-dlp's playable_in_embed is not a reliable
+  // pre-check: it reports true for videos the player then refuses, because
+  // the real decision happens at playback time.
+  var EMBED_ERRORS = {
+    2: "视频 ID 无效。",
+    5: "播放器内部错误，刷新页面通常能好。",
+    100: "视频不存在，或已被设为私有/删除。",
+    101: "UP 主不允许这个视频在嵌入播放器里播放。",
+    150: "UP 主不允许这个视频在嵌入播放器里播放。",
+  };
+
+  function showEmbedError(code, videoId) {
+    var why = EMBED_ERRORS[code] || ("播放器返回了错误码 " + code + "。");
+    var blocked = code === 101 || code === 150;
+    playerEmpty.innerHTML = "";
+    var h = document.createElement("div");
+    h.className = "yt-embed-error-title";
+    h.textContent = "这个视频没法在这里播放";
+    var d = document.createElement("div");
+    d.className = "yt-embed-error-why";
+    d.textContent = why + (blocked
+      ? "字幕已经抓好了，但没有画面就用不上——换一个视频吧。"
+      : "");
+    var a = document.createElement("a");
+    a.className = "yt-embed-error-link";
+    a.href = "https://www.youtube.com/watch?v=" + videoId;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "在 YouTube 上打开 ↗";
+    playerEmpty.append(h, d, a);
+    playerEmpty.style.display = "";
+  }
+
+  function showVideo(videoId) {
+    if (!apiReady) { pendingVideoId = videoId; return; }
+    playerEmpty.style.display = "none";
+    currentVideoId = videoId;
+    if (player) {
+      // Cue rather than load: landing on a page that immediately starts
+      // playing at full volume is hostile, and the panel needs a moment to
+      // pull this video's subtitles anyway.
+      player.cueVideoById(videoId);
+      return;
+    }
+    player = new YT.Player("player", {
+      videoId: videoId,
+      // playsinline: without it, iOS Safari plays YouTube embeds in the
+      // native fullscreen video player instead of inline in the page --
+      // the subtitle cards beside it would be unreachable while playing.
+      // Android doesn't need this, but setting it is a no-op there.
+      playerVars: { origin: location.origin, rel: 0, modestbranding: 1, playsinline: 1 },
+      events: {
+        onError: function (e) { showEmbedError(e.data, currentVideoId); },
+      },
+    });
+  }
+
+  async function selectVideo(item) {
+    // Register it as "current" before playback starts, so the subtitle page
+    // has something to load instead of waiting for the first position report
+    // a couple of seconds in.
+    var res = await fetch("/api/youtube/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: item.path }),
+    });
+    if (!res.ok) {
+      var err = await res.json().catch(function () { return {}; });
+      setStatus(err.detail || "切换视频失败", true);
+      return;
+    }
+    currentSource = item.path;
+    currentId = item.id;
+    showVideo(item.id);
+    renderLibrary(lastItems);
+    window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
+  }
+
+  var lastItems = [];
+
+  function renderLibrary(items) {
+    lastItems = items;
+    libraryEl.innerHTML = "";
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.className = "yt-empty";
+      empty.textContent = "还没有添加任何视频。";
+      libraryEl.appendChild(empty);
+      return;
+    }
+    items.forEach(function (item) {
+      var row = document.createElement("div");
+      row.className = "yt-item" + (item.path === currentSource ? " current" : "");
+
+      var title = document.createElement("div");
+      title.className = "yt-item-title";
+      title.textContent = item.title;
+      row.appendChild(title);
+
+      if (item.subtitle_kind === "auto") {
+        var auto = document.createElement("span");
+        auto.className = "yt-badge auto";
+        auto.textContent = "自动字幕";
+        auto.title = "机器转录，已修掉滚动重复，但个别单词可能不准";
+        row.appendChild(auto);
+      }
+
+      if (item.has_secondary) {
+        var badge = document.createElement("span");
+        badge.className = "yt-badge";
+        badge.textContent = "中文";
+        row.appendChild(badge);
+      }
+
+      var meta = document.createElement("span");
+      meta.className = "yt-item-meta";
+      meta.textContent = fmtDuration(item.duration);
+      row.appendChild(meta);
+
+      row.addEventListener("click", function () { selectVideo(item); });
+      libraryEl.appendChild(row);
+    });
+  }
+
+  async function loadLibrary() {
+    try {
+      var items = await (await fetch("/api/youtube/list")).json();
+      renderLibrary(items);
+      // A video added moments ago has no subtitle_kind yet -- the fetch that
+      // decides it is still running -- so its badge would stay blank forever
+      // without checking back once it lands.
+      if (items.some(function (i) { return !i.subtitle_kind; })) {
+        clearTimeout(libraryPoll);
+        libraryPoll = setTimeout(loadLibrary, 3000);
+      }
+    } catch (e) {
+      setStatus("读取列表失败，后端 app.py 没启动？", true);
+    }
+  }
+  var libraryPoll = null;
+
+  async function addFromUrl(url) {
+    addBtn.disabled = true;
+    // Two yt-dlp round trips over the network, so this is seconds, not
+    // milliseconds -- worth saying so rather than looking frozen.
+    setStatus("正在读取视频信息…");
+    try {
+      var res = await fetch("/api/youtube/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url }),
+      });
+      var data = await res.json();
+      if (!res.ok) { setStatus(data.detail || "添加失败", true); return; }
+      // Subtitles are still being fetched at this point; the panel's subtitle
+      // tab shows the stage and fills itself in when they land.
+      setStatus("已添加：" + data.title + "　字幕抓取中，视频可以先看");
+      hideResults();
+      await loadLibrary();
+      selectVideo({ path: data.path, id: data.id, title: data.title });
+    } catch (e) {
+      setStatus("添加失败：" + e.message, true);
+    } finally {
+      addBtn.disabled = false;
+    }
+  }
+
+  function hideResults() {
+    resultsSection.hidden = true;
+    resultsEl.innerHTML = "";
+  }
+
+  function isAlreadyAdded(videoId) {
+    return lastItems.some(function (item) { return item.id === videoId; });
+  }
+
+  function renderResults(results) {
+    resultsEl.innerHTML = "";
+    if (!results.length) {
+      var empty = document.createElement("div");
+      empty.className = "yt-empty";
+      empty.textContent = "没搜到什么，换个关键词试试。";
+      resultsEl.appendChild(empty);
+      resultsSection.hidden = false;
+      return;
+    }
+    results.forEach(function (r) {
+      var row = document.createElement("div");
+      row.className = "yt-result";
+
+      var thumb = document.createElement("img");
+      thumb.className = "yt-result-thumb";
+      thumb.src = r.thumbnail;
+      thumb.loading = "lazy";
+      thumb.alt = "";
+      row.appendChild(thumb);
+
+      var info = document.createElement("div");
+      info.className = "yt-result-info";
+      var title = document.createElement("div");
+      title.className = "yt-result-title";
+      title.textContent = r.title;
+      info.appendChild(title);
+      var meta = document.createElement("div");
+      meta.className = "yt-result-meta";
+      meta.textContent = [r.channel, fmtDuration(r.duration), fmtViewCount(r.view_count)]
+        .filter(Boolean).join(" · ");
+      info.appendChild(meta);
+      row.appendChild(info);
+
+      if (isAlreadyAdded(r.id)) {
+        var badge = document.createElement("span");
+        badge.className = "yt-result-added";
+        badge.textContent = "已添加";
+        row.appendChild(badge);
+        row.addEventListener("click", function () {
+          var item = lastItems.find(function (i) { return i.id === r.id; });
+          if (item) { hideResults(); selectVideo(item); }
+        });
+      } else {
+        row.addEventListener("click", function () {
+          addFromUrl("https://www.youtube.com/watch?v=" + r.id);
+        });
+      }
+      resultsEl.appendChild(row);
+    });
+    resultsSection.hidden = false;
+  }
+
+  async function searchVideos(query) {
+    addBtn.disabled = true;
+    setStatus("正在搜索…");
+    try {
+      var res = await fetch("/api/youtube/search?q=" + encodeURIComponent(query));
+      var data = await res.json();
+      if (!res.ok) { setStatus((data && data.detail) || "搜索失败", true); return; }
+      setStatus("");
+      renderResults(data);
+    } catch (e) {
+      setStatus("搜索失败：" + e.message, true);
+    } finally {
+      addBtn.disabled = false;
+    }
+  }
+
+  function submitInput() {
+    var text = urlInput.value.trim();
+    if (!text) return;
+    if (looksLikeUrl(text)) {
+      urlInput.value = "";
+      addFromUrl(text);
+    } else {
+      searchVideos(text);
+    }
+  }
+
+  addBtn.addEventListener("click", submitInput);
+  urlInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") submitInput();
+  });
+
+  loadLibrary();
+})();
+</script>
+<script src="/static/tutor-panel.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
+</body>
+</html>

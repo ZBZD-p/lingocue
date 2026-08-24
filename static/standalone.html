@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<!-- Same gap as youtube.html had: no viewport tag means a phone renders
+     this at desktop width and scales the whole page down to fit. -->
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>English Tutor</title>
+<style>
+  /* Standalone mode: no Jellyfin around it, so give the panel the whole
+     window instead of the fixed sidebar strip it uses when injected.
+     Same script either way -- the panel is defined in exactly one place. */
+  html, body { margin: 0; height: 100%; background: #0b0d12; }
+  #english-tutor-host { width: 100% !important; }
+  #english-tutor-host::part(toggle) { display: none; }
+</style>
+</head>
+<body>
+  <script>window.__englishTutorApiBase = location.origin;</script>
+  <script src="/static/tutor-panel.js"></script>
+</body>
+</html>

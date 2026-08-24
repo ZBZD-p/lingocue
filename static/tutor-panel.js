@@ -1,0 +1,1730 @@
+/*
+ * English tutor panel, injected into Jellyfin's web UI.
+ *
+ * Loaded by a single <script> tag added to Jellyfin's own index.html. Running
+ * inside Jellyfin's page (rather than beside it in an iframe) is what makes
+ * playback tracking trivial: the real <video> element is right there, so
+ * position comes from reading it directly instead of polling an API and
+ * fighting cross-origin restrictions.
+ *
+ * Everything renders into a shadow root so Jellyfin's global stylesheet and
+ * this panel's styles can't interfere with each other in either direction.
+ */
+(function () {
+  "use strict";
+
+  if (window.__englishTutorPanelLoaded) return;
+  window.__englishTutorPanelLoaded = true;
+
+  // Pages served by the backend itself (the standalone and YouTube views)
+  // declare their own origin, which keeps them working on whatever port they
+  // happen to be reached on. Injected into Jellyfin there is nothing to
+  // declare: that page is served on :8096 by a different process, so the port
+  // is spelled out -- while the host still comes from wherever the page was
+  // loaded, because a literal 127.0.0.1 would mean "the phone itself" on a
+  // phone.
+  const API = window.__englishTutorApiBase
+    || `${location.protocol}//${location.hostname}:8420`;
+  const HISTORY_KEY = "english-tutor-chat-v1";
+  const COLLAPSE_KEY = "english-tutor-collapsed";
+  const WIDTH_KEY = "english-tutor-width";
+  const DEFAULT_WIDTH = 440;
+  const MIN_WIDTH = 320;
+  const MAX_WIDTH = 1000;
+
+  const MODEL_OPTIONS = [
+    { value: "", label: "模型：默认" },
+    { value: "sonnet", label: "Sonnet 5（默认，均衡）" },
+    { value: "opus", label: "Opus 5（最强，更贵更慢）" },
+    { value: "haiku", label: "Haiku 4.5（快，便宜）" },
+    { value: "fable", label: "Fable 5" },
+  ];
+
+  const EFFORT_OPTIONS = [
+    { value: "", label: "思考程度：默认" },
+    { value: "low", label: "低" },
+    { value: "medium", label: "中" },
+    { value: "high", label: "高" },
+    { value: "xhigh", label: "很高" },
+    { value: "max", label: "最高" },
+  ];
+
+  const SUB_SIZE_OPTIONS = [
+    { value: "", label: "默认" },
+    { value: "14px", label: "小" },
+    { value: "17px", label: "中" },
+    { value: "20px", label: "大" },
+    { value: "24px", label: "特大" },
+  ];
+
+  const SECONDARY_LANG_OPTIONS = [
+    { value: "", label: "关闭" },
+    { value: "zh", label: "中文（中英对照）" },
+  ];
+
+  // Everything on the settings page is declared here and rendered by one
+  // generic pass, so adding a setting later means adding an entry rather
+  // than touching markup, styles and wiring in three places. A setting that
+  // has to take effect the moment it changes (rather than being read when
+  // it's next needed) also needs an entry in SETTING_HANDLERS inside boot().
+  const ENGINE_OPTIONS = [
+    { value: "", label: "Claude Code（默认）" },
+    { value: "deepseek", label: "DeepSeek（更快，需要在下面配置 key）" },
+  ];
+
+  const SETTINGS = [
+    {
+      key: "engine",
+      label: "对话引擎",
+      hint: "Claude Code 每次对话有约 13 秒的固定启动开销；DeepSeek 是直接的 API 调用，没有这层开销，明显更快。" +
+        "换了不会丢当前对话历史（会分别记各自的），但两边的回复不会共享上下文。",
+      options: ENGINE_OPTIONS,
+      storageKey: "english-tutor-engine",
+    },
+    {
+      key: "deepseekKey",
+      label: "DeepSeek API Key",
+      hint: "只在切到 DeepSeek 引擎时用得上。存在本地配置文件里，不会显示已保存的内容。",
+      type: "text",
+      inputType: "password",
+      placeholder: "sk-...",
+      storageKey: "english-tutor-deepseek-key",
+    },
+    {
+      key: "deepseekModel",
+      label: "DeepSeek 模型",
+      hint: "留空默认用 deepseek-chat（V3，均衡）。深度推理可以填 deepseek-reasoner。",
+      type: "text",
+      inputType: "text",
+      placeholder: "deepseek-chat",
+      storageKey: "english-tutor-deepseek-model",
+    },
+    {
+      key: "model",
+      label: "AI 模型",
+      hint: "只在使用 Claude Code 引擎时生效。换模型不会中断当前对话。留空则用 Claude Code 的默认模型。",
+      options: MODEL_OPTIONS,
+      storageKey: "english-tutor-model",
+    },
+    {
+      key: "effort",
+      label: "思考程度",
+      hint: "越高回答越细致，但更慢也更贵。解释语法/语境时调高比较值得。",
+      options: EFFORT_OPTIONS,
+      storageKey: "english-tutor-effort",
+    },
+    {
+      key: "subSize",
+      label: "字幕字号",
+      hint: "只影响字幕卡片，不改对话区。选「默认」时手机和电脑各自用自己的大小。",
+      options: SUB_SIZE_OPTIONS,
+      storageKey: "english-tutor-sub-size",
+    },
+    {
+      key: "secondaryLang",
+      label: "副字幕",
+      hint: "在每句英文下面显示对应的中文。第一次开启要再扫一遍视频提取中文轨（大文件约半分钟），英文会先显示出来。",
+      options: SECONDARY_LANG_OPTIONS,
+      storageKey: "english-tutor-secondary-lang",
+    },
+  ];
+
+  const THINKING_VERBS = [
+    "Pondering", "Contemplating", "Percolating", "Noodling", "Simmering",
+    "Mulling", "Ruminating", "Cogitating", "Marinating", "Deliberating",
+    "Processing", "Puzzling", "Musing", "Reflecting",
+  ];
+
+  // Small inline-SVG icon set, used instead of emoji: emoji glyphs render as
+  // empty boxes on hosts without a color-emoji font installed (this panel
+  // runs inside Jellyfin's Chromium-based webviews on all sorts of devices),
+  // while an inline SVG always renders identically.
+  const ICONS = {
+    chat: '<path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-4 3v-3H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>',
+    subs: '<rect x="3" y="5" width="18" height="14" rx="2"/><line x1="7" y1="15" x2="10.5" y2="15"/><line x1="13.5" y1="15" x2="17" y2="15"/><line x1="7" y1="10.5" x2="17" y2="10.5"/>',
+    vocab: '<path d="M6 3h12a1 1 0 0 1 1 1v16l-7-4-7 4V4a1 1 0 0 1 1-1z"/>',
+    settings: '<line x1="4" y1="6" x2="20" y2="6"/><circle cx="9" cy="6" r="2"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="8" cy="18" r="2"/>',
+    plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+    chevron: '<path d="M14 6l-6 6 6 6"/>',
+    send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/>',
+    star: '<path fill="currentColor" stroke="none" d="M12 2.5l2.9 5.88 6.5.94-4.7 4.58 1.1 6.47L12 17.27l-5.8 3.1 1.1-6.47-4.7-4.58 6.5-.94z"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    help: '<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 1 1 4.2 2.73c-.9.42-1.3 1-1.3 1.77"/><line x1="12" y1="17" x2="12" y2="17.01"/>',
+    retry: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>',
+    trash: '<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/>',
+    repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
+    close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    spinner: '<circle cx="12" cy="12" r="9" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9"/>',
+  };
+  function icon(name, size) {
+    return `<svg class="icon" width="${size || 16}" height="${size || 16}" viewBox="0 0 24 24" ` +
+      `fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
+  }
+
+  const MARKUP = `
+    <button class="toggle" title="收起/展开" aria-label="收起/展开面板">${icon("chevron")}</button>
+    <div class="resizer" title="拖动调整宽度"></div>
+    <div class="shell">
+      <div class="topbar">
+        <div class="tabs">
+          <button class="tab-btn active" data-page="chat">${icon("chat")}<span>对话</span></button>
+          <button class="tab-btn" data-page="subs">${icon("subs")}<span>字幕</span></button>
+          <button class="tab-btn" data-page="vocab">${icon("vocab")}<span>生词本</span></button>
+          <button class="tab-btn" data-page="settings">${icon("settings")}<span>设置</span></button>
+        </div>
+        <button id="newChatBtn" class="new-chat-btn" title="开始新对话" aria-label="开始新对话">${icon("plus")}</button>
+      </div>
+      <div class="body">
+        <div class="page active" id="chatPage"><div class="chat" id="chat"></div></div>
+        <div class="page" id="subsPage">
+          <div class="subs-note" id="subsNote" hidden></div>
+          <div class="subs-scroll" id="subsScroll"></div>
+          <div class="subs-empty" id="subsEmpty">开始播放视频后，这里会显示字幕卡片。</div>
+          <div class="subs-float-bar">
+            <div class="loop-pill" id="loopPill" hidden>
+              <span class="loop-pill-icon">${icon("repeat")}</span>
+              <span id="loopPillText"></span>
+              <button class="loop-pill-stop" id="loopStopBtn" title="停止循环" aria-label="停止循环">${icon("close")}</button>
+            </div>
+          </div>
+        </div>
+        <div class="page" id="vocabPage">
+          <div class="vocab-list" id="vocabList">
+            <div class="vocab-empty" id="vocabEmpty">还没有生词。在字幕里把鼠标放到单词上，点"存生词"。</div>
+          </div>
+        </div>
+        <div class="page" id="settingsPage">
+          <div class="settings-list" id="settingsList">
+            <div class="setting-row">
+              <div class="setting-label">播放状态</div>
+              <div class="context-bar" id="contextBar">还没开始播放</div>
+              <div class="setting-hint">当前视频、播放位置和字幕来源。诊断用，出问题时看这里。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="composer" id="composer">
+        <div class="composer-inner">
+          <textarea id="input" rows="2" placeholder="问点什么，比如：刚才那句里 'brace yourself' 是什么意思？"></textarea>
+          <button id="sendBtn">${icon("send")} 发送</button>
+        </div>
+      </div>
+      <div class="word-popup" id="wordPopup">
+        <div class="word-popup-def" id="wordPopupDef"></div>
+        <div class="word-popup-actions">
+          <button class="word-popup-save">${icon("star")} 存生词</button>
+          <button class="word-popup-ask">${icon("help")} 问一下</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // ---- bootstrap ---------------------------------------------------------
+
+  function loadMarked() {
+    return new Promise((resolve) => {
+      if (window.marked) return resolve();
+      const s = document.createElement("script");
+      s.src = `${API}/static/marked.min.js`;
+      s.onload = resolve;
+      // Markdown is a nicety; if it can't load, answers still render as text.
+      s.onerror = resolve;
+      document.head.appendChild(s);
+    });
+  }
+
+  /** Width lives on <html> as a custom property: the panel inherits it into
+   *  its shadow root, and the body-squeeze rule reads the same value, so the
+   *  two can never drift apart. */
+  function setPanelWidth(px) {
+    const clamped = Math.min(Math.max(Math.round(px), MIN_WIDTH), MAX_WIDTH);
+    document.documentElement.style.setProperty("--english-tutor-width", clamped + "px");
+    return clamped;
+  }
+
+  async function boot() {
+    await loadMarked();
+    if (window.marked) marked.setOptions({ breaks: true, gfm: true });
+
+    const host = document.createElement("div");
+    host.id = "english-tutor-host";
+    const root = host.attachShadow({ mode: "open" });
+
+    let css = "";
+    try {
+      css = await (await fetch(`${API}/static/panel.css`)).text();
+    } catch (e) {
+      console.error("[tutor] 样式加载失败，后端没启动？", e);
+    }
+    root.innerHTML = `<style>${css}</style>${MARKUP}`;
+
+    // Mounted on <html>, not <body>, so the squeeze rule below (which
+    // targets body) can't shrink the panel along with Jellyfin's UI.
+    document.documentElement.appendChild(host);
+
+    const squeeze = document.createElement("style");
+    squeeze.textContent = `
+      /* Only above the phone breakpoint: on a narrow screen the panel is a
+         full-screen overlay, so there is nothing to make room beside it and
+         squeezing body would just shrink Jellyfin to nothing behind it. */
+      @media (min-width: 701px) {
+        html.english-tutor-open > body {
+          width: calc(100% - var(--english-tutor-width, ${DEFAULT_WIDTH}px)) !important;
+          overflow-x: hidden;
+          /* Jellyfin positions its player, header and drawer with
+             position:fixed, which resolves against the viewport and would
+             happily sit under the panel no matter how narrow body gets. A
+             transformed ancestor becomes the containing block for its fixed
+             descendants, so this one declaration is what actually makes them
+             respect the reduced width. */
+          transform: translateZ(0);
+        }
+      }
+    `;
+    document.head.appendChild(squeeze);
+
+    const savedWidth = parseInt(localStorage.getItem(WIDTH_KEY), 10);
+    setPanelWidth(Number.isFinite(savedWidth) ? savedWidth : DEFAULT_WIDTH);
+
+    const collapsePref = localStorage.getItem(COLLAPSE_KEY);
+    // On a phone the panel covers the whole screen, so starting expanded
+    // would hide the video behind it before the user asked for anything.
+    const startCollapsed = collapsePref === null
+      ? window.matchMedia("(max-width: 700px)").matches
+      : collapsePref === "1";
+    if (startCollapsed) host.setAttribute("hidden-panel", "");
+    document.documentElement.classList.toggle(
+      "english-tutor-open", !host.hasAttribute("hidden-panel")
+    );
+    init(host, root);
+  }
+
+  // ---- panel -------------------------------------------------------------
+
+  function init(host, root) {
+    const $ = (id) => root.getElementById(id);
+    const chatEl = $("chat");
+    const inputEl = $("input");
+    const sendBtn = $("sendBtn");
+    const settingsList = $("settingsList");
+    const contextBar = $("contextBar");
+    const newChatBtn = $("newChatBtn");
+    const composerEl = $("composer");
+    const subsScroll = $("subsScroll");
+    const subsEmpty = $("subsEmpty");
+    const subsNote = $("subsNote");
+    const loopPill = $("loopPill");
+    const loopPillText = $("loopPillText");
+    const loopStopBtn = $("loopStopBtn");
+    const vocabList = $("vocabList");
+    const vocabEmpty = $("vocabEmpty");
+    const wordPopup = $("wordPopup");
+    const wordPopupDef = $("wordPopupDef");
+    const tabBtns = root.querySelectorAll(".tab-btn");
+    const pages = {
+      chat: $("chatPage"),
+      subs: $("subsPage"),
+      vocab: $("vocabPage"),
+      settings: $("settingsPage"),
+    };
+
+    let sessionId = null;
+    let currentPage = "chat";
+    let lastKnownVideoTitle = null;
+
+    const toggleBtn = root.querySelector(".toggle");
+
+    // A phone held upright has no room to show the panel and the video at
+    // once, and the panel covering the whole screen mid-episode is worse
+    // than not having it. So portrait on a touch device force-collapses it
+    // and hides the toggle; rotating back to landscape restores whatever
+    // the user last chose.
+    const portraitLock = window.matchMedia("(orientation: portrait) and (pointer: coarse)");
+
+    function applyOrientationLock() {
+      if (portraitLock.matches) {
+        host.setAttribute("orientation-locked", "");
+        host.setAttribute("hidden-panel", "");
+        document.documentElement.classList.remove("english-tutor-open");
+      } else {
+        host.removeAttribute("orientation-locked");
+        // Deliberately reads the stored preference rather than whatever the
+        // lock left behind, so a forced collapse never overwrites the user's
+        // actual choice.
+        const collapsed = localStorage.getItem(COLLAPSE_KEY) === "1";
+        host.toggleAttribute("hidden-panel", collapsed);
+        document.documentElement.classList.toggle("english-tutor-open", !collapsed);
+      }
+      window.dispatchEvent(new Event("resize"));
+    }
+
+    portraitLock.addEventListener("change", applyOrientationLock);
+
+    toggleBtn.addEventListener("click", () => {
+      if (portraitLock.matches) return;  // locked closed in portrait
+      const collapsed = host.toggleAttribute("hidden-panel");
+      localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
+      document.documentElement.classList.toggle("english-tutor-open", !collapsed);
+      // Jellyfin's player sizes its canvas to the container on resize, but
+      // a class toggle isn't a resize as far as it's concerned.
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    applyOrientationLock();
+
+    // Jellyfin binds wheel-to-volume at the document level, so scrolling the
+    // chat or the subtitle list was changing playback volume. Stopping
+    // propagation at the host keeps the event from ever reaching that
+    // handler; it does not preventDefault, so scrolling inside the panel
+    // still works normally. mousewheel is the legacy alias some of
+    // Jellyfin's older handlers still listen on.
+    for (const evt of ["wheel", "mousewheel", "DOMMouseScroll"]) {
+      host.addEventListener(evt, (e) => e.stopPropagation());
+    }
+
+    // Drag the left edge to resize.
+    //
+    // Pointer events rather than mouse events: a touchscreen drag never
+    // produces mousemove at all (browsers only synthesise mouse events from
+    // a tap, after the fact), so a mouse-only handler is unusable by finger.
+    // setPointerCapture keeps the move stream coming to this element even
+    // once the finger/cursor wanders off the thin strip onto Jellyfin's
+    // content, which also removes the need for window-level listeners.
+    const resizer = root.querySelector(".resizer");
+    let priorSelect = "";
+
+    resizer.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      resizer.setPointerCapture(e.pointerId);
+      resizer.classList.add("dragging");
+      priorSelect = document.body.style.userSelect;
+      document.body.style.userSelect = "none";  // stop Jellyfin selecting text mid-drag
+    });
+
+    resizer.addEventListener("pointermove", (e) => {
+      if (!resizer.hasPointerCapture(e.pointerId)) return;
+      setPanelWidth(window.innerWidth - e.clientX);
+    });
+
+    const endResize = (e) => {
+      if (!resizer.hasPointerCapture(e.pointerId)) return;
+      resizer.releasePointerCapture(e.pointerId);
+      resizer.classList.remove("dragging");
+      document.body.style.userSelect = priorSelect;
+      localStorage.setItem(WIDTH_KEY, String(setPanelWidth(window.innerWidth - e.clientX)));
+      window.dispatchEvent(new Event("resize"));  // let Jellyfin re-fit its player
+    };
+    resizer.addEventListener("pointerup", endResize);
+    resizer.addEventListener("pointercancel", endResize);
+
+    // ---- helpers ----
+
+    function fmt(ms) {
+      if (ms == null || ms < 0) return "?";
+      const total = Math.floor(ms / 1000);
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      const pad = (n) => String(n).padStart(2, "0");
+      return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    function renderMarkdown(text) {
+      if (!window.marked) return escapeHtml(text || "");
+      try {
+        return marked.parse(text || "");
+      } catch (e) {
+        return escapeHtml(text || "");
+      }
+    }
+
+    function fmtElapsed(ms) {
+      const total = Math.floor(ms / 1000);
+      const m = Math.floor(total / 60);
+      const s = total % 60;
+      return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+
+    // ---- dropdowns ----
+    // Hand-rolled rather than <select>, because a native popup renders
+    // outside the shadow root with none of these styles applied.
+    function populateSelect(dropdownEl, options, storageKey, onChange) {
+      const valueEl = dropdownEl.querySelector(".dropdown-value");
+      const menuEl = dropdownEl.querySelector(".dropdown-menu");
+      const itemEls = new Map();
+      let currentValue = null;
+
+      function select(value, persist) {
+        currentValue = value;
+        const opt = options.find((o) => o.value === value);
+        valueEl.textContent = opt ? opt.label : "";
+        itemEls.forEach((el, v) => el.classList.toggle("selected", v === value));
+        if (persist) localStorage.setItem(storageKey, value);
+        // `persist` doubles as "a person just picked this", which lets a
+        // handler tell a real change from the restore that happens at boot.
+        if (onChange) onChange(value, persist);
+      }
+
+      options.forEach((opt) => {
+        const el = document.createElement("div");
+        el.className = "dropdown-item";
+        el.textContent = opt.label;
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          select(opt.value, true);
+          dropdownEl.classList.remove("open");
+        });
+        menuEl.appendChild(el);
+        itemEls.set(opt.value, el);
+      });
+
+      dropdownEl.addEventListener("click", () => {
+        root.querySelectorAll(".dropdown.open").forEach((el) => {
+          if (el !== dropdownEl) el.classList.remove("open");
+        });
+        dropdownEl.classList.toggle("open");
+      });
+
+      Object.defineProperty(dropdownEl, "value", { get: () => currentValue });
+
+      const saved = localStorage.getItem(storageKey);
+      const initial = saved != null && options.some((o) => o.value === saved)
+        ? saved : options[0].value;
+      select(initial, false);
+    }
+
+    /** Subtitle size is a CSS variable rather than a class, for the same
+     *  reason the panel width is one: the styles live in a shadow root, and
+     *  a custom property set on <html> is the one thing that crosses that
+     *  boundary. Clearing it hands each breakpoint its own default back. */
+    function applySubSize(value) {
+      const style = document.documentElement.style;
+      if (value) style.setProperty("--english-tutor-sub-size", value);
+      else style.removeProperty("--english-tutor-sub-size");
+    }
+
+    /** Turning the second language on or off changes what the backend has to
+     *  merge, so the cue list has to be refetched. Only on a real change --
+     *  at boot the cards load lazily when the subtitle tab is first opened,
+     *  and half the state this touches hasn't been declared yet. */
+    function reloadForSecondary(value, isUserChange) {
+      if (!isUserChange) return;
+      subtitleCues = [];
+      subtitleIsPartial = false;
+      currentCueIndex = -1;
+      clearLoop();
+      stopExtractPolling();
+      subsNote.hidden = true;
+      if (currentPage === "subs") loadSubtitleCues();
+    }
+
+    // Settings whose effect is immediate rather than read-on-demand.
+    // The key/model live in localStorage (so the field shows what you typed
+    // last) but deepseek_chat.py runs as part of app.py, a separate process
+    // that can't read the browser's localStorage -- so a change here also
+    // has to reach the backend over HTTP, not just persist client-side.
+    async function pushDeepSeekConfig() {
+      const key = settingValue("deepseekKey");
+      if (!key) return;  // nothing to save yet; don't overwrite a saved key with blank
+      try {
+        await fetch(`${API}/api/deepseek-config`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            api_key: key,
+            model: settingValue("deepseekModel") || undefined,
+          }),
+        });
+      } catch (e) {
+        // Best-effort: the field still has the value locally, and the next
+        // successful save (or app.py restart picking up a manually-edited
+        // config file) reconciles it. Not worth surfacing a chat-page error
+        // for a settings-page network hiccup.
+      }
+    }
+
+    const SETTING_HANDLERS = {
+      subSize: applySubSize,
+      secondaryLang: reloadForSecondary,
+      deepseekKey: pushDeepSeekConfig,
+      deepseekModel: pushDeepSeekConfig,
+    };
+
+    // Rendered from the SETTINGS declaration, and the resulting controls are
+    // kept in a map so the rest of the panel reads values by key
+    // (settingValue("model")) instead of holding element references.
+    const settingControls = new Map();
+
+    // A free-text field (the DeepSeek key/model) has no fixed option set, so
+    // it can't go through populateSelect -- but it still needs to behave
+    // like one from the outside: read via settingValue(), persisted to
+    // localStorage, and able to fire a handler on a real change. Committing
+    // on blur/Enter rather than every keystroke matters more here than for a
+    // dropdown, since the handler for the key field makes a network request.
+    function populateText(inputEl, setting) {
+      const saved = localStorage.getItem(setting.storageKey) || "";
+      inputEl.value = saved;
+      let lastCommitted = saved;
+      function commit() {
+        const value = inputEl.value.trim();
+        if (value === lastCommitted) return;
+        lastCommitted = value;
+        localStorage.setItem(setting.storageKey, value);
+        const handler = SETTING_HANDLERS[setting.key];
+        if (handler) handler(value, true);
+      }
+      inputEl.addEventListener("blur", commit);
+      inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { commit(); inputEl.blur(); } });
+      // No custom `.value` needed: <input> already has a native one, which
+      // is exactly what settingValue(key) -> control.value already reads
+      // for the dropdown case too -- same interface, no extra plumbing.
+    }
+
+    for (const setting of SETTINGS) {
+      const row = document.createElement("div");
+      row.className = "setting-row";
+
+      const label = document.createElement("div");
+      label.className = "setting-label";
+      label.textContent = setting.label;
+      row.appendChild(label);
+
+      let control;
+      if (setting.type === "text") {
+        control = document.createElement("input");
+        control.type = setting.inputType || "text";
+        control.placeholder = setting.placeholder || "";
+        control.className = "setting-text-input";
+        row.appendChild(control);
+        settingsList.appendChild(row);
+        populateText(control, setting);
+      } else {
+        control = document.createElement("div");
+        control.className = "dropdown";
+        control.innerHTML = `<div class="dropdown-value"></div><div class="dropdown-menu"></div>`;
+        row.appendChild(control);
+        settingsList.appendChild(row);
+        populateSelect(control, setting.options, setting.storageKey,
+                       SETTING_HANDLERS[setting.key]);
+      }
+
+      if (setting.hint) {
+        const hint = document.createElement("div");
+        hint.className = "setting-hint";
+        hint.textContent = setting.hint;
+        row.appendChild(hint);
+      }
+
+      settingControls.set(setting.key, control);
+    }
+
+    // Re-appending moves it below the generated rows: the things you'd
+    // actually change belong above the diagnostic readout.
+    settingsList.appendChild(contextBar.closest(".setting-row"));
+
+    const settingValue = (key) => {
+      const control = settingControls.get(key);
+      return control ? control.value : null;
+    };
+
+    root.addEventListener("click", (e) => {
+      if (!e.target.closest(".dropdown")) {
+        root.querySelectorAll(".dropdown.open").forEach((el) => el.classList.remove("open"));
+      }
+    });
+
+    // ---- chat history ----
+
+    function saveHistory() {
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify({ sessionId, html: chatEl.innerHTML }));
+      } catch (e) { /* quota/unavailable -- not worth surfacing */ }
+    }
+
+    (function restoreHistory() {
+      try {
+        const raw = localStorage.getItem(HISTORY_KEY);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        sessionId = data.sessionId || null;
+        chatEl.innerHTML = data.html || "";
+        chatEl.scrollTop = chatEl.scrollHeight;
+      } catch (e) { /* corrupt/old format -- start fresh */ }
+    })();
+
+    // Only auto-follow new content while the user is already at the bottom;
+    // if they scrolled up to re-read something, don't yank them back down.
+    const BOTTOM_THRESHOLD_PX = 80;
+    const nearBottom = () =>
+      chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < BOTTOM_THRESHOLD_PX;
+    const toBottom = () => { chatEl.scrollTop = chatEl.scrollHeight; };
+
+    function addMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = `msg ${role}`;
+      div.textContent = text;
+      chatEl.appendChild(div);
+      toBottom();
+      saveHistory();
+      return div;
+    }
+
+    /**
+     * Live "thinking" block for one AI turn: pulsing icon + rotating verb +
+     * elapsed time while streaming, collapsing to "Thought for Ns" once the
+     * answer starts arriving (thinking text stays available behind a toggle).
+     */
+    function createAiMessage(effortLabel) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg ai";
+      const status = document.createElement("div");
+      status.className = "status-line";
+      status.innerHTML = `<span class="pulse-icon">${icon("spinner")}</span><span class="status-text"></span>`;
+      wrap.appendChild(status);
+
+      const thinkingBox = document.createElement("details");
+      thinkingBox.className = "thinking-box";
+      thinkingBox.style.display = "none";
+      thinkingBox.innerHTML = `<summary></summary><div class="thinking-content"></div>`;
+      wrap.appendChild(thinkingBox);
+
+      const content = document.createElement("div");
+      content.className = "answer-content";
+      wrap.appendChild(content);
+      chatEl.appendChild(wrap);
+      toBottom();
+
+      const startTime = performance.now();
+      let charCount = 0;
+      let verbIndex = Math.floor(Math.random() * THINKING_VERBS.length);
+      let latestTokens = null;
+      let answerStarted = false;
+      let finalized = false;
+      let rawAnswer = "";
+
+      function statusText() {
+        const elapsed = fmtElapsed(performance.now() - startTime);
+        const n = latestTokens != null ? latestTokens : Math.round(charCount / 4);
+        const tokens = n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+        return `${THINKING_VERBS[verbIndex]}… (${elapsed} · ↓ ${tokens} tokens` +
+          `${effortLabel ? ` · ${effortLabel}` : ""})`;
+      }
+
+      const tick = setInterval(() => {
+        if (!finalized) status.querySelector(".status-text").textContent = statusText();
+      }, 500);
+      const verbTick = setInterval(() => {
+        if (!finalized) verbIndex = (verbIndex + 1) % THINKING_VERBS.length;
+      }, 2800);
+      status.querySelector(".status-text").textContent = statusText();
+
+      return {
+        onThinkingDelta(text) {
+          const stick = nearBottom();
+          charCount += text.length;
+          thinkingBox.style.display = "block";
+          thinkingBox.querySelector(".thinking-content").textContent += text;
+          status.querySelector(".status-text").textContent = statusText();
+          if (stick) toBottom();
+        },
+        onTextDelta(text) {
+          const stick = nearBottom();
+          charCount += text.length;
+          rawAnswer += text;
+          if (!answerStarted) {
+            answerStarted = true;
+            const elapsed = fmtElapsed(performance.now() - startTime);
+            status.innerHTML =
+              `<span class="pulse-icon done">${icon("check")}</span><span class="status-text">Thought for ${elapsed}</span>`;
+            if (thinkingBox.querySelector(".thinking-content").textContent) {
+              thinkingBox.querySelector("summary").textContent = "查看思考过程";
+            } else {
+              thinkingBox.style.display = "none";
+            }
+          }
+          content.innerHTML = renderMarkdown(rawAnswer);
+          if (stick) toBottom();
+        },
+        onUsage(tokens) { if (tokens != null) latestTokens = tokens; },
+        finalize(evt) {
+          const stick = nearBottom();
+          finalized = true;
+          clearInterval(tick);
+          clearInterval(verbTick);
+          if (!answerStarted) {
+            status.remove();
+            rawAnswer = evt.reply || "(空回复)";
+            content.innerHTML = renderMarkdown(rawAnswer);
+          } else if (evt.reply && rawAnswer !== evt.reply) {
+            rawAnswer = evt.reply;
+            content.innerHTML = renderMarkdown(rawAnswer);
+          }
+          if (evt.cost_usd != null) {
+            const m = document.createElement("span");
+            m.className = "meta";
+            m.textContent = `本轮花费 $${evt.cost_usd.toFixed(4)}`;
+            content.appendChild(m);
+          }
+          if (stick) toBottom();
+          saveHistory();
+        },
+        error(message, onRetry) {
+          finalized = true;
+          clearInterval(tick);
+          clearInterval(verbTick);
+          if (status.parentNode) status.remove();
+          // Keep whatever already streamed -- the error is what dropped
+          // mid-stream, not a replacement for the text before it.
+          const note = document.createElement("div");
+          note.className = "error-note";
+          note.textContent = answerStarted
+            ? `⚠ 连接中断：${message}（上面的回答可能不完整）`
+            : `⚠ 出错了：${message}`;
+          wrap.appendChild(note);
+          if (onRetry) {
+            const btn = document.createElement("button");
+            btn.className = "retry-btn";
+            btn.innerHTML = `${icon("retry")} 重试`;
+            btn.addEventListener("click", () => { btn.disabled = true; onRetry(); });
+            wrap.appendChild(btn);
+          }
+          toBottom();
+          saveHistory();
+        },
+      };
+    }
+
+    const TRANSIENT_ERROR_RE = /connection lost|network|econnreset|timeout|socket hang up/i;
+
+    async function streamChat(text, ai) {
+      try {
+        const res = await fetch(`${API}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: text,
+            session_id: sessionId,
+            engine: settingValue("engine") || null,
+            // The Claude-specific model/effort dropdowns don't apply to
+            // DeepSeek (its model comes from deepseek_config.json instead,
+            // via the DeepSeek 模型 field), so they're left out of that
+            // request rather than sent as values the backend would have to
+            // know to ignore.
+            model: settingValue("engine") === "deepseek" ? null : (settingValue("model") || null),
+            effort: settingValue("engine") === "deepseek" ? null : (settingValue("effort") || null),
+          }),
+        });
+        if (!res.ok || !res.body) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `请求失败（HTTP ${res.status}）`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let streamError = null;
+
+        const handleLine = (line) => {
+          if (!line.trim()) return;
+          const evt = JSON.parse(line);
+          switch (evt.type) {
+            case "thinking_delta": ai.onThinkingDelta(evt.text || ""); break;
+            case "text_delta": ai.onTextDelta(evt.text || ""); break;
+            case "usage": ai.onUsage(evt.output_tokens); break;
+            case "done": sessionId = evt.session_id || sessionId; ai.finalize(evt); break;
+            case "error": streamError = evt.message || "未知错误"; break;
+          }
+        };
+
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+          lines.forEach(handleLine);
+        }
+        if (buffer.trim()) handleLine(buffer);
+
+        return streamError ? { ok: false, message: streamError } : { ok: true };
+      } catch (e) {
+        return { ok: false, message: e.message };
+      }
+    }
+
+    function currentEffortLabel() {
+      const opt = EFFORT_OPTIONS.find((o) => o.value === settingValue("effort"));
+      return opt && opt.value ? opt.label : null;
+    }
+
+    /** One chat turn, retrying once on a failure that looks transient. */
+    async function runTurn(text, attempt = 1) {
+      const ai = createAiMessage(currentEffortLabel());
+      sendBtn.disabled = true;
+      const result = await streamChat(text, ai);
+      sendBtn.disabled = false;
+      if (result.ok) return;
+      if (TRANSIENT_ERROR_RE.test(result.message) && attempt < 2) {
+        ai.error(`${result.message}，2 秒后自动重试…`);
+        await new Promise((r) => setTimeout(r, 2000));
+        await runTurn(text, attempt + 1);
+      } else {
+        ai.error(result.message, () => runTurn(text, 1));
+      }
+    }
+
+    function sendMessage() {
+      const text = inputEl.value.trim();
+      if (!text) return;
+      inputEl.value = "";
+      addMessage("user", text);
+      runTurn(text);
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+      e.stopPropagation();  // Jellyfin binds global media hotkeys (space, arrows)
+    });
+    inputEl.addEventListener("keyup", (e) => e.stopPropagation());
+    newChatBtn.addEventListener("click", () => {
+      sessionId = null;
+      chatEl.innerHTML = "";
+      localStorage.removeItem(HISTORY_KEY);
+    });
+
+    // ---- pages ----
+
+    function switchPage(name) {
+      currentPage = name;
+      tabBtns.forEach((b) => b.classList.toggle("active", b.dataset.page === name));
+      Object.entries(pages).forEach(([k, el]) => el.classList.toggle("active", k === name));
+      composerEl.hidden = name !== "chat";
+      if (name === "subs" && subtitleCues.length === 0) loadSubtitleCues();
+      if (name === "vocab") loadVocabList();
+    }
+    tabBtns.forEach((b) => b.addEventListener("click", () => switchPage(b.dataset.page)));
+
+    // ---- subtitle cards ----
+
+    let subtitleCues = [];
+    let subtitleIsPartial = false;
+    let currentCueIndex = -1;
+    let lastUserScrollAt = 0;
+    let extractPollTimer = null;
+    const USER_SCROLL_QUIET_MS = 4000;
+    const EXTRACT_POLL_MS = 3000;
+
+    function stopExtractPolling() {
+      if (extractPollTimer) { clearTimeout(extractPollTimer); extractPollTimer = null; }
+    }
+
+    function fmtProgress(fraction) {
+      return fraction > 0 ? `${Math.min(99, Math.round(fraction * 100))}%` : "…";
+    }
+
+    async function loadSubtitleCues(startedAt = null) {
+      stopExtractPolling();
+      if (startedAt === null) {
+        subsEmpty.hidden = false;
+        subsEmpty.textContent = "正在加载字幕…";
+      }
+      try {
+        // Cards from whatever was loaded before are not this video's. Left in
+        // place they sit there looking authoritative while the new video is
+        // still being resolved -- and every path out of here that isn't
+        // success renders into subsEmpty, not the card list.
+        if (startedAt === null) subsScroll.innerHTML = "";
+        const lang2 = settingValue("secondaryLang") || "";
+        const data = await (await fetch(
+          `${API}/api/subtitles?lang=en${lang2 ? `&secondary=${lang2}` : ""}`
+        )).json();
+        // "ready" | "extracting" | an error string; absent when no second
+        // language was asked for.
+        const sec = data.secondary_status;
+        const secondaryPending = sec === "extracting";
+        const secondaryFailed = sec && sec !== "ready" && !secondaryPending;
+
+        if (data.status === "extracting") {
+          const t0 = startedAt || Date.now();
+          const secs = Math.round((Date.now() - t0) / 1000);
+          subsEmpty.hidden = false;
+          subsEmpty.innerHTML = "";
+          const l1 = document.createElement("div");
+          // YouTube reports a stage instead of a fraction -- there is no
+          // honest percentage to give for a network round trip.
+          l1.textContent = data.message
+            ? `${data.message}…（已用 ${secs}s）`
+            : `正在提取字幕 ${fmtProgress(data.progress || 0)}…（已用 ${secs}s）`;
+          const l2 = document.createElement("div");
+          l2.className = "subs-hint";
+          l2.textContent = data.message
+            ? "视频可以先看，字幕抓好会自动出现。这期间对话页可以照常用。"
+            : "第一次打开这个视频要扫一遍文件（大文件约半分钟）。" +
+              "字幕会从头逐段显示，不用等全部扫完。这期间对话页可以照常用。";
+          subsEmpty.append(l1, l2);
+          extractPollTimer = setTimeout(() => loadSubtitleCues(t0), EXTRACT_POLL_MS);
+          return;
+        }
+
+        if (!data.available || !data.cues || data.cues.length === 0) {
+          showSubtitleError(`没有可用字幕：${data.error || "未知原因"}`);
+          subtitleCues = [];
+          return;
+        }
+
+        const wasPartial = subtitleIsPartial;
+        subtitleCues = data.cues;
+        subtitleIsPartial = data.complete === false;
+        currentCueIndex = -1;
+        renderSubtitleCards();
+        subsEmpty.hidden = true;
+
+        if (subtitleIsPartial || secondaryPending) {
+          const t0 = startedAt || Date.now();
+          const secs = Math.round((Date.now() - t0) / 1000);
+          subsNote.hidden = false;
+          // The English side can be complete while the translation is still
+          // being pulled, and that reads as a stall unless it's named.
+          subsNote.textContent = subtitleIsPartial
+            ? `⏳ 字幕提取中 ${fmtProgress(data.progress || 0)}（${secs}s）— ` +
+              `已显示的部分可以正常用，后面的会自动补上`
+            : `⏳ 中文字幕提取中（${secs}s）— 英文已经可以用了，中文会逐段补上`;
+          extractPollTimer = setTimeout(() => loadSubtitleCues(t0), EXTRACT_POLL_MS);
+        } else if (secondaryFailed) {
+          // English is fine, so this stays a note rather than an error page.
+          subsNote.hidden = false;
+          subsNote.textContent = `中文字幕不可用：${sec}`;
+        } else {
+          subsNote.hidden = true;
+          // The DOM was just rebuilt with the complete list, so snap back to
+          // whatever's playing rather than leaving the user mid-list.
+          if (wasPartial) lastUserScrollAt = 0;
+        }
+      } catch (e) {
+        showSubtitleError(`加载字幕失败：${e.message}`);
+      }
+    }
+
+    function showSubtitleError(message) {
+      subsNote.hidden = true;
+      subsEmpty.hidden = false;
+      subsEmpty.innerHTML = "";
+      const text = document.createElement("div");
+      text.textContent = message;
+      const btn = document.createElement("button");
+      btn.innerHTML = `${icon("retry")} 重试`;
+      btn.addEventListener("click", () => { btn.disabled = true; loadSubtitleCues(); });
+      subsEmpty.append(text, btn);
+      clearLoop();
+    }
+
+    function renderSubtitleCards() {
+      const frag = document.createDocumentFragment();
+      subtitleCues.forEach((cue, i) => {
+        const card = document.createElement("div");
+        card.className = "sub-card";
+        card.dataset.index = String(i);
+
+        const time = document.createElement("span");
+        time.className = "sub-time";
+        time.textContent = fmt(cue.start_ms);
+        card.appendChild(time);
+
+        const text = document.createElement("div");
+        appendWordSpans(text, cue.text, i);
+        card.appendChild(text);
+
+        if (cue.text2) {
+          const text2 = document.createElement("div");
+          text2.className = "sub-text-2";
+          // Deliberately not run through appendWordSpans: the hover lookup is
+          // an English dictionary, so per-word spans over Chinese would only
+          // produce misses, and on touch they'd swallow taps meant for the
+          // card's seek.
+          text2.textContent = cue.text2;
+          card.appendChild(text2);
+        }
+
+        const ask = document.createElement("button");
+        ask.className = "sub-ask-btn";
+        ask.innerHTML = icon("help");
+        ask.title = "问一下这句什么意思";
+        ask.setAttribute("aria-label", "问一下这句什么意思");
+        ask.addEventListener("click", (e) => { e.stopPropagation(); askAboutCue(i); });
+        card.appendChild(ask);
+
+        const loop = document.createElement("button");
+        loop.className = "sub-loop-btn";
+        loop.innerHTML = icon("repeat");
+        loop.title = "循环这句（循环中再点另一句可以循环这一段）";
+        loop.setAttribute("aria-label", "循环这句");
+        loop.addEventListener("click", (e) => { e.stopPropagation(); toggleLoopAt(i); });
+        card.appendChild(loop);
+
+        // Clicking a card seeks the actual player -- the panel is inside
+        // Jellyfin's page, so it can just drive the <video> element.
+        card.addEventListener("click", () => {
+          // Seeking to a line outside the loop is a deliberate exit; without
+          // this the next tick would drag playback straight back and the
+          // click would look broken.
+          if (loopActive() && (i < loopStartIdx || i > loopEndIdx)) clearLoop();
+          const p = player();
+          if (p) p.seekMs(cue.start_ms);
+          lastUserScrollAt = 0;
+          highlightCue(i, true);
+        });
+        frag.appendChild(card);
+      });
+      subsScroll.innerHTML = "";
+      subsScroll.appendChild(frag);
+      // Cards are rebuilt from scratch on every reload (including the
+      // partial-to-complete upgrade mid-extraction), so the loop's own
+      // highlighting has to be painted back on afterwards.
+      renderLoopState();
+    }
+
+    subsScroll.addEventListener("wheel", () => { lastUserScrollAt = Date.now(); }, { passive: true });
+    subsScroll.addEventListener("scroll", () => { wordPopup.classList.remove("open"); }, { passive: true });
+
+    // Split a line into hoverable per-word spans so the popup can target the
+    // exact word under the cursor, not the whole sentence.
+    function appendWordSpans(container, sentence, cueIndex) {
+      for (const token of sentence.split(/(\s+)/)) {
+        if (!token) continue;
+        const word = /^\s+$/.test(token) ? "" : token.replace(/^[^\w']+|[^\w']+$/g, "");
+        if (!word) { container.appendChild(document.createTextNode(token)); continue; }
+        const span = document.createElement("span");
+        span.className = "sub-word";
+        span.textContent = token;
+        span.addEventListener("mouseenter", () => showWordPopup(span, word, sentence, cueIndex));
+        span.addEventListener("mouseleave", scheduleHideWordPopup);
+        // Touch devices never fire a usable hover, so there a tap on a word
+        // opens the popup instead of falling through to the card's seek.
+        // Devices with a real pointer keep hover for the popup and taps for
+        // seeking, which is the better split when both are available.
+        span.addEventListener("click", (e) => {
+          if (!window.matchMedia("(hover: none)").matches) return;
+          e.stopPropagation();
+          showWordPopup(span, word, sentence, cueIndex);
+        });
+        container.appendChild(span);
+      }
+    }
+
+    let hideWordPopupTimer = null;
+    const cancelHide = () => { clearTimeout(hideWordPopupTimer); hideWordPopupTimer = null; };
+    function scheduleHideWordPopup() {
+      cancelHide();
+      hideWordPopupTimer = setTimeout(() => wordPopup.classList.remove("open"), 250);
+    }
+    wordPopup.addEventListener("mouseenter", cancelHide);
+    wordPopup.addEventListener("mouseleave", scheduleHideWordPopup);
+
+    // ---- dictionary lookups ----
+    // Cached per word for the life of the page: hovering back and forth
+    // across a line re-requests the same handful of words constantly, and a
+    // repeat lookup should never show the loading state a second time.
+    const defCache = new Map();
+    let defRequestId = 0;
+    let popupAnchor = null;
+
+    async function fillDefinition(word) {
+      // Each hover claims a ticket; a slower earlier request that lands
+      // after the user has already moved on must not overwrite the popup.
+      const myRequest = ++defRequestId;
+
+      if (defCache.has(word)) {
+        renderDefinition(defCache.get(word));
+        return;
+      }
+      wordPopupDef.textContent = "查询中…";
+      wordPopupDef.className = "word-popup-def loading";
+      try {
+        const data = await (await fetch(`${API}/api/define?word=${encodeURIComponent(word)}`)).json();
+        defCache.set(word, data);
+        if (myRequest === defRequestId) renderDefinition(data);
+      } catch (e) {
+        if (myRequest === defRequestId) {
+          wordPopupDef.textContent = "查词失败";
+          wordPopupDef.className = "word-popup-def empty";
+          positionPopup();
+        }
+      }
+    }
+
+    function renderDefinition(data) {
+      wordPopupDef.innerHTML = "";
+      if (!data || !data.found) {
+        wordPopupDef.className = "word-popup-def empty";
+        wordPopupDef.textContent = data && data.error
+          ? data.error
+          : "词典里没有这个词，点「问一下」让 AI 结合语境解释";
+        positionPopup();
+        return;
+      }
+      wordPopupDef.className = "word-popup-def";
+
+      const head = document.createElement("div");
+      head.className = "word-popup-head";
+      const w = document.createElement("span");
+      w.className = "word-popup-word";
+      // Show the lemma when the hovered form differs, so "went" makes it
+      // obvious the entry shown is "go".
+      w.textContent = data.inflected ? `${data.queried} → ${data.word}` : data.word;
+      head.appendChild(w);
+      if (data.phonetic) {
+        const p = document.createElement("span");
+        p.className = "word-popup-phonetic";
+        p.textContent = `/${data.phonetic}/`;
+        head.appendChild(p);
+      }
+      wordPopupDef.appendChild(head);
+
+      const body = document.createElement("div");
+      body.className = "word-popup-trans";
+      body.textContent = data.translation;
+      wordPopupDef.appendChild(body);
+      positionPopup();
+    }
+
+    // Re-run whenever the popup's contents change: the definition arrives
+    // after the popup is already on screen, and a taller box positioned for
+    // the old height would overhang the viewport or cover the word.
+    function positionPopup() {
+      if (!popupAnchor) return;
+      const rect = popupAnchor.getBoundingClientRect();
+      const margin = 8;
+      let left = rect.left + rect.width / 2 - wordPopup.offsetWidth / 2;
+      left = Math.min(Math.max(left, margin), window.innerWidth - wordPopup.offsetWidth - margin);
+      let top = rect.top - wordPopup.offsetHeight - margin;
+      if (top < margin) top = rect.bottom + margin;  // not enough room above
+      wordPopup.style.left = `${left}px`;
+      wordPopup.style.top = `${top}px`;
+    }
+
+    function showWordPopup(anchorEl, word, sentence, cueIndex) {
+      cancelHide();
+      popupAnchor = anchorEl;
+      wordPopup.classList.add("open");
+      fillDefinition(word);
+      positionPopup();
+
+      const saveBtn = wordPopup.querySelector(".word-popup-save");
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = `${icon("star")} 存生词`;
+      saveBtn.onclick = async () => {
+        saveBtn.disabled = true;
+        saveBtn.textContent = "存中…";
+        try {
+          await saveVocabEntry({
+            video_title: lastKnownVideoTitle,
+            subtitle_text: sentence,
+            question: word,
+            answer: "",
+          });
+          saveBtn.innerHTML = `${icon("check")} 已存`;
+        } catch (e) {
+          saveBtn.textContent = "失败，重试？";
+          saveBtn.disabled = false;
+        }
+      };
+
+      wordPopup.querySelector(".word-popup-ask").onclick = () => {
+        wordPopup.classList.remove("open");
+        switchPage("chat");
+        const shown = `"${word}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${sentence}"`;
+        addMessage("user", shown);
+        // Same treatment as asking about a whole line: a word's sense often
+        // only resolves from the scene around it.
+        runTurn(shown + buildContextBlock(cueIndex == null ? -1 : cueIndex));
+      };
+    }
+
+    function updateCurrentCue(positionMs) {
+      if (subtitleCues.length === 0) return;
+      let idx = -1;
+      for (let i = 0; i < subtitleCues.length; i++) {
+        if (subtitleCues[i].start_ms <= positionMs) idx = i;
+        else break;
+      }
+      if (idx === currentCueIndex) return;
+      highlightCue(idx, Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS);
+    }
+
+    function highlightCue(idx, autoScroll) {
+      const prev = subsScroll.querySelector(".sub-card.current");
+      if (prev) prev.classList.remove("current");
+      currentCueIndex = idx;
+      if (idx < 0) return;
+      const card = subsScroll.querySelector(`.sub-card[data-index="${idx}"]`);
+      if (!card) return;
+      card.classList.add("current");
+      if (autoScroll) card.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    // ---- Line loop (A-B repeat) ----
+    // Hearing a line five times in a row is the drill that actually trains
+    // the ear, so this is deliberately dumb: watch the clock and seek back
+    // to the start when playback runs past the end, exactly what a scrubber
+    // drag does. No Media Source or buffering tricks -- the panel already
+    // has the real <video> element, and treating it like a remote control
+    // keeps this working across Direct Play, Direct Stream and transcode
+    // alike.
+
+    // Subtitle timings sit tight against the speech, and SRT end times in
+    // particular tend to clip the last consonant. Padding both sides makes
+    // the repeat sound like a phrase instead of a fragment.
+    const LOOP_LEAD_MS = 150;
+    const LOOP_TAIL_MS = 250;
+    // Bounds how far past the end playback can get before the seek fires,
+    // so at 50ms the next line never becomes audible. The timer only exists
+    // while a loop is on, so this costs nothing the rest of the time.
+    const LOOP_TICK_MS = 50;
+    // A position this far outside the range can't be the loop's own seek --
+    // it's the user dragging Jellyfin's scrubber, so get out of their way
+    // instead of yanking them back.
+    const LOOP_ESCAPE_MS = 5000;
+
+    let loopStartIdx = -1;
+    let loopEndIdx = -1;
+    let loopCount = 0;
+    let loopTimer = null;
+
+    const loopActive = () => loopStartIdx >= 0;
+
+    function loopBounds() {
+      const a = subtitleCues[loopStartIdx];
+      const b = subtitleCues[loopEndIdx];
+      if (!a || !b) return null;
+      return {
+        startMs: Math.max(0, a.start_ms - LOOP_LEAD_MS),
+        endMs: b.end_ms + LOOP_TAIL_MS,
+      };
+    }
+
+    function setLoop(startIdx, endIdx) {
+      loopStartIdx = Math.min(startIdx, endIdx);
+      loopEndIdx = Math.max(startIdx, endIdx);
+      loopCount = 0;
+      const bounds = loopBounds();
+      if (!bounds) { clearLoop(); return; }
+      if (!loopTimer) loopTimer = setInterval(loopTick, LOOP_TICK_MS);
+
+      // Jump to the top of the loop immediately when playback is outside it:
+      // asking to loop a line that already went past means "play it again",
+      // not "wait for the next lap". Already inside, leave the position
+      // alone so widening a loop doesn't restart it mid-sentence.
+      const p = player();
+      if (p) {
+        const nowMs = p.currentTimeMs();
+        if (nowMs < bounds.startMs || nowMs > bounds.endMs) p.seekMs(bounds.startMs);
+      }
+      renderLoopState();
+    }
+
+    function clearLoop() {
+      loopStartIdx = loopEndIdx = -1;
+      loopCount = 0;
+      clearInterval(loopTimer);
+      loopTimer = null;
+      renderLoopState();
+    }
+
+    function loopTick() {
+      const bounds = loopBounds();
+      if (!bounds) { clearLoop(); return; }
+      const p = player();
+      if (!p) return;
+      const nowMs = p.currentTimeMs();
+      if (isNaN(nowMs)) return;
+
+      if (nowMs > bounds.endMs + LOOP_ESCAPE_MS || nowMs < bounds.startMs - LOOP_ESCAPE_MS) {
+        clearLoop();
+        return;
+      }
+      // Paused is left strictly alone: pausing mid-loop to read the line is
+      // the normal way to use this, and moving the position then would fight
+      // the user for no reason.
+      if (p.paused() || nowMs < bounds.endMs) return;
+
+      p.seekMs(bounds.startMs);
+      loopCount++;
+      renderLoopState();
+    }
+
+    /** The loop button on a card, and the only way a range gets built.
+     *
+     *  First click loops that line alone -- far and away the common case.
+     *  With a loop already running, clicking a line outside it stretches the
+     *  span to reach that line, which is how a two-person exchange gets
+     *  drilled as a unit; clicking one inside narrows back down to just that
+     *  line. Clicking the button of a single-line loop turns it off.
+     *
+     *  Extending only from the nearer end means a stray click on the wrong
+     *  side of the range can't silently swallow a dozen lines.
+     */
+    function toggleLoopAt(idx) {
+      if (!subtitleCues[idx]) return;
+      if (!loopActive()) { setLoop(idx, idx); return; }
+      if (loopStartIdx === idx && loopEndIdx === idx) { clearLoop(); return; }
+      if (idx < loopStartIdx) setLoop(idx, loopEndIdx);
+      else if (idx > loopEndIdx) setLoop(loopStartIdx, idx);
+      else setLoop(idx, idx);
+    }
+
+    function renderLoopState() {
+      subsScroll.querySelectorAll(".sub-card.in-loop").forEach((el) => {
+        el.classList.remove("in-loop", "loop-edge");
+      });
+      const on = loopActive();
+      loopPill.hidden = !on;
+      if (!on) return;
+
+      for (let i = loopStartIdx; i <= loopEndIdx; i++) {
+        const card = subsScroll.querySelector(`.sub-card[data-index="${i}"]`);
+        if (!card) continue;
+        card.classList.add("in-loop");
+        if (i === loopStartIdx || i === loopEndIdx) card.classList.add("loop-edge");
+      }
+
+      const a = subtitleCues[loopStartIdx];
+      const b = subtitleCues[loopEndIdx];
+      const lines = loopEndIdx - loopStartIdx + 1;
+      loopPillText.textContent =
+        (lines === 1 ? fmt(a.start_ms) : `${fmt(a.start_ms)} – ${fmt(b.end_ms)} · ${lines} 句`) +
+        (loopCount ? ` · 第 ${loopCount + 1} 遍` : "");
+    }
+
+    loopStopBtn.addEventListener("click", clearLoop);
+    // Lines either side of the one being asked about. The agent has MCP
+    // tools that could fetch this itself, but a line of dialogue is often
+    // meaningless alone -- pronouns, callbacks and sarcasm all depend on
+    // what came before -- so handing over the window beats hoping it decides
+    // to go looking, and saves a tool round trip.
+    const CONTEXT_SPAN = 10;
+
+    function buildContextBlock(centerIndex) {
+      if (centerIndex < 0 || subtitleCues.length === 0) return "";
+      const start = Math.max(0, centerIndex - CONTEXT_SPAN);
+      const end = Math.min(subtitleCues.length, centerIndex + CONTEXT_SPAN + 1);
+      const lines = [];
+      for (let i = start; i < end; i++) {
+        const cue = subtitleCues[i];
+        // Marking the target line matters: otherwise the model has to guess
+        // which of 21 lines the question is actually about.
+        lines.push(`[${fmt(cue.start_ms)}] ${cue.text}${i === centerIndex ? "   ← 问的是这句" : ""}`);
+      }
+      return `\n\n---\n以下是这句台词前后的对话，供你理解语境（不用逐句翻译）：\n${lines.join("\n")}`;
+    }
+
+    /** Ask about the cue at `index`. The chat bubble shows only the question
+     *  -- the surrounding dialogue rides along in the prompt alone, so the
+     *  transcript doesn't fill up with 21-line quotations. */
+    function askAboutCue(index) {
+      const cue = subtitleCues[index];
+      if (!cue) return;
+      switchPage("chat");
+      const shown = `这句台词是什么意思？请解释一下，顺便讲讲里面值得注意的单词/短语/语法：\n"${cue.text}"`;
+      addMessage("user", shown);
+      runTurn(shown + buildContextBlock(index));
+    }
+
+    // ---- vocab ----
+
+    async function saveVocabEntry(payload) {
+      const res = await fetch(`${API}/api/vocab`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`保存失败（HTTP ${res.status}）`);
+      return res.json();
+    }
+
+    async function loadVocabList() {
+      vocabEmpty.hidden = false;
+      vocabEmpty.textContent = "正在加载…";
+      try {
+        renderVocabList(await (await fetch(`${API}/api/vocab`)).json());
+      } catch (e) {
+        vocabEmpty.hidden = false;
+        vocabEmpty.textContent = `加载生词本失败：${e.message}`;
+      }
+    }
+
+    function renderVocabList(entries) {
+      vocabList.innerHTML = "";
+      if (!entries || entries.length === 0) {
+        vocabEmpty.hidden = false;
+        vocabEmpty.textContent = "还没有生词。在字幕里把鼠标放到单词上，点\"存生词\"。";
+        vocabList.appendChild(vocabEmpty);
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const entry of entries) {
+        const card = document.createElement("div");
+        card.className = "vocab-card";
+
+        if (entry.video_title || entry.created_at) {
+          const meta = document.createElement("div");
+          meta.className = "vocab-meta";
+          const when = entry.created_at ? new Date(entry.created_at * 1000).toLocaleString() : "";
+          meta.textContent = [entry.video_title, when].filter(Boolean).join(" · ");
+          card.appendChild(meta);
+        }
+        if (entry.subtitle_text) {
+          const sub = document.createElement("div");
+          sub.className = "vocab-subtitle";
+          sub.textContent = `"${entry.subtitle_text}"`;
+          card.appendChild(sub);
+        }
+
+        const q = document.createElement("div");
+        q.className = entry.answer ? "vocab-question" : "vocab-question vocab-word";
+        q.textContent = entry.question;
+        card.appendChild(q);
+
+        if (entry.answer) {
+          const a = document.createElement("div");
+          a.className = "vocab-answer";
+          a.innerHTML = renderMarkdown(entry.answer);
+          card.appendChild(a);
+        } else {
+          const ask = document.createElement("button");
+          ask.className = "vocab-ask-btn";
+          ask.innerHTML = `${icon("help")} 问一下具体意思`;
+          ask.addEventListener("click", () => {
+            switchPage("chat");
+            const question = `"${entry.question}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${entry.subtitle_text || entry.question}"`;
+            addMessage("user", question);
+            runTurn(question);
+          });
+          card.appendChild(ask);
+        }
+
+        const del = document.createElement("button");
+        del.className = "vocab-delete-btn";
+        del.innerHTML = icon("trash");
+        del.title = "删除这条";
+        del.setAttribute("aria-label", "删除这条");
+        del.addEventListener("click", async () => {
+          del.disabled = true;
+          try {
+            await fetch(`${API}/api/vocab/${entry.id}`, { method: "DELETE" });
+            card.remove();
+            if (!vocabList.querySelector(".vocab-card")) renderVocabList([]);
+          } catch (e) { del.disabled = false; }
+        });
+        card.appendChild(del);
+        frag.appendChild(card);
+      }
+      vocabEmpty.hidden = true;
+      vocabList.appendChild(frag);
+    }
+
+    // ---- Jellyfin playback tracking ----
+    // The whole reason for injecting into Jellyfin's page instead of framing
+    // it: the real <video> element is reachable, so position is read straight
+    // off it rather than polled out of an API.
+
+    const ITEM_ID_RE = /\/[Vv]ideos\/([0-9a-fA-F-]{32,36})\//;
+    let currentItemId = null;
+    // What the last detection attempt actually saw. Surfaced in the context
+    // bar when there's no playback record, so a failure to find the player
+    // reads as a specific reason instead of a blank "还没开始播放".
+    let lastProbe = "尚未检测";
+
+    function findVideo() {
+      // Jellyfin creates and destroys the element per playback session, and
+      // on an episode change the outgoing one can still be in the DOM while
+      // the new one spins up. Taking the first match would then read the
+      // previous episode's clock, which is what made subtitle highlighting
+      // drift after switching videos -- so prefer one that's actually live.
+      const candidates = Array.from(document.querySelectorAll("video"));
+      // Some Jellyfin builds mount the player inside a web component, where
+      // a document-level query can't see it -- walk open shadow roots too.
+      for (const el of document.querySelectorAll("*")) {
+        if (el.shadowRoot) candidates.push(...el.shadowRoot.querySelectorAll("video"));
+      }
+      const usable = candidates.filter(
+        (v) => v.isConnected && v.duration && !isNaN(v.duration)
+      );
+      return usable.find((v) => !v.paused) || usable[0] || candidates[0] || null;
+    }
+
+    // ---- playback source ----
+    // Two very different things can be driving playback: the <video> element
+    // inside Jellyfin's page, and YouTube's embedded player on /youtube,
+    // which has no element to reach at all -- only an API of methods. Cue
+    // highlighting, the loop and position reporting all go through this one
+    // shape, so none of them has to know which is behind it.
+    //
+    // Times are in ms throughout, matching the cue timestamps everything
+    // else here is already expressed in, rather than the seconds both
+    // underlying players happen to use.
+
+    function html5Player() {
+      const v = findVideo();
+      if (!v) {
+        lastProbe = "面板没在页面上找到 <video> 元素";
+        return null;
+      }
+      if (!v.duration || isNaN(v.duration)) {
+        lastProbe = `找到 <video> 但还没有时长（src=${(v.currentSrc || v.src || "空").slice(0, 60)}）`;
+        return null;
+      }
+      return {
+        kind: "html5",
+        source: null,
+        currentTimeMs: () => v.currentTime * 1000,
+        durationMs: () => v.duration * 1000,
+        paused: () => v.paused,
+        seekMs: (ms) => { v.currentTime = ms / 1000; },
+      };
+    }
+
+    function youtubePlayer() {
+      const yt = window.__englishTutorYouTube;
+      if (!yt || !yt.ready()) {
+        lastProbe = "YouTube 播放器还没就绪";
+        return null;
+      }
+      return {
+        kind: "youtube",
+        // Unlike Jellyfin, this page knows exactly what it loaded, so it
+        // tells the backend rather than having it ask elsewhere.
+        source: yt.source(),
+        currentTimeMs: () => yt.currentTime() * 1000,
+        durationMs: () => yt.duration() * 1000,
+        paused: () => yt.paused(),
+        seekMs: (ms) => yt.seek(ms / 1000),
+      };
+    }
+
+    /** The thing currently playing, or null with `lastProbe` explaining why
+     *  not. Never cached: Jellyfin destroys and recreates its element on
+     *  every episode change. */
+    function player() {
+      return window.__englishTutorYouTube ? youtubePlayer() : html5Player();
+    }
+
+    function currentItemIdFrom(video) {
+      const src = (video && (video.currentSrc || video.src)) || "";
+      const fromSrc = src.match(ITEM_ID_RE);
+      if (fromSrc) return fromSrc[1];
+      // Direct Play serves a plain file URL with no item id in it, so fall
+      // back to the route, which carries ?id= while the player is open.
+      const fromHash = location.hash.match(/[?&]id=([0-9a-fA-F-]{32,36})/);
+      return fromHash ? fromHash[1] : null;
+    }
+
+    async function reportPlaybackState() {
+      const p = player();
+      if (!p) return;  // html5Player/youtubePlayer already set lastProbe
+
+      // Under Jellyfin only position/duration go up: the element's src is an
+      // opaque blob: URL under MSE, so identity has to come from /Sessions on
+      // the backend. The YouTube page knows what it loaded and says so.
+      try {
+        const res = await fetch(`${API}/api/playback-state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            position_ms: Math.round(p.currentTimeMs()),
+            duration_ms: Math.round(p.durationMs()),
+            status: p.paused() ? "paused" : "playing",
+            ...(p.source ? { source: p.source } : {}),
+          }),
+        });
+        if (!res.ok) {
+          lastProbe = res.status === 409
+            ? "Jellyfin 还没报告播放会话，稍等几秒"
+            : `上报播放状态失败（HTTP ${res.status}）`;
+          return;
+        }
+        lastProbe = "";
+
+        const data = await res.json();
+        if (data.path && data.path !== currentItemId) {
+          currentItemId = data.path;
+          // New episode -- drop the old cues so the subtitle page reloads
+          // for what's playing now, not the previous episode.
+          subtitleCues = [];
+          subtitleIsPartial = false;
+          currentCueIndex = -1;
+          // Loop bounds are indices into the cue list that just went away.
+          clearLoop();
+          subsNote.hidden = true;
+          stopExtractPolling();
+          if (currentPage === "subs") loadSubtitleCues();
+        }
+      } catch (e) {
+        lastProbe = "连不上后端 app.py";
+      }
+    }
+
+    // The YouTube page changes videos without playback necessarily starting,
+    // and a cued-but-unplayed player reports no duration -- so the position
+    // report that normally notices a switch never fires. The page says so
+    // outright instead of leaving the panel showing the previous video's
+    // subtitles, which look perfectly plausible and are entirely wrong.
+    window.addEventListener("english-tutor:source-changed", () => {
+      subtitleCues = [];
+      subtitleIsPartial = false;
+      currentCueIndex = -1;
+      currentItemId = null;
+      subsNote.hidden = true;
+      subsScroll.innerHTML = "";
+      stopExtractPolling();
+      clearLoop();
+      if (currentPage === "subs") loadSubtitleCues();
+    });
+
+    // Position for the highlight comes from the element directly (smooth, no
+    // network); the POST above is throttled separately since it only needs to
+    // keep the backend roughly current for chat/MCP lookups.
+    setInterval(() => {
+      const p = player();
+      if (!p) return;
+      const nowMs = p.currentTimeMs();
+      if (!isNaN(nowMs)) updateCurrentCue(nowMs);
+    }, 250);
+    setInterval(reportPlaybackState, 2000);
+
+    async function refreshContext() {
+      try {
+        const data = await (await fetch(`${API}/api/context`)).json();
+        if (!data.available) {
+          // lastProbe says what the panel itself sees; without it a detection
+          // failure is indistinguishable from "nothing is playing yet".
+          contextBar.textContent = lastProbe
+            ? `⚠ ${lastProbe}`
+            : (data.error || "还没开始播放");
+          return;
+        }
+        const p = data.progress;
+        lastKnownVideoTitle = p.title || lastKnownVideoTitle;
+        contextBar.textContent =
+          `▶ ${p.title} — ${fmt(p.position_ms)}/${fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
+      } catch (e) {
+        contextBar.textContent = "读取播放状态失败（后端 app.py 没启动？）";
+      }
+    }
+
+    refreshContext();
+    setInterval(refreshContext, 4000);
+    loadVocabList();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();
