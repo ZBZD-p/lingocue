@@ -100,7 +100,7 @@ ALLOWED_TOOLS = (
     "mcp__video-subtitles__search_subtitles"
 )
 
-TUTOR_AGENT_NAME = "english-tutor"
+TUTOR_AGENT_NAME = "lingocue"
 TUTOR_SYSTEM_PROMPT = (
     "You are a friendly, precise English tutor helping a Chinese-speaking "
     "learner who is watching a show with English subtitles. You are NOT "
@@ -123,7 +123,7 @@ TUTOR_SYSTEM_PROMPT = (
 )
 AGENTS = {TUTOR_AGENT_NAME: {"description": "英语学习助手", "prompt": TUTOR_SYSTEM_PROMPT}}
 
-app = FastAPI(title="English Tutor")
+app = FastAPI(title="LingoCue")
 
 # The panel script runs on Jellyfin's origin (:8096) but calls this backend
 # on :8420 -- different port means cross-origin, so without this every fetch

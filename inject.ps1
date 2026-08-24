@@ -84,7 +84,7 @@ Write-Host '注入成功（这次用的是按访问地址自动推导的加载�
 # every other device: Windows blocks inbound 8420 by default, so the phone's
 # request for tutor-panel.js just times out. Scoped to private networks so
 # the backend is not offered up on public Wi-Fi.
-$ruleName = 'English Tutor backend (8420)'
+$ruleName = 'LingoCue backend (8420)'
 if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) {
     $ruleArgs = @{
         DisplayName = $ruleName

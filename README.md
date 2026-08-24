@@ -1,4 +1,4 @@
-# English Tutor
+# LingoCue
 
 看剧、看 YouTube 学英语的辅助面板。它不负责播放视频，只负责在播放器**旁边**给你一条侧边栏：跟 AI 聊当前剧情、按时间轴翻字幕卡片、悬停查词、循环某句话、记生词。
 
@@ -42,8 +42,8 @@
 ## 安装
 
 ```bash
-git clone https://github.com/ZBZD-p/english-tutor.git
-cd english-tutor
+git clone https://github.com/ZBZD-p/lingocue.git
+cd lingocue
 pip install -r requirements.txt
 ```
 
