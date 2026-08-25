@@ -61,11 +61,6 @@ def reload_config() -> None:
     _config = None
 
 
-def available() -> bool:
-    cfg = config()
-    return bool(cfg and cfg.get("api_key"))
-
-
 # tutor_tools.TOOLS already pairs each function with its JSON-schema
 # parameters; this just wraps that into the shape an OpenAI-compatible
 # `tools` request field expects, with the full docstring (not just its first

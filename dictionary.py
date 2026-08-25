@@ -93,10 +93,15 @@ def define(word: str) -> dict | None:
 
     if not row:
         return None
+    # ECDICT's source CSV can't hold real newlines inside a field, so
+    # multi-sense entries join them with a literal "\n" -- unescape it here
+    # so the frontend's `white-space: pre-line` renders actual line breaks
+    # instead of the two visible characters.
+    translation = (row[2] or "").replace("\\n", "\n")
     return {
         "word": row[0],
         "phonetic": row[1] or "",
-        "translation": row[2] or "",
+        "translation": translation,
         "queried": word,
         "inflected": bool(via),
     }

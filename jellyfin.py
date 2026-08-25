@@ -22,10 +22,6 @@ from pathlib import Path
 CONFIG_FILE = Path(__file__).resolve().parent / "jellyfin_config.json"
 
 _config = None
-# Item ids are stable for the lifetime of a library entry, so a path lookup
-# only ever needs to happen once per episode -- the panel reports the same
-# id on every position update while an episode plays.
-_path_cache: dict[str, str] = {}
 
 
 def config() -> dict:
@@ -74,24 +70,3 @@ def now_playing() -> dict | None:
     return None
 
 
-def item_path(item_id: str) -> str:
-    """Absolute path on disk for a Jellyfin item id.
-
-    Queried through /Items?ids=... rather than /Items/{id} because the
-    latter wants a user context, while the ids filter works with a plain
-    API key.
-    """
-    cached = _path_cache.get(item_id)
-    if cached:
-        return cached
-
-    data = _get("/Items", {"ids": item_id, "recursive": "true", "fields": "Path"})
-    items = data.get("Items") or []
-    if not items:
-        raise LookupError(f"Jellyfin 里找不到这个条目：{item_id}")
-    path = items[0].get("Path")
-    if not path:
-        raise LookupError(f"Jellyfin 没有返回文件路径：{item_id}")
-
-    _path_cache[item_id] = path
-    return path

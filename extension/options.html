@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>LingoCue 设置</title>
+<style>
+  body {
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #0b0d12;
+    color: #eef0f6;
+    padding: 20px;
+    max-width: 420px;
+  }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  label { display: block; font-size: 12px; color: #99a2b8; margin-bottom: 6px; }
+  input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.05);
+    color: inherit;
+    font: inherit;
+  }
+  button {
+    margin-top: 10px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: linear-gradient(135deg, #7c93ff, #b18aff);
+    color: #0b0d12;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .status { font-size: 12px; color: #99a2b8; margin-top: 10px; min-height: 1.4em; }
+  .status.error { color: #ff8a8a; }
+  .hint { font-size: 12px; color: #6c7488; margin-top: 14px; line-height: 1.7; }
+</style>
+</head>
+<body>
+  <h1>LingoCue 后端地址</h1>
+  <label for="base">运行 <code>python app.py</code> 那台电脑的地址（本机就用默认值）</label>
+  <input id="base" type="text" placeholder="http://127.0.0.1:8420" />
+  <button id="save">保存</button>
+  <div class="status" id="status"></div>
+  <div class="hint">
+    如果后端跑在别的设备上（比如同一局域网的另一台电脑），把这里改成那台电脑的局域网地址，
+    比如 <code>http://192.168.1.5:8420</code>。保存时浏览器可能会弹出一次权限确认，同意就行。
+  </div>
+</body>
+<script src="options.js"></script>
+</html>

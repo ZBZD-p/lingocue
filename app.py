@@ -69,7 +69,6 @@ DEEPSEEK_CONFIG_FILE = ROOT / "deepseek_config.json"
 sys.path.insert(0, str(ROOT))
 import deepseek_chat  # noqa: E402
 import dictionary  # noqa: E402
-import extract_subs  # noqa: E402
 import jellyfin  # noqa: E402
 import playback  # noqa: E402
 import subs_now  # noqa: E402
@@ -137,7 +136,11 @@ app = FastAPI(title="LingoCue")
 # the permissiveness stays inside the LAN.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://[^/]+:8096",
+    # Also allows the Chrome extension that injects the panel straight into
+    # youtube.com's own page -- that page's origin is fixed (unlike
+    # Jellyfin's LAN-address-dependent one above), so it's a plain literal
+    # rather than folded into the regex.
+    allow_origin_regex=r"https?://[^/]+:8096|https://www\.youtube\.com",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -192,12 +195,12 @@ class PlaybackState(BaseModel):
     source: str | None = None
 
 
-class YouTubeUrl(BaseModel):
+class YouTubeWatch(BaseModel):
+    # Read straight off the youtube.com page by the extension's content
+    # script, so there's no yt-dlp probe round trip to look them up.
+    id: str
+    title: str
     url: str
-
-
-class YouTubeSelect(BaseModel):
-    path: str
 
 
 def load_vocab() -> list[dict]:
@@ -215,60 +218,19 @@ def index():
     return FileResponse(ROOT / "static" / "standalone.html")
 
 
-@app.get("/youtube")
-def youtube_page():
-    """Player and panel side by side, the same arrangement the injected panel
-    gets inside Jellyfin -- except the player here is YouTube's own embed, so
-    nothing has to be downloaded to watch it."""
-    return FileResponse(ROOT / "static" / "youtube.html")
-
-
-@app.get("/api/youtube/list")
-def youtube_list():
-    return youtube.list_videos()
-
-
-@app.get("/api/youtube/search")
-def youtube_search(q: str, limit: int = 10):
-    """Keyword search so the panel can find a video without a round trip
-    through youtube.com to copy a link back in. Sync for the same reason
-    youtube_add is: a network call yt-dlp makes on the threadpool, not the
-    event loop."""
-    q = q.strip()
-    if not q:
-        return []
-    try:
-        return youtube.search(q, limit=limit)
-    except Exception as e:
-        raise HTTPException(400, str(e))
-
-
-@app.post("/api/youtube/add")
-def youtube_add(body: YouTubeUrl):
-    """Fetch a video's subtitles (never the video) and register it.
-
-    Runs yt-dlp twice over the network, so it takes a few seconds. Declared
-    sync on purpose: FastAPI hands it to the threadpool, which keeps the
-    event loop free without this having to become async all the way down.
+@app.post("/api/youtube/watch")
+def youtube_watch(body: YouTubeWatch):
+    """Registers the cache placeholder for the video the youtube.com
+    extension's content script says is playing (or reuses it if this video
+    was seen before) and makes it the current one, in a single call.
     """
     try:
-        return youtube.add(body.url.strip())
+        info = youtube.ensure_current(body.id, body.title, body.url)
     except Exception as e:
         raise HTTPException(400, str(e))
-
-
-@app.post("/api/youtube/select")
-def youtube_select(body: YouTubeSelect):
-    """Make one of the cached videos the current one, before playback starts.
-
-    Without this the subtitle page would have nothing to show until the first
-    position report lands a couple of seconds in.
-    """
-    path = Path(body.path)
-    if not youtube.is_cached_path(path) or not path.exists():
-        raise HTTPException(400, "不是已添加的 YouTube 视频")
+    path = Path(info["path"])
     playback.write(str(path), 0, 0, "paused")
-    return {"ok": True, "path": str(path), "video_id": youtube.video_id_for(path)}
+    return {"ok": True, "path": str(path), "video_id": body.id}
 
 
 @app.get("/api/vocab")

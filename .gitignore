@@ -3,7 +3,6 @@
 config.json
 jellyfin_config.json
 deepseek_config.json
-kimi_config.json
 
 # 启动时由 app.py 按本机路径重新生成（write_mcp_config），提交了也没用。
 mcp_config.json

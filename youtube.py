@@ -33,7 +33,6 @@ import concurrent.futures
 import html
 import json
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -274,269 +273,6 @@ def _srt_clock(ms: int) -> str:
     return f"{h:02d}:{m:02d}:{rem // 1000:02d},{rem % 1000:03d}"
 
 
-# ---- AI punctuation restoration ------------------------------------------
-#
-# is_unpunctuated tracks are left as raw per-line cues by resegment_sentences
-# because there is no punctuation to cut on -- see that function's docstring.
-# Those raw cues are already reasonable (source line breaks sit near phrase
-# length), but a real sentence is better, and turning a word stream with no
-# punctuation into one with correctly-placed punctuation is a task language
-# models are good at. This runs as a *second*, optional background pass
-# rather than inside the main fetch: measured on real chunks, a Haiku call
-# over ~220-300 words takes 60-100s (see PUNCTUATE_CHUNK_WORDS below), and a
-# ~20-minute video can carry 3000+ words -- tens of minutes total. Making the
-# subtitle tab wait on that would trade an already-decent fallback for a
-# blank progress screen for most of that time. Instead the fast path ships
-# unchanged, and this quietly upgrades the cached .srt in place once it's
-# done; the existing no-cache polling picks up the new content the same way
-# it already does for progressive MKV extraction.
-_claude_bin_cache: str | None = ""  # "" = not looked up yet, None = not found
-
-
-def _claude_bin() -> str | None:
-    """Resolved lazily and cached: most videos are already punctuated and
-    never need this, so most sessions should never pay for the lookup."""
-    global _claude_bin_cache
-    if _claude_bin_cache == "":
-        _claude_bin_cache = shutil.which("claude")
-    return _claude_bin_cache
-
-
-# claude -p with no tool access -- this is a pure text transformation, not an
-# agent turn, so nothing here should be able to touch the filesystem or the
-# network regardless of what the input text says.
-_PUNCTUATE_DISALLOWED_TOOLS = (
-    "Bash Edit Write NotebookEdit Agent WebSearch WebFetch Read Grep Glob"
-)
-
-# A prose-style "add punctuation to this text" is standard, fast generation.
-# An earlier version asked for one word per line to make validation trivial;
-# that alone made a 220-word chunk take 60-100s for reasons that didn't show
-# up in a subprocess-overhead baseline (~13s), so it's something about that
-# output shape specifically, not model or flag choice -- switched to prose
-# and pay the small cost of tokenizing the response instead.
-# Diagnosed on real output, not guessed: an earlier version of this prompt
-# forbade merging words but didn't say how, and Haiku's idea of "not merging"
-# still hyphenates a compound modifier ("last minute" -> "last-minute") and
-# joins a repeated word with an em dash ("this this" -> "this—this") --
-# both standard, correct English style, and both collapse two
-# whitespace-separated input tokens into one output token. Validation splits
-# on whitespace, so every one of those was scored as a dropped word and the
-# whole chunk was rejected -- on one real failing chunk, both of its two
-# actual discrepancies turned out to be exactly this, not lost content.
-# Spelling out the specific forbidden move (not just "don't merge") is what
-# fixes it, since the model wasn't disobeying "don't merge" -- it didn't
-# think a hyphen counted.
-_PUNCTUATE_SYSTEM_PROMPT = (
-    "Non-interactive pipeline stage. Input is English speech with no "
-    "punctuation, words space-separated. Output the exact same words in the "
-    "exact same order, space-separated on one line, with sentence-ending "
-    "punctuation and commas inserted where a fluent reader would place them, "
-    "attached to the end of the relevant word. Never add/remove/reorder/"
-    "merge/split any word, never change spelling or case. In particular: "
-    "never join two of the input words together with a hyphen, en dash, or "
-    "em dash, even where standard style would (a compound modifier like "
-    "'last minute decision' must stay three separate space-separated words, "
-    "not 'last-minute decision'; a repeated word like 'this this' stays two "
-    "words, not 'this—this') -- every output word must be separated from its "
-    "neighbors by whitespace and whitespace alone. Output only that one line "
-    "-- no commentary, no heading, no code fence, no questions."
-)
-
-# Calibrated against real timing, not guessed: 220 words measured at 60-100s
-# depending on phrasing. Chunking exists for two reasons beyond raw latency --
-# it bounds how much of the video a single bad or hallucinated response can
-# damage (rejected chunks below fall back to their original unpunctuated
-# words rather than corrupting anything), and it lets progress be reported
-# instead of one opaque multi-minute call.
-PUNCTUATE_CHUNK_WORDS = 260
-# Generous relative to the ~60-100s measured: covers a slow chunk without
-# mistaking "still working" for "stuck".
-PUNCTUATE_TIMEOUT_S = 150
-
-
-def _chunk_cues(cues, target_words):
-    """Group whole source cues into chunks of about `target_words` words
-    each. Cuts always fall on a cue boundary, never mid-cue -- a YouTube
-    caption line is only 7-10 words, so this is barely coarser than cutting
-    by word count, and what it buys back matters: when a chunk fails
-    validation (see punctuate_with_ai), the fallback is that chunk's own
-    original cues, completely unmodified. That fallback is only as good as
-    the source line breaks it's declining to replace *because* nothing here
-    ever flattens a failed chunk into a word stream that would need to be
-    re-cut by a weaker heuristic instead.
-    """
-    chunks: list[list[tuple[int, int, str]]] = []
-    current: list[tuple[int, int, str]] = []
-    current_words = 0
-    for cue in cues:
-        n = len(cue[2].split())
-        if current and current_words + n > target_words:
-            chunks.append(current)
-            current, current_words = [], 0
-        current.append(cue)
-        current_words += n
-    if current:
-        chunks.append(current)
-    return chunks
-
-
-# Built from an explicit character list via re.escape rather than a literal
-# character-class string: that string has to hold ', ", and ] all at once,
-# and hand-escaping all three inside a regex character class is exactly the
-# kind of thing that's easy to get subtly wrong (an earlier version did).
-_PUNCTUATE_TRAILING_CHARS = list('.!?,;:"\')]')
-_PUNCTUATE_STRIP_RE = re.compile(
-    "[" + "".join(re.escape(c) for c in _PUNCTUATE_TRAILING_CHARS) + "]+$")
-
-
-def _punctuate_chunk(words):
-    """One chunk through the model. Returns None on any failure -- a timeout,
-    a crash, or (this is the important one) the response not being a
-    word-for-word match for the input -- so the caller can fall back to
-    leaving that stretch unpunctuated instead of trusting a response that may
-    have silently dropped, added, or reworded something."""
-    claude_bin = _claude_bin()
-    if not claude_bin:
-        return None
-
-    tokens = [w[2] for w in words]
-    try:
-        result = subprocess.run(
-            [claude_bin, "-p", "--model", "haiku", "--effort", "low",
-             "--append-system-prompt", _PUNCTUATE_SYSTEM_PROMPT,
-             "--disallowedTools", _PUNCTUATE_DISALLOWED_TOOLS],
-            input=" ".join(tokens),
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=PUNCTUATE_TIMEOUT_S,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-
-    out_tokens = result.stdout.split()
-    if len(out_tokens) != len(tokens):
-        return None
-    # Case-insensitive, and only the punctuation this pass is allowed to add
-    # is stripped before comparing -- so a response that changed a word,
-    # merged two words together, or reordered anything fails validation
-    # rather than being silently trusted.
-    for original, produced in zip(tokens, out_tokens):
-        if original.lower() != _PUNCTUATE_STRIP_RE.sub("", produced).lower():
-            return None
-
-    return [(s, e, produced) for (s, e, _), produced in zip(words, out_tokens)]
-
-
-# How many `claude -p` subprocesses run at once. Each chunk is independent --
-# no shared state, no filesystem writes inside _punctuate_chunk -- so nothing
-# about correctness requires doing them one at a time; the first version did
-# purely because a sequential loop was simpler to write, and it cost the
-# obvious price: a 13-chunk video took ~15 minutes wall-clock, all of it
-# waiting rather than working. Kept modest rather than "as many as there are
-# chunks" since concurrent-request behavior under this account/session
-# wasn't something to assume -- 4 is a starting point, not a measured ceiling.
-PUNCTUATE_MAX_WORKERS = 4
-
-
-def punctuate_with_ai(cues, on_chunk=None):
-    """Restore punctuation to an unpunctuated track via the model, one chunk
-    of whole cues at a time, chunks in flight concurrently. Returns a list of
-    (start_ms, end_ms, text) cues ready to write out directly, or None if the
-    model is unavailable or every chunk failed -- in which case the caller
-    keeps what it already has rather than replacing a working file with an
-    empty one.
-
-    A chunk that fails validation contributes its own original cues,
-    untouched, rather than aborting the whole video or -- the bug an earlier
-    version had -- being flattened to words and recut by the same weak
-    pause/length heuristic that produces long, awkward cards when there's no
-    real punctuation to cut on. Measured on a real run: with two AI jobs
-    competing for the same account at once, several chunks failed validation
-    (plausibly just contention, not a correctness problem in the validation
-    itself), and recutting their fallback words that way produced 40+ second
-    cards -- worse than the original per-line cues the whole feature exists
-    to improve on. Falling back to those original cues unmodified instead
-    means a failed chunk can only ever leave that stretch exactly as good as
-    it already was, never worse.
-    """
-    if not _claude_bin() or not cues:
-        return None
-
-    chunks = _chunk_cues(cues, PUNCTUATE_CHUNK_WORDS)
-    chunk_words = [words_from_cues(c) for c in chunks]
-    results: list[list[tuple[int, int, str]] | None] = [None] * len(chunks)
-    completed = 0
-
-    # Workers submitted up front and collected as they land, not chunk by
-    # chunk: reassembly below re-sorts by original index anyway, so nothing
-    # depends on completion order -- only on every submitted chunk finishing
-    # before the reassembly reads its slot.
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=min(PUNCTUATE_MAX_WORKERS, len(chunks))
-    ) as pool:
-        future_to_index = {pool.submit(_punctuate_chunk, w): i for i, w in enumerate(chunk_words)}
-        for future in concurrent.futures.as_completed(future_to_index):
-            i = future_to_index[future]
-            try:
-                results[i] = future.result()
-            except Exception:
-                results[i] = None
-            completed += 1
-            if on_chunk:
-                on_chunk(completed, len(chunks))
-
-    out: list[tuple[int, int, str]] = []
-    any_succeeded = False
-    for original_cues, punctuated_words in zip(chunks, results):
-        if punctuated_words is not None:
-            out.extend(cut_words_into_cues(punctuated_words))
-            any_succeeded = True
-        else:
-            out.extend(original_cues)
-    return out if any_succeeded else None
-
-
-def polish_auto_captions_in_background(base: Path) -> None:
-    """Best-effort second pass: if the .srt this video ended up with has no
-    real punctuation, try to restore it and recut into sentences, then swap
-    it in. Never raises -- this runs fire-and-forget after the video is
-    already marked ready, and a failure here should leave the already-working
-    subtitle file exactly as it was, not break it.
-    """
-    try:
-        srt = _english_subtitle(base)
-        if not srt:
-            return
-        cues = subs_now.parse_cues(srt)
-        if not is_unpunctuated(cues):
-            return
-
-        def report(done, total):
-            _set_stage(base, "!AI 正在优化字幕断句 (%d/%d)" % (done, total))
-            # The leading "!" above is subtitle_status's error marker, reused
-            # here as a lightweight "still working" note rather than adding a
-            # third state -- see subtitle_status. It is overwritten as soon
-            # as this finishes, one way or the other.
-
-        cues = punctuate_with_ai(cues, on_chunk=report)
-        if cues is None:
-            _set_stage(base, None)
-            return
-
-        # punctuate_with_ai already returns finished (start, end, text) cues
-        # -- successful chunks cut into sentences, failed ones passed through
-        # as their own original cues -- so there's nothing left to recut here.
-        tmp = srt.with_suffix(".polish.tmp")
-        write_srt(cues, tmp)
-        os.replace(tmp, srt)  # atomic: a concurrent reader sees old or new, never partial
-    except Exception:
-        pass
-    finally:
-        _set_stage(base, None)
-
-
 def write_srt(cues: list[tuple[int, int, str]], path: Path) -> None:
     path.write_text(
         "".join(
@@ -613,121 +349,6 @@ def safe_base_name(title: str, video_id: str) -> str:
     # 255-char limit, and don't let a trailing space sneak back in.
     title = title[:150].strip() or "video"
     return f"{title} [{video_id}]"
-
-
-def search(query: str, limit: int = 10) -> list[dict]:
-    """Search YouTube by keyword, without an API key.
-
-    yt-dlp's ytsearch: pseudo-URL scrapes YouTube's own search results, so
-    this needs nothing beyond the yt-dlp dependency already required for
-    everything else here -- no Google Cloud project, no separate quota to
-    manage, no second credential for the user to go set up.
-
-    --flat-playlist is what keeps this fast: a normal search extracts each
-    result video individually (one full yt-dlp pass per result), while flat
-    mode reads only what the search results page itself already carries.
-    That's enough for a picker -- id, title, channel, duration, view count --
-    just not a thumbnail URL, which flat mode leaves blank. Built instead
-    from the video id via YouTube's own stable, unauthenticated thumbnail
-    CDN convention, rather than paying for a second extraction pass per
-    result just to get back a URL this predictable.
-    """
-    out = _run([
-        "--flat-playlist", "--skip-download", "--no-warnings", "--dump-json",
-        f"ytsearch{limit}:{query}",
-    ])
-    results = []
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        video_id = d.get("id")
-        if not video_id:
-            continue
-        results.append({
-            "id": video_id,
-            "title": d.get("title") or "(无标题)",
-            "channel": d.get("channel") or d.get("uploader") or "",
-            "duration": d.get("duration") or 0,
-            "view_count": d.get("view_count") or 0,
-            "thumbnail": f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
-        })
-    return results
-
-
-# A homepage-like feed without a real account: YouTube's actual algorithm
-# needs one, and this project has no access to the user's. The old logged-out
-# Trending feed (a plausible substitute) is gone -- yt-dlp confirms the URL
-# now just redirects to the homepage -- so this rolls its own out of the same
-# search() this module already has, seeded with topics picked for what this
-# project actually needs (spoken, likely-captioned English), not general
-# popularity. That bias is deliberate: the hit-rate numbers measured earlier
-# (TED 6/6, English lessons 2/6, podcasts 1/6, gaming 0/6) are exactly why a
-# real "trending" feed would be a worse fit here, dominated by music videos
-# and gaming clips with poor or no caption coverage.
-DISCOVER_TOPICS = [
-    "TED talk", "documentary explained", "news explained",
-    "podcast interview", "science explained", "history explained",
-    "life advice talk", "interesting facts", "how things work",
-    "true crime story", "psychology explained", "tech review",
-]
-
-# Generous relative to a single search() call (~2-4s measured): covers a slow
-# one without a stuck yt-dlp process hanging the whole feed, since this now
-# runs automatically on page load rather than only after a deliberate search.
-DISCOVER_TOPIC_TIMEOUT_S = 15
-
-
-def discover(limit: int = 12) -> list[dict]:
-    """A shuffled grid of videos across a random subset of topics, searched
-    in parallel. "Refresh" is just calling this again -- a new random subset
-    of topics (and YouTube's own search ranking, which isn't static either)
-    is what makes each call turn up a different batch, without this having
-    to track any state about what was shown before.
-    """
-    chosen = random.sample(DISCOVER_TOPICS, k=min(4, len(DISCOVER_TOPICS)))
-    per_topic = limit // len(chosen) + 2  # headroom: dedup below can only shrink this
-
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(chosen)) as pool:
-        futures = [pool.submit(search, topic, per_topic) for topic in chosen]
-        for f in futures:
-            try:
-                # One topic's search failing or hanging shouldn't blank the
-                # whole feed -- the other topics still fill it in.
-                results.extend(f.result(timeout=DISCOVER_TOPIC_TIMEOUT_S))
-            except Exception:
-                pass
-
-    random.shuffle(results)
-    seen = set()
-    deduped = []
-    for r in results:
-        if r["id"] in seen:
-            continue
-        seen.add(r["id"])
-        deduped.append(r)
-    return deduped[:limit]
-
-
-def probe(url: str) -> dict:
-    """Title / id / duration, without writing anything."""
-    out = _run(["--skip-download", "--no-warnings",
-                "--print", "%(id)s", "--print", "%(title)s", "--print", "%(duration)s",
-                url])
-    lines = [l.strip() for l in out.splitlines() if l.strip()]
-    if len(lines) < 2:
-        raise RuntimeError(f"读不出视频信息：{out.strip()[:300]}")
-    video_id, title = lines[0], lines[1]
-    try:
-        duration = float(lines[2])
-    except (IndexError, ValueError):
-        duration = 0.0
-    return {"id": video_id, "title": title, "duration": duration}
 
 
 def _siblings(base: Path, suffix: str = "") -> list[Path]:
@@ -852,17 +473,17 @@ def _fetch_subtitles(base: Path, url: str) -> None:
         _set_stage(base, "!" + (str(e) or repr(e))[-300:])
 
 
-def add(url: str) -> dict:
-    """Register a video and start fetching its subtitles in the background.
+def _register(video_id: str, title: str, duration: float, url: str) -> dict:
+    """Registers a video and starts fetching its subtitles in the
+    background, given an id/title the caller already knows (e.g. read
+    straight off a youtube.com page) -- no yt-dlp probe round trip needed.
 
-    Never downloads media. Returns as soon as the title is known -- roughly a
-    quarter of the total work -- because the remaining ~12s of subtitle round
-    trips is time the video could already be playing. Callers poll
-    subtitle_status() (or just /api/subtitles) for the rest.
+    Never downloads media. Returns as soon as the placeholder is on disk --
+    the actual subtitle round trips continue in the background thread.
+    Callers poll subtitle_status() (or just /api/subtitles) for the rest.
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    info = probe(url)
-    base = CACHE_DIR / safe_base_name(info["title"], info["id"])
+    base = CACHE_DIR / safe_base_name(title, video_id)
 
     # Clear this video's existing subtitle files first. Without it, adding a
     # video a second time finds the *previous* run's .srt sitting there, takes
@@ -878,9 +499,9 @@ def add(url: str) -> dict:
     # immediately. subtitle_kind is filled in by the thread once it knows.
     base.with_name(f"{base.name}.tutor.json").write_text(
         json.dumps({
-            "id": info["id"],
-            "title": info["title"],
-            "duration": info["duration"],
+            "id": video_id,
+            "title": title,
+            "duration": duration,
         }, ensure_ascii=False),
         encoding="utf-8")
 
@@ -888,50 +509,29 @@ def add(url: str) -> dict:
     threading.Thread(target=_fetch_subtitles, args=(base, url), daemon=True).start()
 
     return {
-        "id": info["id"],
-        "title": info["title"],
-        "duration": info["duration"],
+        "id": video_id,
+        "title": title,
+        "duration": duration,
         "path": str(placeholder),
         "subtitle_kind": None,  # not known until the fetch finishes
     }
 
 
-def list_videos() -> list[dict]:
-    """Everything added so far, newest first."""
-    if not CACHE_DIR.exists():
-        return []
-    items = []
-    for strm in CACHE_DIR.glob("*.strm"):
-        base = strm.with_suffix("")
-        title, duration, kind = base.name, 0.0, None
-        marker = base.with_name(f"{base.name}.tutor.json")
-        if marker.exists():
-            try:
-                meta = json.loads(marker.read_text(encoding="utf-8"))
-                title = meta.get("title") or title
-                duration = float(meta.get("duration") or 0)
-                kind = meta.get("subtitle_kind", kind)
-            except (json.JSONDecodeError, OSError, ValueError):
-                pass  # the filename still carries a usable title
-        items.append({
-            "id": video_id_for(strm),
-            "title": title,
-            "duration": duration,
-            "path": str(strm),
-            "subtitle_kind": kind,
-            "has_secondary": any(
-                f.name[len(base.name) + 1:].lower().startswith("zh")
-                for f in _siblings(base, ".srt")
-            ),
-        })
-    items.sort(key=lambda i: Path(i["path"]).stat().st_mtime, reverse=True)
-    return items
+def ensure_current(video_id: str, title: str, url: str) -> dict:
+    """Like _register(), but a no-op (beyond returning the existing path) if
+    this video's subtitles are already cached.
 
-
-def video_id_for(path: Path) -> str | None:
-    """The YouTube id, read back out of the `[id]` suffix in the filename."""
-    match = re.search(r"\[([A-Za-z0-9_-]{6,})\]$", path.with_suffix("").name)
-    return match.group(1) if match else None
+    _register() always wipes and re-fetches, meant for an explicit one-time
+    "add" action. This is for a caller that reports the same video
+    repeatedly just by playing it (the youtube.com extension, on every SPA
+    navigation to a video it may well have seen before) -- re-registering on
+    every one of those would nuke a perfectly good cached .srt and kick off a
+    pointless yt-dlp round trip each time.
+    """
+    base = CACHE_DIR / safe_base_name(title, video_id)
+    if _english_subtitle(base):
+        return {"id": video_id, "path": str(base.with_name(f"{base.name}.strm"))}
+    return _register(video_id, title, 0, url)
 
 
 def is_cached_path(path: Path) -> bool:

@@ -11,8 +11,6 @@ to add). Splitting the logic out once, so both paths look up "what's playing"
 the same way and can't quietly drift apart from each other.
 """
 
-from pathlib import Path
-
 import playback
 import subs_now
 

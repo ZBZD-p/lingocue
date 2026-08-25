@@ -16,7 +16,6 @@ in directly.
 import os
 import re
 import sys
-import tempfile
 import threading
 from pathlib import Path
 
@@ -221,33 +220,6 @@ def resolve_subtitle(video: Path, lang: str, out_dir: Path, on_progress=None) ->
         track = pick_subtitle_track(video, lang)
         extract_subs.extract_embedded_track(video, track["index"], ffmpeg, cached)
         return cached
-
-
-def extract_window_cues(video: Path, lang: str, start_ms: int,
-                        window_seconds: float) -> list[tuple[int, int, str]]:
-    """Cues for just a time window, extracted on demand in ~1-2s.
-
-    This is the fast path used while the full extraction (~84s on a large 4K
-    episode) is still running in the background, so the subtitle page can
-    show the lines around the current playback position almost immediately
-    instead of waiting for the whole file to be demuxed. Timestamps come
-    back as real absolute positions, so these cues can be swapped for the
-    complete set later without anything shifting.
-
-    The window file goes to the system temp dir rather than next to the
-    video: it's a transient partial result, not something worth leaving in
-    the user's media folder alongside the real cached .srt.
-    """
-    ffmpeg = extract_subs.find_tool("ffmpeg")
-    track = pick_subtitle_track(video, lang)
-    start_seconds = max(0.0, start_ms / 1000)
-    out_path = Path(tempfile.gettempdir()) / f"{video.stem}.window.srt"
-    with _lock_for(f"window:{video}"):
-        extract_subs.extract_embedded_track(
-            video, track["index"], ffmpeg, out_path,
-            start_seconds=start_seconds, duration_seconds=window_seconds,
-        )
-        return parse_cues(out_path)
 
 
 def get_recent_window(video: Path, lang: str, out_dir: Path, position_ms: int,
