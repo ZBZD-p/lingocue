@@ -217,10 +217,13 @@
           <div class="subs-scroll" id="subsScroll"></div>
           <div class="subs-empty" id="subsEmpty">开始播放视频后，这里会显示字幕卡片。</div>
           <div class="subs-float-bar">
-            <div class="loop-pill" id="loopPill" hidden>
-              <span class="loop-pill-icon">${icon("repeat")}</span>
-              <span id="loopPillText"></span>
-              <button class="loop-pill-stop" id="loopStopBtn" title="停止循环" aria-label="停止循环">${icon("close")}</button>
+            <div class="loop-pill-wrap" id="loopPillWrap" hidden>
+              <div class="loop-pill" id="loopPill">
+                <span class="loop-pill-icon">${icon("repeat")}</span>
+                <span id="loopPillText"></span>
+                <button class="loop-pill-stop" id="loopStopBtn" title="停止循环" aria-label="停止循环">${icon("close")}</button>
+              </div>
+              <div class="loop-hint">点其他句子可以扩大/缩小循环范围</div>
             </div>
           </div>
         </div>
@@ -384,7 +387,7 @@
     const subsScroll = $("subsScroll");
     const subsEmpty = $("subsEmpty");
     const subsNote = $("subsNote");
-    const loopPill = $("loopPill");
+    const loopPillWrap = $("loopPillWrap");
     const loopPillText = $("loopPillText");
     const loopStopBtn = $("loopStopBtn");
     const vocabList = $("vocabList");
@@ -1209,12 +1212,18 @@
         card.appendChild(actions);
 
         // Clicking a card seeks the actual player -- the panel is inside
-        // Jellyfin's page, so it can just drive the <video> element.
+        // Jellyfin's page, so it can just drive the <video> element. With a
+        // loop already running, though, a plain click on ANY line is the
+        // only way left to pick the loop's other end: only the current line
+        // still gets its own dedicated 循环 button (see .sub-actions above),
+        // so that button alone can start a single-line loop but can never
+        // reach a second, not-currently-playing line to widen it into a
+        // range. toggleLoopAt already knows how to widen/narrow/turn off
+        // from here -- see its own docstring -- this just routes a click on
+        // any card into that instead of the ordinary seek-and-exit once a
+        // loop exists to extend.
         card.addEventListener("click", () => {
-          // Seeking to a line outside the loop is a deliberate exit; without
-          // this the next tick would drag playback straight back and the
-          // click would look broken.
-          if (loopActive() && (i < loopStartIdx || i > loopEndIdx)) clearLoop();
+          if (loopActive()) { toggleLoopAt(i); return; }
           const p = player();
           if (p) p.seekMs(cue.start_ms);
           lastUserScrollAt = 0;
@@ -1558,7 +1567,7 @@
         el.classList.remove("in-loop", "loop-edge");
       });
       const on = loopActive();
-      loopPill.hidden = !on;
+      loopPillWrap.hidden = !on;
       if (!on) return;
 
       for (let i = loopStartIdx; i <= loopEndIdx; i++) {

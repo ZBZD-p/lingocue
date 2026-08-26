@@ -635,14 +635,30 @@ button:focus-visible {
 .sub-ask-btn:hover, .sub-loop-btn:hover, .sub-read-btn:hover { background: transparent; color: var(--accent); }
 .sub-card.current.in-loop .sub-loop-btn { color: var(--accent); }
 
+/* With a loop running, every other line in range still has none of its own
+   chrome (no card fill, no border in this direction's language) -- so the
+   only thing marking "this line is part of the loop" is brighter text plus
+   a thin accent rule down the left edge, drawn continuously across the
+   whole range with a stronger tick at the two lines that bound it. Without
+   this there was no way to tell which lines a running A-B loop actually
+   covered, only the pill's timestamp text. */
+.sub-card.in-loop {
+  color: var(--muted-2);
+  padding-left: 12px;
+  box-shadow: inset 2px 0 0 var(--accent-soft-strong);
+}
+.sub-card.in-loop.loop-edge { box-shadow: inset 3px 0 0 var(--accent); }
+.sub-card.current.in-loop { padding-left: 0; box-shadow: none; }
+
 .subs-float-bar {
   /* Normal flow, not an overlay: it sits as the last item in the subtitle
      column, right above the shared composer below it -- no absolute
      positioning needed to read as "floating over the input". */
   padding: 0 22px 14px;
 }
-:host([theme]) .subs-float-bar:has(.loop-pill[hidden]) { padding: 0; }
+:host([theme]) .subs-float-bar:has(.loop-pill-wrap[hidden]) { padding: 0; }
 
+.loop-pill-wrap { display: flex; flex-direction: column; gap: 7px; align-items: flex-start; }
 .loop-pill {
   display: inline-flex;
   align-items: center;
@@ -658,7 +674,6 @@ button:focus-visible {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.loop-pill[hidden] { display: none; }
 .loop-pill-icon { display: flex; }
 .loop-pill-stop {
   width: 24px;
@@ -670,6 +685,12 @@ button:focus-visible {
   color: var(--accent);
 }
 .loop-pill-stop:hover { filter: brightness(1.1); background: var(--accent-soft-strong); }
+/* The only place this app tells you a plain click on another line does
+   something different than usual while a loop is running -- not a tooltip,
+   since a control that changes behavior with no visible sign of it is the
+   kind of thing a tooltip only explains after the fact, once already
+   confused. */
+.loop-hint { font-size: 11px; color: var(--muted); padding-left: 4px; }
 
 .word-popup {
   position: fixed;
