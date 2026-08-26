@@ -36,6 +36,7 @@ import re
 import shutil
 import subprocess
 import threading
+import urllib.request
 from pathlib import Path
 
 import app_config
@@ -614,15 +615,68 @@ def _yt_dlp() -> str:
     return found
 
 
-def _run(args: list[str]) -> str:
-    result = subprocess.run(
-        [_yt_dlp(), *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
+def _run(args: list[str], on_line=None) -> str:
+    """Run yt-dlp to completion and return its stdout.
+
+    With `on_line`, output is streamed line by line as it arrives instead of
+    being collected at the end, so a caller can narrate what's happening --
+    see _friendly_stage for why that's worth the extra plumbing.
+    """
+    if on_line is None:
+        result = subprocess.run(
+            [_yt_dlp(), *args],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(detail[-600:] or f"yt-dlp 退出码 {result.returncode}")
+        return result.stdout
+
+    # stderr folded into stdout so the two can't interleave into a garbled
+    # error message, and --newline so progress lines arrive as lines rather
+    # than carriage-return redraws that would never terminate a read.
+    proc = subprocess.Popen(
+        [_yt_dlp(), *args, "--newline"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(detail[-600:] or f"yt-dlp 退出码 {result.returncode}")
-    return result.stdout
+    lines = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        lines.append(line)
+        on_line(line)
+    if proc.wait() != 0:
+        detail = "\n".join(lines).strip()
+        raise RuntimeError(detail[-600:] or f"yt-dlp 退出码 {proc.returncode}")
+    return "\n".join(lines)
+
+
+# yt-dlp narrates itself on stdout -- "[youtube] <id>: Downloading webpage",
+# "Downloading android vr player API JSON", and so on. Those lines are the
+# only visible structure inside what is otherwise a single opaque ~5s wait,
+# so they get translated into something worth showing rather than left to
+# scroll past in a console nobody is looking at. Matched by substring
+# because the exact wording varies with whichever player client yt-dlp picks
+# on the day, and an unrecognized line simply leaves the last stage standing.
+_YT_STAGE_TEXT = (
+    ("downloading webpage", "正在打开视频页"),
+    ("player api json", "正在解析播放信息"),
+    ("player api", "正在解析播放信息"),
+    ("downloading api json", "正在解析播放信息"),
+    ("downloading m3u8", "正在解析播放信息"),
+    ("downloading subtitles", "正在下载字幕"),
+    ("writing video subtitles", "正在保存字幕"),
+    ("converting subtitles", "正在转换字幕格式"),
+    ("writing video metadata", "正在读取视频信息"),
+)
+
+
+def _friendly_stage(line: str) -> str | None:
+    low = line.lower()
+    for needle, text in _YT_STAGE_TEXT:
+        if needle in low:
+            return text
+    return None
 
 
 def safe_base_name(title: str, video_id: str) -> str:
@@ -669,7 +723,50 @@ def _english_subtitle(base: Path) -> Path | None:
     return None
 
 
-def _fetch_auto_captions(base: Path, url: str) -> Path | None:
+def _info_json(base: Path) -> Path:
+    return base.with_name(f"{base.name}.info.json")
+
+
+def _auto_caption_url(base: Path) -> str | None:
+    """Direct URL of the en-orig auto-caption vtt, read out of the info.json
+    the human-subtitle pass already wrote.
+
+    This exists purely to skip a second yt-dlp run. Asking yt-dlp for auto
+    captions separately means re-doing the entire page extraction -- the
+    expensive part, measured at ~4.7s of the ~5s -- just to arrive at a URL
+    the first pass already had in hand. Measured end to end: 12.6s for the
+    two-run version against 7.2s going straight to the URL.
+    """
+    try:
+        data = json.loads(_info_json(base).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    tracks = (data.get("automatic_captions") or {}).get("en-orig") or []
+    for track in tracks:
+        if track.get("ext") == "vtt" and track.get("url"):
+            return track["url"]
+    return None
+
+
+def _download(url: str, dest: Path, on_progress=None) -> None:
+    """Fetch `url` into `dest`, reporting (bytes_done, bytes_total) as it
+    goes -- total is 0 when the server doesn't say."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=60) as response:
+        total = int(response.headers.get("Content-Length") or 0)
+        done = 0
+        with dest.open("wb") as out:
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                if on_progress:
+                    on_progress(done, total)
+
+
+def _fetch_auto_captions(base: Path, url: str, on_stage=None) -> Path | None:
     """Auto captions, repaired, written out as an ordinary .srt sidecar.
 
     Only an `en-orig` track is requested, and its absence is taken as a
@@ -679,21 +776,51 @@ def _fetch_auto_captions(base: Path, url: str) -> Path | None:
     what is actually being said -- worthless for listening practice, and
     quietly so, which is worse.
     """
-    _run([
-        "--skip-download",
-        "--write-auto-subs",
-        "--sub-langs", "en-orig",
-        # No --convert-subs here on purpose: the per-word timestamps that make
-        # the rolling-caption repair possible only exist in the raw vtt, and
-        # the conversion flattens them away.
-        "--no-warnings",
-        "-o", f"{base}.%(ext)s",
-        url,
-    ])
+    def stage(text):
+        if on_stage:
+            on_stage(text)
 
-    vtt = next(iter(_siblings(base, ".vtt")), None)
+    vtt = None
+    direct = _auto_caption_url(base)
+    if direct:
+        candidate = base.with_name(f"{base.name}.en-orig.vtt")
+
+        def progress(done, total):
+            stage("正在下载自动字幕 %d%%" % (done * 100 // total) if total
+                  else "正在下载自动字幕")
+
+        try:
+            _download(direct, candidate, progress)
+            vtt = candidate
+        except Exception:
+            # A stale or rejected caption URL shouldn't cost the whole
+            # fallback -- drop the partial file and take the slow path.
+            candidate.unlink(missing_ok=True)
+
+    if vtt is None:
+        stage("正在抓自动字幕")
+
+        def narrate(line):
+            text = _friendly_stage(line)
+            if text:
+                stage(text)
+
+        _run([
+            "--skip-download",
+            "--write-auto-subs",
+            "--sub-langs", "en-orig",
+            # No --convert-subs here on purpose: the per-word timestamps that
+            # make the rolling-caption repair possible only exist in the raw
+            # vtt, and the conversion flattens them away.
+            "--no-warnings",
+            "-o", f"{base}.%(ext)s",
+            url,
+        ], on_line=narrate)
+        vtt = next(iter(_siblings(base, ".vtt")), None)
+
     if not vtt:
         return None
+    stage("正在整理字幕")
     try:
         cues = clean_auto_captions(vtt)
     finally:
@@ -717,20 +844,31 @@ def _fetch_subtitles(base: Path, url: str) -> None:
     """
     try:
         _set_stage(base, "正在找人工字幕")
+
+        def narrate(line):
+            text = _friendly_stage(line)
+            if text:
+                _set_stage(base, text)
+
         _run([
             "--skip-download",
             "--write-subs",           # human-written only; the fallback is below
             "--sub-langs", SUB_LANGS,
             "--convert-subs", "srt",  # YouTube serves vtt; srt is what parse_cues expects
+            # Costs nothing measurable on top of the extraction this pass is
+            # already doing, and carries the auto-caption URLs -- which is
+            # what lets the fallback below skip a second extraction entirely.
+            "--write-info-json",
             "--no-warnings",
             "-o", f"{base}.%(ext)s",
             url,
-        ])
+        ], on_line=narrate)
 
         subtitle, kind = _english_subtitle(base), "manual"
         if not subtitle:
             _set_stage(base, "没有人工字幕，正在抓自动字幕")
-            subtitle = _fetch_auto_captions(base, url)
+            subtitle = _fetch_auto_captions(
+                base, url, on_stage=lambda text: _set_stage(base, text))
             kind = "auto"
 
         if not subtitle:
@@ -757,6 +895,11 @@ def _fetch_subtitles(base: Path, url: str) -> None:
             request_polish(base)
     except Exception as e:
         _set_stage(base, "!" + (str(e) or repr(e))[-300:])
+    finally:
+        # Half a megabyte per video of metadata nothing downstream reads --
+        # it's fetched only for the caption URLs in _auto_caption_url, and
+        # those have been used by now one way or the other.
+        _info_json(base).unlink(missing_ok=True)
 
 
 def _register(video_id: str, title: str, duration: float, url: str) -> dict:
