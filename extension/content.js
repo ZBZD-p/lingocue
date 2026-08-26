@@ -52,14 +52,26 @@
     catch (e) { return null; }
   }
 
-  // The tab title trails the SPA navigation by a beat on a fresh load, so an
-  // occasional stale/placeholder title making it into the cached filename is
-  // a known rough edge, not a bug to chase preemptively -- video_id_for()
-  // only reads the id back out of the filename, so a wrong title in the
-  // human-readable part doesn't break lookups, just cosmetics.
   function titleFromPage() {
     var t = (document.title || "").replace(/ - YouTube$/, "").trim();
     return t || "YouTube video";
+  }
+
+  // The tab title trails the SPA navigation by a beat, so the very first
+  // read can be wrong in two different ways -- both confirmed for real, not
+  // just theoretical: (a) the generic "(12) YouTube" placeholder, if
+  // nothing's been filled in yet, or (b) the *previous* video's title,
+  // still sitting there because YouTube hasn't overwritten it yet even
+  // though the URL/video element already changed. (b) is the sneakier one:
+  // it looks like a perfectly valid title, so there's no way to catch it by
+  // pattern-matching the string the way (a) can be. That's not just
+  // cosmetic -- the backend derives its cache filename from the title, so
+  // registering under the wrong one makes this video look like a brand new
+  // one on the *next* correct detection, and that "new" registration wipes
+  // and re-fetches subtitles from scratch, discarding any
+  // punctuation-restoration work already done under the wrong name.
+  function isPlaceholderTitle(t) {
+    return /^(\(\d+\)\s*)?YouTube$/.test(t);
   }
 
   var id = videoIdFromUrl();
@@ -67,18 +79,44 @@
   window.__lingocueLastVideoId = id;
   window.__lingocueCurrentSource = null; // cleared until the backend confirms it
 
-  fetch(window.__englishTutorApiBase + "/api/youtube/watch", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: id, title: titleFromPage(), url: location.href }),
-  })
-    .then(function (res) { return res.json(); })
-    .then(function (data) {
-      if (!data || !data.ok) return;
-      window.__lingocueCurrentSource = data.path;
-      // Same event static/youtube.html's own script dispatches on a video
-      // switch -- tutor-panel.js already knows how to handle it.
-      window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
+  function registerVideo(title) {
+    fetch(window.__englishTutorApiBase + "/api/youtube/watch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: id, title: title, url: location.href }),
     })
-    .catch(function (e) { console.error("[lingocue] failed to register video", e); });
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok) return;
+        window.__lingocueCurrentSource = data.path;
+        // Same event static/youtube.html's own script dispatches on a video
+        // switch -- tutor-panel.js already knows how to handle it.
+        window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
+      })
+      .catch(function (e) { console.error("[lingocue] failed to register video", e); });
+  }
+
+  function registerWhenReady(attemptsLeft) {
+    var title = titleFromPage();
+    if (isPlaceholderTitle(title) && attemptsLeft > 0) {
+      setTimeout(function () { registerWhenReady(attemptsLeft - 1); }, 300);
+      return;
+    }
+    registerVideo(title);
+    // Case (b) above: the title read just now looked plausible but could
+    // still be the previous video's leftover. A plain retry loop can't tell
+    // the difference by looking at the string alone, so instead this
+    // re-reads the title a beat later and, if it actually changed (and
+    // isn't itself a placeholder), registers again under the corrected one
+    // -- self-correcting rather than trying to guess up front whether the
+    // first read was trustworthy.
+    setTimeout(function () {
+      if (id !== window.__lingocueLastVideoId) return; // already on to another video
+      var laterTitle = titleFromPage();
+      if (laterTitle !== title && !isPlaceholderTitle(laterTitle)) {
+        registerVideo(laterTitle);
+      }
+    }, 1500);
+  }
+  registerWhenReady(5); // ~1.5s of retries at 300ms apart if it starts out blank
 })();

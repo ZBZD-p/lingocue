@@ -362,20 +362,26 @@ def _chunk_cues(cues, target_words):
     return chunks
 
 
-# ct-punc's own tokenizer mangles several kinds of real-transcript tokens in
+# ct-punc's own tokenizer mangles all sorts of real-transcript tokens in
 # ways that break the strict 1:1 word correspondence this validation needs --
-# found by running this against a real, messy auto-caption transcript, where
-# it silently failed validation on every single chunk. Specifically: plain
-# numbers get split into digit groups ("2020" -> "202" "0"), hyphenated
-# compounds get split on every hyphen ("off-the-shelf" -> "off-" "the-"
-# "shelf"), and YouTube's own non-speech markers get shredded into
-# single-letter fragments ("[Music]" -> "M" "usi" "c"). A word matching any
-# of these gets swapped for an inert placeholder before the model ever sees
-# it; the model still gets to decide what punctuation belongs around that
-# position (from the surrounding real words), it just never has to tokenize
-# the risky word itself, so the count-preserving guarantee from ct-punc's own
-# per-word design (see the module docstring above) actually holds.
-_RISKY_TOKEN_RE = re.compile(r"[0-9\-\[\]_]")
+# found by running this against real, messy auto-caption transcripts, where
+# it silently failed validation on whole chunks over and over, each time for
+# a different kind of token: plain numbers split into digit groups ("2020"
+# -> "202" "0"), hyphenated compounds split on every hyphen ("off-the-shelf"
+# -> "off-" "the-" "shelf"), YouTube's own non-speech markers shredded into
+# single-letter fragments ("[Music]" -> "M" "usi" "c"), a domain name split
+# on its dot ("brilliant.org" -> "brilliant" "." "org"), and a bare currency
+# symbol fused onto a neighboring word with no space at all ("missing €800"
+# -> "missing€800", silently swallowing a word boundary). Rather than
+# keep discovering and special-casing one more punctuation-adjacent
+# character at a time, anything other than a plain letter or apostrophe
+# counts as risky and gets swapped for an inert placeholder before the model
+# ever sees it; the model still gets to decide what punctuation belongs
+# around that position (from the surrounding real words), it just never has
+# to tokenize the risky word itself, so the count-preserving guarantee from
+# ct-punc's own per-word design (see the module docstring above) actually
+# holds.
+_RISKY_TOKEN_RE = re.compile(r"[^A-Za-z']")
 _PLACEHOLDER = "placeholder"
 
 
@@ -469,6 +475,61 @@ def punctuate_with_funasr(cues, on_chunk=None):
         if on_chunk:
             on_chunk(i, len(chunks))
     return out if any_succeeded else None
+
+
+# A thread per auto-caption video (the original design) turns into an
+# ever-growing pile-up under completely normal use: browsing YouTube's
+# recommendations hits a new auto-caption video every couple of minutes,
+# each polish pass takes 40-60s+, and every one of them serializes on the
+# same loaded model -- so after a session of hopping through a dozen
+# videos, whichever one is open *right now* can be sitting behind several
+# minutes of queued work for videos nobody's watching anymore. A single
+# persistent worker with a one-slot mailbox fixes this: only the most
+# recently requested video is ever waiting, so a request superseded before
+# the worker even got to it is dropped instead of wastefully processed.
+_polish_pending: Path | None = None
+_polish_active: Path | None = None
+_polish_lock = threading.Lock()
+_polish_wakeup = threading.Event()
+_polish_worker_started = False
+
+
+def is_polishing(path: Path) -> bool:
+    """Whether `path` (the placeholder, any sibling, or the base itself) has
+    an outstanding punctuation-restoration job -- queued or actively
+    running. Purely informational (for a "still improving this" hint in the
+    UI); nothing depends on it for correctness."""
+    base = path.with_suffix("") if path.suffix == ".strm" else path
+    with _polish_lock:
+        return base == _polish_pending or base == _polish_active
+
+
+def _polish_worker() -> None:
+    global _polish_pending, _polish_active
+    while True:
+        _polish_wakeup.wait()
+        with _polish_lock:
+            base = _polish_pending
+            _polish_pending = None
+            _polish_active = base
+            _polish_wakeup.clear()
+        if base is not None:
+            polish_auto_captions_in_background(base)
+        with _polish_lock:
+            _polish_active = None
+
+
+def request_polish(base: Path) -> None:
+    """Queue `base` for punctuation restoration, replacing whatever was
+    queued before -- see the module comment above for why this isn't just
+    a thread per call."""
+    global _polish_pending, _polish_worker_started
+    with _polish_lock:
+        _polish_pending = base
+        _polish_wakeup.set()
+        if not _polish_worker_started:
+            _polish_worker_started = True
+            threading.Thread(target=_polish_worker, daemon=True).start()
 
 
 def polish_auto_captions_in_background(base: Path) -> None:
@@ -693,9 +754,7 @@ def _fetch_subtitles(base: Path, url: str) -> None:
             # signal above so it never delays subtitles being usable --
             # polish_auto_captions_in_background re-checks is_unpunctuated
             # itself and no-ops if this track turned out fine already.
-            threading.Thread(
-                target=polish_auto_captions_in_background, args=(base,), daemon=True
-            ).start()
+            request_polish(base)
     except Exception as e:
         _set_stage(base, "!" + (str(e) or repr(e))[-300:])
 

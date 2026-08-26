@@ -592,6 +592,11 @@ def get_subtitles(lang: str = "en", secondary: str | None = None):
         "complete": True,
         "video_title": video.name,
         "cues": serialize_cues(cues, sec_cues),
+        # True while a YouTube auto-caption track is queued/running through
+        # local punctuation restoration -- the cues above are already the
+        # (currently unpunctuated) working copy, this just tells the panel
+        # a better version may replace them shortly, worth a quiet retry.
+        "polishing": youtube.is_polishing(video),
     })
 
 

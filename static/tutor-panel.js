@@ -989,6 +989,11 @@
     let extractPollTimer = null;
     const USER_SCROLL_QUIET_MS = 4000;
     const EXTRACT_POLL_MS = 3000;
+    // Punctuation restoration takes much longer than an extraction tick
+    // (40-60s+, it's a whole local model pass), so checking back that often
+    // would just be wasted requests -- this is purely a "did it finish yet"
+    // poll, not something with real progress to report more granularly.
+    const POLISH_POLL_MS = 5000;
 
     function stopExtractPolling() {
       if (extractPollTimer) { clearTimeout(extractPollTimer); extractPollTimer = null; }
@@ -1052,8 +1057,15 @@
         subtitleCues = data.cues;
         subtitleIsPartial = data.complete === false;
         currentCueIndex = -1;
-        renderSubtitleCards();
-        subsEmpty.hidden = true;
+        // Skipped while the user looks like they're mid-drag-select in the
+        // list -- a full rebuild here would yank the text out from under
+        // them, same reason the auto-scroll below already backs off during
+        // this window.
+        const userBusy = Date.now() - lastUserScrollAt < USER_SCROLL_QUIET_MS;
+        if (!userBusy) {
+          renderSubtitleCards();
+          subsEmpty.hidden = true;
+        }
 
         if (subtitleIsPartial || secondaryPending) {
           const t0 = startedAt || Date.now();
@@ -1066,6 +1078,27 @@
               `已显示的部分可以正常用，后面的会自动补上`
             : `⏳ 中文字幕提取中（${secs}s）— 英文已经可以用了，中文会逐段补上`;
           extractPollTimer = setTimeout(() => loadSubtitleCues(t0), EXTRACT_POLL_MS);
+        } else if (data.polishing) {
+          // Cues shown are already usable (this is the "complete" reply) --
+          // just possibly still the raw, unpunctuated fallback. Quietly
+          // checks back without the "还在抓字幕" framing above, since
+          // nothing here is actually missing yet, only maybe about to get
+          // nicer.
+          subsNote.hidden = false;
+          subsNote.textContent = "🔧 字幕断句还在后台优化，好了会自动换成更好读的版本";
+          extractPollTimer = setTimeout(
+            () => loadSubtitleCues(startedAt || Date.now()), POLISH_POLL_MS
+          );
+        } else if (userBusy) {
+          // Nothing left to wait on server-side, but the render above was
+          // skipped because the user was mid-interaction -- what just got
+          // fetched into subtitleCues never made it onto the page, and
+          // nothing else re-checks this once polishing itself is done, so
+          // without this branch a render that lost this race would just be
+          // gone for good. A short catch-up poll here is what actually
+          // flushes it once they let go, instead of leaving the page stuck
+          // showing the old cues indefinitely.
+          extractPollTimer = setTimeout(() => loadSubtitleCues(startedAt || Date.now()), 1000);
         } else if (secondaryFailed) {
           // English is fine, so this stays a note rather than an error page.
           subsNote.hidden = false;
@@ -1159,11 +1192,17 @@
       renderLoopState();
     }
 
-    subsScroll.addEventListener("wheel", () => { lastUserScrollAt = Date.now(); }, { passive: true });
-    // Same guard as wheel: a mousedown here usually means the user is about
-    // to drag-select subtitle text, and the current-line auto-scroll
-    // (highlightCue below) yanking the list mid-drag as playback advances
-    // would drag the text out from under the selection.
+    // A mousedown here usually means the user is about to drag-select
+    // subtitle text, and the current-line auto-scroll (highlightCue below)
+    // yanking the list mid-drag as playback advances would drag the text out
+    // from under the selection. (There used to be a matching "wheel"
+    // listener here too, but that one wasn't for this -- it was working
+    // around Jellyfin binding wheel-to-volume at the document level, which
+    // is already handled separately by the stopPropagation block further up
+    // (search "Jellyfin binds wheel-to-volume"). Wiring plain scrolling into
+    // this same busy-guard just meant any scroll over the list reset the
+    // clock, so on a still-updating video the cards could keep missing their
+    // window to ever re-render.)
     subsScroll.addEventListener("mousedown", () => { lastUserScrollAt = Date.now(); }, { passive: true });
     subsScroll.addEventListener("scroll", () => { wordPopup.classList.remove("open"); }, { passive: true });
 
