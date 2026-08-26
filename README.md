@@ -1,10 +1,34 @@
 # LingoCue
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+![Platform: Windows](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
+[![YouTube extension](https://img.shields.io/badge/YouTube-Chrome%20extension-red.svg)](extension)
+[![Jellyfin](https://img.shields.io/badge/Jellyfin-injectable-8a5cf6.svg)](https://jellyfin.org/)
+
 看剧、看 YouTube 学英语的辅助面板。它不负责播放视频，只负责在播放器**旁边**给你一条侧边栏：跟 AI 聊当前剧情、按时间轴翻字幕卡片、悬停查词、循环某句话、记生词。
 
 配合 [Jellyfin](https://jellyfin.org/) 看自己的媒体库，或者装个 Chrome 扩展直接在 youtube.com 官网用。
 
 > **目前仅支持 Windows。** 注入脚本是 PowerShell 写的，路径处理也按 Windows 来。Mac/Linux 暂时跑不起来。
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="LingoCue 侧边栏注入在 youtube.com 页面里，字幕卡片跟随播放高亮，悬停单词弹出词典释义、发音、存生词" width="820">
+</p>
+
+---
+
+## 目录
+
+- [它能做什么](#它能做什么)
+- [装之前需要什么](#装之前需要什么)
+- [安装](#安装)
+- [三种用法](#三种用法)
+- [对话引擎](#对话引擎)
+- [配置文件](#配置文件)
+- [它是怎么工作的](#它是怎么工作的)
+- [已知的坑](#已知的坑)
+- [第三方资源](#第三方资源)
 
 ---
 
@@ -13,6 +37,7 @@
 - **字幕卡片** — 整集字幕按时间切成卡片，跟着播放进度自动高亮，点一下跳到那一句
 - **循环单句 / 一段** — 点卡片上的循环按钮反复听同一句；再点另一句就变成 A–B 段落循环
 - **悬停查词** — 鼠标放到单词上立刻出中文释义（本地词典，不走网络也不花钱），认得出 `went → go` 这类变形
+- **发音** — 查词气泡里点喇叭听单词读音，优先用在线词典的真人/高质量语音，网络不通时自动降级成浏览器内置朗读
 - **问 AI** — 结合当前播放位置提问，比如「刚才那句 brace yourself 什么意思」。AI 有工具可以自己查当前播放位置和字幕，不需要你复制粘贴
 - **生词本** — 查到的词一键存下来，之后可以再让 AI 详细解释
 - **中英对照** — 有中文字幕轨的话，可以在每句英文下面显示对应中文
@@ -36,6 +61,7 @@
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | 用 YouTube 功能时（`pip install yt-dlp`） |
 | [Jellyfin](https://jellyfin.org/) | 想看自己媒体库里的片子时 |
 | [Claude Code CLI](https://claude.com/claude-code) 或 DeepSeek API key | 对话功能二选一，见下面「对话引擎」 |
+| [funasr](https://github.com/modelscope/FunASR)（连 `torch`/`torchaudio`） | 想让完全没标点的 YouTube 自动字幕自动补标点时，见 `requirements.txt` 里的装法说明 |
 
 ---
 
@@ -113,8 +139,6 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 **DeepSeek API** — 需要自己申请 [DeepSeek](https://platform.deepseek.com/) 的 key，填在设置页里。直接 HTTP 调用，没有上面那层启动开销，明显更快。
 
-> ⚠️ **DeepSeek 这条路目前是实验性的，没有经过完整的端到端测试。** 遇到问题欢迎提 issue。
-
 两个引擎用的是同一套工具（查播放状态、查字幕、搜台词），但各自记各自的对话历史，切换不会互相污染。
 
 ---
@@ -147,11 +171,13 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 **AI 不是被灌字幕的。** 它有工具可以自己查当前播放位置、查最近这一段字幕、按时间段查、全集搜关键词。这样每次提问不用为整集字幕付费，它也能自己决定要不要往前翻。
 
+**YouTube 自动字幕完全没标点时**，会在后台用本地的 [FunASR](https://github.com/modelscope/FunASR) `ct-punc` 模型悄悄补一遍标点再重新切句，不阻塞字幕先出来。这是个逐词分类模型，不是生成式改写，所以不会漏词/加词/改写内容——失败了就原样保留没改，不会比不加标点更糟。装了 `funasr` 才会用到，见下面「装之前需要什么」。
+
 ---
 
 ## 已知的坑
 
-- **YouTube 自动字幕质量参差** —— 有的带标点有的完全没有，个别单词会识别错
+- **YouTube 自动字幕质量参差** —— 没标点的会自动补（见上面），但个别单词本身识别错是 YouTube 自己转录的问题，改不了
 - **少数浏览器扩展会给页面加固 CSP（Trusted Types）**，如果侧边栏在 youtube.com 上完全不出现，先查一下是不是装了这类隐私/广告拦截扩展
 - **图形字幕（PGS/VobSub）不支持** —— 那种字幕是图片，需要 OCR，不在范围内
 - **后端没有鉴权**，默认监听 `0.0.0.0` 是为了手机能访问。请只在信任的局域网里用
@@ -162,6 +188,7 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 - 词典数据来自 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT）—— 不随仓库分发，`build_dict.py` 运行时下载
 - [marked](https://github.com/markedjs/marked)（MIT）—— `static/marked.min.js`，渲染 AI 回复里的 Markdown
+- [FunASR](https://github.com/modelscope/FunASR)（MIT）的 `ct-punc` 模型 —— 不随仓库分发，首次用到时从 ModelScope 现下
 
 ## 协议
 
