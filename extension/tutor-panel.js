@@ -50,6 +50,7 @@
   const HISTORY_KEY = "english-tutor-chat-v1";
   const COLLAPSE_KEY = "english-tutor-collapsed";
   const WIDTH_KEY = "english-tutor-width";
+  const THEME_KEY = "english-tutor-theme";
   const DEFAULT_WIDTH = 440;
   const MIN_WIDTH = 320;
   const MAX_WIDTH = 1000;
@@ -82,6 +83,11 @@
   const SECONDARY_LANG_OPTIONS = [
     { value: "", label: "关闭" },
     { value: "zh", label: "中文（中英对照）" },
+  ];
+
+  const THEME_OPTIONS = [
+    { value: "dark", label: "深色" },
+    { value: "light", label: "浅色" },
   ];
 
   // Everything on the settings page is declared here and rendered by one
@@ -149,6 +155,13 @@
       options: SECONDARY_LANG_OPTIONS,
       storageKey: "english-tutor-secondary-lang",
     },
+    {
+      key: "theme",
+      label: "外观",
+      hint: "切换后立即生效。",
+      options: THEME_OPTIONS,
+      storageKey: "english-tutor-theme",
+    },
   ];
 
   const THINKING_VERBS = [
@@ -162,10 +175,10 @@
   // runs inside Jellyfin's Chromium-based webviews on all sorts of devices),
   // while an inline SVG always renders identically.
   const ICONS = {
-    chat: '<path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-4 3v-3H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>',
-    subs: '<rect x="3" y="5" width="18" height="14" rx="2"/><line x1="7" y1="15" x2="10.5" y2="15"/><line x1="13.5" y1="15" x2="17" y2="15"/><line x1="7" y1="10.5" x2="17" y2="10.5"/>',
+    chat: '<path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 21l2.1-5.4A8.5 8.5 0 1 1 21 11.5z"/>',
+    subs: '<rect x="2.5" y="5" width="19" height="14" rx="4"/><path d="M7 14h4M14 14h3"/>',
     vocab: '<path d="M6 3h12a1 1 0 0 1 1 1v16l-7-4-7 4V4a1 1 0 0 1 1-1z"/>',
-    settings: '<line x1="4" y1="6" x2="20" y2="6"/><circle cx="9" cy="6" r="2"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="8" cy="18" r="2"/>',
+    settings: '<path d="M4 8h9M18 8h2M4 16h3M12 16h8"/><circle cx="15.5" cy="8" r="2"/><circle cx="9.5" cy="16" r="2"/>',
     plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
     chevron: '<path d="M14 6l-6 6 6 6"/>',
     send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/>',
@@ -181,7 +194,7 @@
   };
   function icon(name, size) {
     return `<svg class="icon" width="${size || 16}" height="${size || 16}" viewBox="0 0 24 24" ` +
-      `fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
+      `fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
   }
 
   const MARKUP = `
@@ -190,10 +203,10 @@
     <div class="shell">
       <div class="topbar">
         <div class="tabs">
-          <button class="tab-btn active" data-page="chat">${icon("chat")}<span>对话</span></button>
-          <button class="tab-btn" data-page="subs">${icon("subs")}<span>字幕</span></button>
-          <button class="tab-btn" data-page="vocab">${icon("vocab")}<span>生词本</span></button>
-          <button class="tab-btn" data-page="settings">${icon("settings")}<span>设置</span></button>
+          <button class="tab-btn active" data-page="chat">${icon("chat")}<span class="tab-label">对话</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="subs">${icon("subs")}<span class="tab-label">字幕</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="vocab">${icon("vocab")}<span class="tab-label">生词本</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="settings">${icon("settings")}<span class="tab-label">设置</span><span class="tab-dot"></span></button>
         </div>
         <button id="newChatBtn" class="new-chat-btn" title="开始新对话" aria-label="开始新对话">${icon("plus")}</button>
       </div>
@@ -341,6 +354,8 @@
 
     const savedWidth = parseInt(localStorage.getItem(WIDTH_KEY), 10);
     setPanelWidth(Number.isFinite(savedWidth) ? savedWidth : DEFAULT_WIDTH);
+
+    host.setAttribute("theme", localStorage.getItem(THEME_KEY) || "dark");
 
     const collapsePref = localStorage.getItem(COLLAPSE_KEY);
     // On a phone the panel covers the whole screen, so starting expanded
@@ -609,6 +624,7 @@
       secondaryLang: reloadForSecondary,
       deepseekKey: pushDeepSeekConfig,
       deepseekModel: pushDeepSeekConfig,
+      theme: (value) => host.setAttribute("theme", value || "dark"),
     };
 
     // Rendered from the SETTINGS declaration, and the resulting controls are
@@ -1134,12 +1150,21 @@
         card.className = "sub-card";
         card.dataset.index = String(i);
 
+        // Timestamp and the loop/ask/read row only ever render for whichever
+        // cue is current -- highlightCue() below fills these in on the one
+        // card that needs them instead of every card carrying dead, hidden
+        // markup for controls that only make sense on the line actually
+        // playing right now.
         const time = document.createElement("span");
         time.className = "sub-time";
-        time.textContent = fmt(cue.start_ms);
+        const timeText = document.createElement("span");
+        timeText.className = "sub-time-text";
+        timeText.textContent = fmt(cue.start_ms);
+        time.appendChild(timeText);
         card.appendChild(time);
 
         const text = document.createElement("div");
+        text.className = "sub-text";
         appendWordSpans(text, cue.text, i);
         card.appendChild(text);
 
@@ -1154,21 +1179,34 @@
           card.appendChild(text2);
         }
 
-        const ask = document.createElement("button");
-        ask.className = "sub-ask-btn";
-        ask.innerHTML = icon("help");
-        ask.title = "问一下这句什么意思";
-        ask.setAttribute("aria-label", "问一下这句什么意思");
-        ask.addEventListener("click", (e) => { e.stopPropagation(); askAboutCue(i); });
-        card.appendChild(ask);
+        const actions = document.createElement("div");
+        actions.className = "sub-actions";
 
         const loop = document.createElement("button");
         loop.className = "sub-loop-btn";
-        loop.innerHTML = icon("repeat");
+        loop.innerHTML = `${icon("repeat")}循环`;
         loop.title = "循环这句（循环中再点另一句可以循环这一段）";
         loop.setAttribute("aria-label", "循环这句");
         loop.addEventListener("click", (e) => { e.stopPropagation(); toggleLoopAt(i); });
-        card.appendChild(loop);
+        actions.appendChild(loop);
+
+        const ask = document.createElement("button");
+        ask.className = "sub-ask-btn";
+        ask.innerHTML = `${icon("help")}问这句`;
+        ask.title = "问一下这句什么意思";
+        ask.setAttribute("aria-label", "问一下这句什么意思");
+        ask.addEventListener("click", (e) => { e.stopPropagation(); askAboutCue(i); });
+        actions.appendChild(ask);
+
+        const read = document.createElement("button");
+        read.className = "sub-read-btn";
+        read.innerHTML = `${icon("speaker")}朗读`;
+        read.title = "朗读这句";
+        read.setAttribute("aria-label", "朗读这句");
+        read.addEventListener("click", (e) => { e.stopPropagation(); speakWord(cue.text); });
+        actions.appendChild(read);
+
+        card.appendChild(actions);
 
         // Clicking a card seeks the actual player -- the panel is inside
         // Jellyfin's page, so it can just drive the <video> element.
@@ -1216,24 +1254,17 @@
         const span = document.createElement("span");
         span.className = "sub-word";
         span.textContent = token;
-        span.addEventListener("mouseenter", (e) => {
-          // A held button means the user is dragging to select text, not
-          // hovering to look a word up -- popping the tooltip up here would
-          // plant a fixed-position box in the middle of the drag path and
-          // hijack the pointer away from the selection.
-          if (e.buttons !== 0) return;
-          showWordPopup(span, word, sentence, cueIndex);
-        });
-        span.addEventListener("mouseleave", scheduleHideWordPopup);
-        // Touch devices never fire a usable hover, so there a tap on a word
-        // opens the popup instead of falling through to the card's seek.
-        // Devices with a real pointer keep hover for the popup and taps for
-        // seeking, which is the better split when both are available.
+        // A click opens the popup (stopped here so it doesn't also fall
+        // through to the card's own click, which seeks the player) -- hover
+        // is left to the plain CSS :hover highlight on .sub-word, not a
+        // reason to pop anything up on its own, since a popup appearing
+        // just from passing the cursor over the line while reading was more
+        // often in the way than useful.
         span.addEventListener("click", (e) => {
-          if (!window.matchMedia("(hover: none)").matches) return;
           e.stopPropagation();
           showWordPopup(span, word, sentence, cueIndex);
         });
+        span.addEventListener("mouseleave", scheduleHideWordPopup);
         container.appendChild(span);
       }
     }

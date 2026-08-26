@@ -20,6 +20,7 @@ chat/vocab pages without a video open.
 """
 
 import json
+import mimetypes
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,14 @@ from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parent
 MCP_CONFIG_FILE = ROOT / "mcp_config.json"
+
+# Windows' registry-backed mimetypes lookup often has no entry for these,
+# which leaves StaticFiles falling back to application/octet-stream for
+# static/fonts/*.woff2 -- browsers still load @font-face resources served
+# that way, but there's no reason to rely on that leniency when the real
+# type is one line to register.
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("font/woff", ".woff")
 
 
 def write_mcp_config() -> None:

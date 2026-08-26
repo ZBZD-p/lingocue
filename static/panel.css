@@ -5,31 +5,63 @@
  * global stylesheet and we're a guest in its DOM. Shadow encapsulation means
  * neither side can reach the other's rules, so this can use plain element
  * selectors without worrying about collisions in either direction.
+ *
+ * Visual language: "聚焦 / precision listening" -- almost no card chrome,
+ * context lines sit dimmed and the current line is set large in the display
+ * face so the ear (not the eye scanning a list) does the work. Two themes
+ * share one token set; :host([theme="light"]) below only ever overrides
+ * values, never structure.
  */
 
+@font-face {
+  font-family: "Caprasimo";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  /* Absolute, not relative to this file: panel.css is fetched at runtime and
+     its text spliced into a <style> tag inside the shadow root (see
+     tutor-panel.js's boot()), so a relative url() would resolve against
+     whatever page this got injected into (youtube.com, Jellyfin) and never
+     find the file. */
+  src: url("/static/fonts/caprasimo.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/static/fonts/figtree.woff2") format("woff2");
+}
+
 :host {
-  --bg: #0a0b0f;
-  --panel: rgba(19, 21, 28, 0.97);
-  --panel-2: rgba(26, 29, 38, 0.92);
-  --surface-3: rgba(255, 255, 255, 0.055);
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.15);
-  --ink: #eef0f6;
-  --muted: #99a2b8;
-  --muted-2: #6c7488;
-  --accent: #7c93ff;
-  --accent-2: #b18aff;
-  --accent-grad: linear-gradient(135deg, #7c93ff, #b18aff);
-  --accent-soft: rgba(124, 147, 255, 0.14);
-  --user-bubble: linear-gradient(135deg, #34489a, #5341a1);
-  --ai-bubble: rgba(255, 255, 255, 0.04);
-  --danger: #ff8a8a;
-  --danger-soft: rgba(255, 138, 138, 0.12);
-  --radius-sm: 8px;
-  --radius: 12px;
-  --radius-lg: 16px;
-  --shadow-lift: 0 10px 30px rgba(0, 0, 0, 0.4);
+  /* ---- theme tokens (dark default) ---- */
+  --bg: #14110f;
+  --surface-raised: #221d19;
+  --surface-2: rgba(249, 244, 237, 0.05);
+  --surface-3: rgba(249, 244, 237, 0.08);
+  --line: rgba(249, 244, 237, 0.1);
+  --line-strong: rgba(249, 244, 237, 0.18);
+  --ink: #f9f4ed;
+  --ctx-far: #4a443a;
+  --ctx-near: #645c50;
+  --muted: #82796a;
+  --muted-2: #a19786;
+  --muted-3: #56503f;
+  --accent: #f6a06b;
+  --accent-ink: #14110f;
+  --accent-soft: rgba(246, 160, 107, 0.14);
+  --accent-soft-strong: rgba(246, 160, 107, 0.22);
+  --danger: #ffc6a5;
+  --danger-line: #b2622d;
+  --danger-soft: rgba(178, 98, 45, 0.16);
+
+  --radius-sm: 10px;
+  --radius: 16px;
+  --radius-lg: 20px;
+  --shadow-lift: 0 14px 36px rgba(10, 8, 6, 0.4);
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --font-heading: "Caprasimo", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-body: "Figtree", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 
   position: fixed;
   top: 0;
@@ -40,11 +72,35 @@
   width: var(--english-tutor-width, 440px);
   height: 100vh;
   z-index: 2147483000;
-  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   color: var(--ink);
   display: block;
   -webkit-font-smoothing: antialiased;
+}
+
+/* ---- light twin ---- */
+:host([theme="light"]) {
+  --bg: #f9f4ed;
+  --surface-raised: #fffdf8;
+  --surface-2: rgba(32, 30, 29, 0.04);
+  --surface-3: rgba(32, 30, 29, 0.06);
+  --line: rgba(32, 30, 29, 0.1);
+  --line-strong: rgba(32, 30, 29, 0.18);
+  --ink: #201e1d;
+  --ctx-far: #c0b6a5;
+  --ctx-near: #a19786;
+  --muted: #82796a;
+  --muted-2: #645c50;
+  --muted-3: #c0b6a5;
+  --accent: #b2622d;
+  --accent-ink: #f9f4ed;
+  --accent-soft: #ffe1d0;
+  --accent-soft-strong: #ffd0b3;
+  --danger: #8c491a;
+  --danger-line: #b2622d;
+  --danger-soft: rgba(178, 98, 45, 0.1);
+  --shadow-lift: 0 14px 36px rgba(46, 43, 37, 0.22);
 }
 
 :host([hidden-panel]) { width: 0; }
@@ -61,9 +117,7 @@
   height: 100%;
   display: grid;
   grid-template-rows: auto 1fr auto;
-  background:
-    radial-gradient(1200px 400px at 100% 0%, rgba(124, 147, 255, 0.05), transparent 55%),
-    var(--bg);
+  background: var(--bg);
   border-left: 1px solid var(--line-strong);
   box-shadow: var(--shadow-lift);
 }
@@ -122,13 +176,13 @@
   border: 1px solid var(--line-strong);
   border-right: none;
   border-radius: var(--radius) 0 0 var(--radius);
-  background: var(--panel);
+  background: var(--bg);
   color: var(--muted);
   cursor: pointer;
-  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.25);
+  box-shadow: -4px 0 16px rgba(10, 8, 6, 0.25);
   transition: color 0.15s var(--ease), background 0.15s var(--ease), right 0.2s var(--ease);
 }
-.toggle:hover { color: var(--ink); background: var(--panel-2); }
+.toggle:hover { color: var(--accent); background: var(--surface-2); }
 /* Spelled out because the shared `button:active` press effect below is a bare
    `transform`, and transform is one property rather than a list -- it would
    replace the centering translate above instead of composing with it, dropping
@@ -147,21 +201,16 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 10px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  gap: 4px;
+  padding: 14px 16px 12px;
 }
 
 .tabs {
   display: flex;
-  gap: 2px;
+  align-items: center;
+  gap: 18px;
   flex: 1;
   min-width: 0;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 3px;
 }
 
 /* Author declarations outrank the UA stylesheet's `[hidden] { display: none }`
@@ -171,11 +220,11 @@
 [hidden] { display: none !important; }
 
 button {
-  font-family: inherit;
+  font-family: var(--font-body);
   font-size: 12px;
   color: var(--ink);
-  background: var(--panel-2);
-  border: 1px solid var(--line);
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-sm);
   padding: 7px 11px;
   cursor: pointer;
@@ -183,45 +232,54 @@ button {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  transition: border-color 0.15s var(--ease), background 0.15s var(--ease),
-    color 0.15s var(--ease), transform 0.1s var(--ease);
+  transition: color 0.15s var(--ease), background 0.15s var(--ease), transform 0.1s var(--ease);
 }
-button:hover { border-color: var(--line-strong); background: var(--surface-3); }
+button:hover { background: var(--surface-2); }
 button:active { transform: scale(0.97); }
 button:disabled { opacity: 0.5; cursor: default; transform: none; }
 button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-/* Four tabs in a ~440px panel: let them shrink and clip rather than wrap
-   the row onto two lines. */
+/* Icon-only, no fill or label -- the current tab is marked by color plus a
+   small dot underneath rather than a filled pill, matching the rest of the
+   direction's "almost no containers" rule. The label text stays in the DOM
+   (screen readers, and a fallback if someone inspects it) but is visually
+   hidden rather than removed. */
 .tab-btn {
-  flex: 1;
-  min-width: 0;
-  padding: 7px 4px;
-  white-space: nowrap;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  color: var(--muted-3);
+}
+.tab-btn:hover { background: transparent; color: var(--muted); }
+.tab-btn .tab-label {
+  position: absolute;
+  width: 1px; height: 1px;
   overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.tab-btn .tab-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
   background: transparent;
-  border: 1px solid transparent;
-  color: var(--muted);
 }
-.tab-btn span { overflow: hidden; text-overflow: ellipsis; }
-.tab-btn:hover { border-color: transparent; background: rgba(255, 255, 255, 0.05); color: var(--ink); }
-.tab-btn.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
-}
-.tab-btn.active:hover { background: var(--accent-soft); }
+.tab-btn.active { color: var(--accent); }
+.tab-btn.active .tab-dot { background: var(--accent); }
 
 .new-chat-btn {
   flex-shrink: 0;
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   padding: 0;
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
 }
+.new-chat-btn:hover { background: var(--surface-2); }
 
 /* ---- settings page ----
    One generic row shape, rendered from the SETTINGS declaration in
@@ -230,62 +288,81 @@ button:focus-visible {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 14px;
+  padding: 10px 22px 22px;
 }
 
 .setting-row {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--line);
+  padding: 16px 0;
 }
-.setting-row:first-child { padding-top: 2px; }
-.setting-row:last-child { border-bottom: none; }
+.setting-row:first-child { padding-top: 4px; }
+.setting-row:last-child { padding-bottom: 4px; }
 
-.setting-label { font-size: 13px; font-weight: 600; letter-spacing: 0.01em; }
-.setting-hint { font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+.setting-label {
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+.setting-hint { font-size: 12.5px; color: var(--muted-2); line-height: 1.65; }
 /* The dropdown is width-constrained inside the topbar by flex; on the
    settings page it should fill the row instead. */
 .setting-row .dropdown, .setting-row .setting-text-input { flex: none; width: 100%; }
 
 .setting-text-input {
-  font-size: 12px;
-  font-family: inherit;
+  font-size: 15px;
+  font-family: var(--font-body);
   color: var(--ink);
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 7px 11px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 0 0 9px;
   box-sizing: border-box;
 }
-.setting-text-input::placeholder { color: var(--muted-2); }
+.setting-text-input::placeholder { color: var(--muted-3); }
 .setting-text-input:focus {
   outline: none;
   border-color: var(--accent);
 }
 
 /* Custom dropdown rather than <select>: keeps full styling control inside
-   the shadow root, where a native popup would render unstyled. */
+   the shadow root, where a native popup would render unstyled. Styled here
+   as an underlined row rather than a boxed field, to match the rest of the
+   page's "no containers" treatment -- only the popup menu itself keeps a
+   surface, since it has to sit above other content. */
 .dropdown {
   position: relative;
   flex: 1;
   min-width: 0;
-  font-size: 12px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 7px 11px;
+  font-family: var(--font-heading);
+  font-size: 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 0 20px 9px 0;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
   transition: border-color 0.15s var(--ease);
-  /* No overflow:hidden here -- .dropdown-menu is absolutely positioned
-     below this box, so clipping the overflow would hide the popup
-     entirely. The ellipsis lives on .dropdown-value instead. */
 }
-.dropdown:hover { border-color: var(--line-strong); }
-.dropdown.open { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.dropdown::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  width: 8px;
+  height: 8px;
+  border-right: 1.75px solid var(--muted);
+  border-bottom: 1.75px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s var(--ease);
+}
+.dropdown:hover { border-color: var(--accent); }
+.dropdown.open { border-color: var(--accent); }
+.dropdown.open::after { transform: rotate(225deg); }
 .dropdown-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dropdown-menu {
   display: none;
@@ -295,31 +372,26 @@ button:focus-visible {
   min-width: 100%;
   max-height: 260px;
   overflow-y: auto;
-  background: #1b1e27;
+  background: var(--surface-raised);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lift);
   z-index: 20;
   padding: 4px;
+  font-family: var(--font-body);
+  font-size: 13px;
 }
 .dropdown.open .dropdown-menu { display: block; }
 .dropdown-item { padding: 8px 10px; border-radius: var(--radius-sm); transition: background 0.12s var(--ease); }
-.dropdown-item:hover { background: rgba(255, 255, 255, 0.07); }
-.dropdown-item.selected { color: var(--accent); font-weight: 600; }
+.dropdown-item:hover { background: var(--surface-2); }
+.dropdown-item.selected { color: var(--accent); }
 
-/* Diagnostic readout, now living inside the settings page rather than as a
-   permanent strip: it was eating a row of vertical space on every screen to
-   show something only looked at when something's wrong. Wraps here instead
-   of ellipsising, since there's no longer any pressure to keep it to one
-   line. */
+/* Diagnostic readout, living inside the settings page: only looked at when
+   something's wrong, so it doesn't need a permanent strip elsewhere. */
 .context-bar {
-  padding: 9px 11px;
-  font-size: 11.5px;
-  line-height: 1.55;
-  color: var(--muted);
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted-2);
   word-break: break-word;
   font-variant-numeric: tabular-nums;
 }
@@ -334,36 +406,42 @@ button:focus-visible {
 }
 .page.active { display: flex; }
 
-/* ---- chat ---- */
-.chat { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px; }
+/* ---- chat ----
+   No bubbles: a question is a quoted block with a left rule, an answer is
+   plain running text -- the same "no containers" rule as the rest of 1c. */
+.chat { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 22px 18px; }
 
 .msg {
-  margin-bottom: 12px;
-  padding: 10px 13px;
-  border-radius: var(--radius-lg);
-  line-height: 1.6;
+  margin-bottom: 22px;
+  line-height: 1.65;
   word-break: break-word;
 }
 .msg.user {
-  background: var(--user-bubble);
-  margin-left: 32px;
-  border-bottom-right-radius: 5px;
-  box-shadow: 0 4px 14px rgba(52, 72, 154, 0.25);
+  padding-left: 14px;
+  border-left: 2px solid var(--muted-3);
+  font-size: 14.5px;
+  color: var(--ink);
 }
-.msg.ai {
-  background: var(--ai-bubble);
-  border: 1px solid var(--line);
-  border-bottom-left-radius: 5px;
+/* Labels the block as a question without a new element in the JS: it's
+   always exactly this text, so a pseudo-element carries it for free. */
+.msg.user::before {
+  content: "我问";
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 6px;
 }
-.msg .meta { display: block; margin-top: 7px; font-size: 11px; color: var(--muted-2); }
+.msg.ai { font-size: 15px; color: var(--ink); }
+.msg .meta { display: block; margin-top: 9px; font-size: 11px; color: var(--muted-3); }
 
 .status-line { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
 .pulse-icon {
   display: inline-flex;
-  color: var(--accent-2);
+  color: var(--accent);
   animation: spin 1s linear infinite;
 }
-.pulse-icon.done { animation: none; color: var(--muted-2); }
+.pulse-icon.done { animation: none; color: var(--muted-3); }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .pulse-icon { animation: none; }
@@ -372,42 +450,41 @@ button:focus-visible {
 .thinking-box { margin: 9px 0; font-size: 12px; color: var(--muted); }
 .thinking-box summary { cursor: pointer; color: var(--muted-2); }
 .thinking-box summary:hover { color: var(--muted); }
-.thinking-content { white-space: pre-wrap; margin-top: 7px; padding-left: 10px; border-left: 2px solid var(--line); color: var(--muted); }
+.thinking-content { white-space: pre-wrap; margin-top: 7px; padding-left: 10px; border-left: 2px solid var(--line-strong); color: var(--muted); }
 
 .answer-content :first-child { margin-top: 0; }
 .answer-content :last-child { margin-bottom: 0; }
 .answer-content code {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--surface-2);
   padding: 1px 5px;
   border-radius: 5px;
   font-size: 12px;
 }
-.answer-content pre { background: rgba(0, 0, 0, 0.35); padding: 11px; border-radius: var(--radius); overflow-x: auto; }
+.answer-content pre { background: var(--surface-raised); padding: 11px; border-radius: var(--radius); overflow-x: auto; }
 .answer-content pre code { background: none; padding: 0; }
 
 .error-note {
-  margin-top: 9px;
-  padding: 8px 10px;
-  font-size: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding-left: 14px;
+  border-left: 2px solid var(--danger-line);
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--danger);
-  background: var(--danger-soft);
-  border-radius: var(--radius-sm);
 }
-.retry-btn { margin-top: 8px; color: var(--danger); border-color: rgba(255, 128, 128, 0.3); }
-.retry-btn:hover { background: var(--danger-soft); border-color: rgba(255, 128, 128, 0.45); }
+.retry-btn { margin-top: 8px; color: var(--danger); }
+.retry-btn:hover { background: var(--danger-soft); }
 
-.composer { padding: 11px 12px; border-top: 1px solid var(--line); background: var(--panel); }
+.composer { padding: 12px 22px 18px; }
 .composer-inner {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: flex-end;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 5px 5px 5px 11px;
-  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  border-top: 1px solid var(--line-strong);
+  padding-top: 12px;
 }
-.composer-inner:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .composer textarea {
   flex: 1;
   min-width: 0;
@@ -415,32 +492,44 @@ button:focus-visible {
   border: none;
   background: transparent;
   color: var(--ink);
-  font-family: inherit;
-  font-size: 13px;
-  padding: 7px 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  padding: 0 0 8px;
   outline: none;
   max-height: 120px;
 }
-.composer textarea::placeholder { color: var(--muted-2); }
+.composer textarea::placeholder { color: var(--muted-3); }
 .composer button { flex-shrink: 0; }
 #sendBtn {
-  background: var(--accent-grad);
-  border-color: transparent;
-  color: #0c0e14;
-  font-weight: 600;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
-#sendBtn:hover { filter: brightness(1.08); }
-#sendBtn:disabled { background: var(--panel-2); color: var(--muted-2); filter: none; }
+#sendBtn:hover { filter: brightness(1.08); background: var(--accent); }
+#sendBtn:disabled { background: var(--surface-3); color: var(--muted-3); filter: none; }
 
-/* ---- subtitle cards ---- */
+/* ---- subtitle list ----
+   No card fill: context lines are plain dimmed text, only the current line
+   is set large (in the display face) with its controls -- so the ear does
+   the work of following along, not the eye scanning a list of boxes. */
 .subs-note {
-  padding: 7px 12px;
-  font-size: 11px;
+  padding: 9px 22px;
+  font-size: 11.5px;
   color: var(--accent);
-  background: var(--accent-soft);
   border-bottom: 1px solid var(--line);
 }
-.subs-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 12px 64px; }
+.subs-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 22px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
 /* With no cards in it the list must not still claim half the page, or
    the "loading" message beside it gets pushed to the bottom. */
 .subs-scroll:empty { flex: 0; padding: 0; }
@@ -458,157 +547,160 @@ button:focus-visible {
   gap: 10px;
   color: var(--muted);
   font-size: 12.5px;
-  padding: 40px 16px;
+  padding: 40px 22px;
   line-height: 1.7;
 }
-.subs-hint { color: var(--muted-2); font-size: 11.5px; }
+.subs-hint { color: var(--muted-3); font-size: 11.5px; }
 
-/* Subtitle text is the thing actually being studied here, so it runs a few
-   sizes larger than the surrounding chrome rather than matching it. */
+/* Subtitle text is the thing actually being studied here, so context lines
+   run a couple of sizes larger than the surrounding chrome, and the current
+   line larger still. */
 .sub-card {
-  position: relative;
-  padding: 12px 66px 12px 14px;
-  margin-bottom: 8px;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.015);
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: none;
   cursor: pointer;
+  color: var(--ctx-near);
   /* Set by the 字幕字号 setting as a custom property on <html>. Left unset it
      falls through to the per-breakpoint default below, which is why the size
      lives in the fallback rather than in a separate rule. */
   font-size: var(--english-tutor-sub-size, 16px);
-  line-height: 1.75;
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+  line-height: 1.5;
+  transition: color 0.15s var(--ease);
 }
-.sub-card:hover { background: var(--surface-3); border-color: var(--line-strong); }
+.sub-card:nth-child(odd) { color: var(--ctx-far); }
+.sub-card:hover { color: var(--muted-2); }
+
 .sub-card.current {
-  background: var(--accent-soft);
-  border-color: rgba(124, 147, 255, 0.4);
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
+.sub-card.current .sub-time {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+.sub-card.current .sub-time::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.sub-card.current .sub-time-text {
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.sub-card.current .sub-text {
+  font-family: var(--font-heading);
+  font-size: calc(var(--english-tutor-sub-size, 16px) * 1.55);
+  line-height: 1.3;
+}
+
 /* Sized in em so it tracks the subtitle-size setting instead of needing its
    own scale, and muted so the English line stays the thing being read. */
 .sub-text-2 {
-  margin-top: 5px;
-  font-size: 0.82em;
+  margin-top: 6px;
+  font-size: 0.75em;
   line-height: 1.6;
   color: var(--muted);
 }
-.sub-time { display: block; font-size: 11px; color: var(--muted-2); margin-bottom: 5px; font-variant-numeric: tabular-nums; }
+.sub-time {
+  display: none; /* only the current cue shows its timestamp -- see above */
+}
 .sub-word { border-radius: 4px; padding: 0 1px; }
-.sub-word:hover { background: rgba(177, 138, 255, 0.28); cursor: pointer; }
-.sub-ask-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  background: var(--panel-2);
-  opacity: 0;
-}
-.sub-card:hover .sub-ask-btn { opacity: 1; }
+.sub-word:hover { background: var(--accent-soft-strong); cursor: pointer; }
 
-.sub-loop-btn {
-  position: absolute;
-  top: 8px;
-  right: 36px;
-  width: 24px;
-  height: 24px;
+/* Loop/ask/read controls only exist inline under the current line -- there
+   is nothing to hover-reveal on the other lines, so no absolute positioning
+   or opacity dance is needed at all. */
+.sub-actions {
+  display: none;
+  gap: 22px;
+  padding-top: 2px;
+}
+.sub-card.current .sub-actions { display: flex; }
+.sub-ask-btn, .sub-loop-btn, .sub-read-btn {
   padding: 0;
-  background: var(--panel-2);
-  opacity: 0;
+  gap: 7px;
+  font-size: 13.5px;
+  color: var(--muted-2);
 }
-.sub-card:hover .sub-loop-btn { opacity: 1; }
-
-/* A running loop is state you're working inside, not a control you reach
-   for once, so its cards keep the button visible without a hover. */
-.sub-card.in-loop {
-  border-color: rgba(177, 138, 255, 0.45);
-  background: rgba(177, 138, 255, 0.07);
-}
-.sub-card.in-loop .sub-loop-btn { opacity: 1; color: var(--accent-2); }
-/* Purple for the loop against the existing blue "currently playing", so a
-   line that is both still reads as both. */
-.sub-card.in-loop.current {
-  background: rgba(177, 138, 255, 0.16);
-  border-color: rgba(177, 138, 255, 0.7);
-}
-/* Marking just the ends makes a multi-line loop read as one bracketed
-   region instead of a run of identically tinted cards. */
-.sub-card.loop-edge { box-shadow: inset 3px 0 0 var(--accent-2); }
+.sub-ask-btn:hover, .sub-loop-btn:hover, .sub-read-btn:hover { background: transparent; color: var(--accent); }
+.sub-card.current.in-loop .sub-loop-btn { color: var(--accent); }
 
 .subs-float-bar {
-  position: absolute;
-  bottom: 12px;
-  left: 0;
-  right: 0;
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  /* The bar itself is a click-through strip laid over the card list; only
-     the loop pill inside it takes pointer events. */
-  pointer-events: none;
+  /* Normal flow, not an overlay: it sits as the last item in the subtitle
+     column, right above the shared composer below it -- no absolute
+     positioning needed to read as "floating over the input". */
+  padding: 0 22px 14px;
 }
+:host([theme]) .subs-float-bar:has(.loop-pill[hidden]) { padding: 0; }
 
 .loop-pill {
-  pointer-events: auto;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 6px 6px 11px;
+  gap: 9px;
+  height: 34px;
+  padding: 0 6px 0 14px;
   border-radius: 999px;
-  background: #1b1e27;
-  border: 1px solid rgba(177, 138, 255, 0.45);
-  box-shadow: var(--shadow-lift);
-  font-size: 12px;
-  color: var(--ink);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12.5px;
   /* The lap counter ticks up in place; without this the pill would jitter
      as the digits change width. */
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .loop-pill[hidden] { display: none; }
-.loop-pill-icon { display: flex; color: var(--accent-2); }
+.loop-pill-icon { display: flex; }
 .loop-pill-stop {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
-  border-radius: 50%;
-  background: transparent;
+  border-radius: 999px;
+  background: var(--accent-soft-strong);
   border: none;
-  color: var(--muted);
+  color: var(--accent);
 }
-.loop-pill-stop:hover { background: var(--surface-3); color: var(--ink); }
+.loop-pill-stop:hover { filter: brightness(1.1); background: var(--accent-soft-strong); }
 
 .word-popup {
   position: fixed;
   display: none;
   flex-direction: column;
-  gap: 9px;
-  padding: 11px;
+  gap: 5px;
+  padding: 15px 17px 13px;
   /* Wide enough for a couple of lines of gloss, capped so a word with a
      dozen senses doesn't produce a popup taller than the screen. */
-  max-width: 320px;
-  background: #1b1e27;
+  max-width: 300px;
+  background: var(--surface-raised);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lift);
   z-index: 40;
+  overflow: hidden;
 }
 .word-popup.open { display: flex; }
 
-.word-popup-def { font-size: 12.5px; line-height: 1.55; }
+.word-popup-def { font-size: 14px; line-height: 1.6; color: var(--muted-2); }
 .word-popup-def.loading, .word-popup-def.empty { color: var(--muted); font-size: 12px; }
 
 .word-popup-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 9px;
   flex-wrap: wrap;
   margin-bottom: 5px;
 }
-.word-popup-word { font-weight: 700; color: var(--accent); font-size: 13.5px; }
-.word-popup-phonetic { color: var(--muted); font-size: 11.5px; }
+.word-popup-word { font-family: var(--font-heading); font-size: 22px; color: var(--ink); }
+.word-popup-phonetic { color: var(--muted-2); font-size: 13px; }
 
 .word-popup-trans {
   color: var(--ink);
@@ -618,11 +710,31 @@ button:focus-visible {
   overflow-y: auto;
 }
 
-.word-popup-actions { display: flex; gap: 5px; }
-.word-popup button { font-size: 11px; padding: 5px 9px; }
+.word-popup-actions {
+  display: flex;
+  gap: 10px;
+  margin: 6px -17px -13px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.word-popup button { font-size: 13px; height: 36px; gap: 7px; border-radius: 999px; white-space: nowrap; }
+/* `padding` deliberately isn't set on the shared rule above: it used to be
+   `padding: 0`, which -- pairing a class with the `button` type gives this
+   selector higher specificity than the single-class `.word-popup-save`/
+   `-ask` rules below -- kept beating whatever padding THEY tried to set, no
+   matter what value was put there, and left the label text sitting flush
+   against the pill's rounded edge. Each button states its own padding
+   instead, so there's no cross-button rule left to lose that fight. */
+.word-popup-speak { width: 36px; padding: 0; border: 1px solid var(--line-strong); color: var(--ink); }
+.word-popup-save { flex: 1; padding: 0 14px; background: var(--surface-3); color: var(--ink); }
+.word-popup-ask { flex: 1; padding: 0 14px; background: var(--accent); color: var(--accent-ink); }
+.word-popup-save:hover { background: var(--surface-3); filter: brightness(1.15); }
+.word-popup-ask:hover { background: var(--accent); filter: brightness(1.08); }
 
-/* ---- vocab ---- */
-.vocab-list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
+/* ---- vocab ----
+   A plain list with a hairline between entries, not a stack of cards. */
+.vocab-list { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 22px 18px; }
 .vocab-empty {
   display: flex;
   flex-direction: column;
@@ -635,30 +747,26 @@ button:focus-visible {
 }
 .vocab-card {
   position: relative;
-  padding: 12px 34px 12px 14px;
-  margin-bottom: 9px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--line);
-  background: var(--panel-2);
-  transition: border-color 0.15s var(--ease);
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
 }
-.vocab-card:hover { border-color: var(--line-strong); }
-.vocab-meta { font-size: 10.5px; color: var(--muted-2); margin-bottom: 5px; letter-spacing: 0.01em; }
-.vocab-subtitle { font-size: 12px; color: var(--muted); font-style: italic; margin-bottom: 7px; line-height: 1.5; }
-.vocab-question { font-size: 13.5px; font-weight: 600; }
-.vocab-question.vocab-word { color: var(--accent); }
-.vocab-answer { margin-top: 7px; font-size: 12.5px; line-height: 1.6; color: var(--ink); }
-.vocab-ask-btn { margin-top: 9px; font-size: 11.5px; }
+.vocab-card:first-child { padding-top: 4px; }
+.vocab-card:last-child { border-bottom: none; }
+.vocab-meta { font-size: 11px; color: var(--muted-3); margin-bottom: 8px; letter-spacing: 0.01em; }
+.vocab-subtitle { font-size: 13.5px; color: var(--muted-2); margin-bottom: 8px; line-height: 1.6; }
+.vocab-question { font-family: var(--font-heading); font-size: 22px; line-height: 1.2; color: var(--ink); padding-right: 60px; }
+.vocab-question.vocab-word { color: var(--ink); }
+.vocab-answer { margin-top: 8px; font-size: 13.5px; line-height: 1.65; color: var(--muted-2); }
+.vocab-ask-btn { margin-top: 10px; padding: 0; font-size: 13px; color: var(--accent); }
+.vocab-ask-btn:hover { background: transparent; filter: brightness(1.1); }
 .vocab-delete-btn {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 20px;
+  right: 0;
   width: 24px;
   height: 24px;
   padding: 0;
-  background: none;
-  border: none;
-  color: var(--muted-2);
+  color: var(--muted-3);
 }
 .vocab-delete-btn:hover { color: var(--danger); background: var(--danger-soft); }
 
@@ -689,8 +797,8 @@ button:focus-visible {
     height: 52px;
     border: 1px solid var(--line-strong);
     border-radius: 50%;
-    background: var(--panel);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    background: var(--bg);
+    box-shadow: 0 4px 16px rgba(10, 8, 6, 0.5);
   }
   /* Bottom-anchored here, so there's no centering translate to preserve --
      but .toggle:active up top outranks the `transform: none` above (media
@@ -703,32 +811,31 @@ button:focus-visible {
   /* Dragging to resize is meaningless at full width. */
   .resizer { display: none; }
 
-  .topbar { padding: 12px; gap: 8px; }
-  .tab-btn { padding: 11px 6px; font-size: 14px; }
+  .topbar { padding: 16px 18px 14px; }
+  .tabs { gap: 22px; }
   button { padding: 10px 13px; font-size: 14px; }
-  .new-chat-btn { width: 40px; height: 40px; }
-  .dropdown { padding: 10px 13px; font-size: 14px; }
+  .new-chat-btn { width: 44px; height: 44px; }
+  .dropdown { padding: 0 24px 11px 0; font-size: 17px; }
   .dropdown-item { padding: 11px 13px; font-size: 14px; }
 
-  .context-bar { font-size: 12px; padding: 10px 13px; }
-
-  .msg { font-size: 15px; padding: 12px 15px; }
+  .msg.user { font-size: 16px; }
+  .msg.ai { font-size: 16px; }
   .composer textarea { font-size: 16px; }  /* 16px stops iOS zooming on focus */
+  #sendBtn { width: 44px; height: 44px; }
 
-  .sub-card { font-size: var(--english-tutor-sub-size, 18px); padding: 14px 78px 14px 16px; }
-  .sub-time { font-size: 12px; }
-  /* Hover doesn't exist on touch, so the per-card ask button has to stay put. */
-  .sub-ask-btn { opacity: 1; width: 30px; height: 30px; }
-  .sub-loop-btn { opacity: 1; width: 30px; height: 30px; right: 42px; }
-  .loop-pill { font-size: 13px; padding: 7px 7px 7px 12px; }
-  .loop-pill-stop { width: 26px; height: 26px; }
+  .sub-card { font-size: var(--english-tutor-sub-size, 18px); }
+  .sub-card.current .sub-text { font-size: calc(var(--english-tutor-sub-size, 18px) * 1.5); }
+  .sub-actions { gap: 26px; }
+  .sub-ask-btn, .sub-loop-btn, .sub-read-btn { font-size: 15px; }
+  .loop-pill { height: 40px; font-size: 14px; }
+  .loop-pill-stop { width: 28px; height: 28px; }
   .sub-word:hover { background: none; }
 
-  .word-popup button { padding: 10px 13px; font-size: 14px; }
+  .word-popup button { font-size: 14px; }
+  .word-popup-save, .word-popup-ask { height: 40px; }
 
-  .vocab-card { padding: 13px 42px 13px 15px; }
-  .vocab-question { font-size: 15px; }
-  .vocab-answer { font-size: 14px; }
+  .vocab-question { font-size: 24px; }
+  .vocab-answer { font-size: 15px; }
   .vocab-delete-btn { width: 32px; height: 32px; }
 }
 
@@ -745,11 +852,11 @@ button:focus-visible {
 .settings-list::-webkit-scrollbar-thumb,
 .dropdown-menu::-webkit-scrollbar-thumb,
 .word-popup-trans::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--line-strong);
   border-radius: 4px;
 }
 .chat::-webkit-scrollbar-thumb:hover,
 .subs-scroll::-webkit-scrollbar-thumb:hover,
 .vocab-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: var(--muted-3);
 }
