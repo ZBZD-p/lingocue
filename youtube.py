@@ -29,7 +29,6 @@ times over, padded with 10ms spacer cues. Measured on a real file: 1519 raw
 blocks collapsing to 689 real lines. `clean_auto_captions` below undoes that.
 """
 
-import concurrent.futures
 import html
 import json
 import os
@@ -283,6 +282,237 @@ def write_srt(cues: list[tuple[int, int, str]], path: Path) -> None:
     )
 
 
+# ---- punctuation restoration for unpunctuated auto-captions ---------------
+#
+# is_unpunctuated tracks are left as raw per-line cues by resegment_sentences
+# because there is no punctuation to cut on -- see that function's docstring.
+# Those raw cues are already reasonable (source line breaks sit near phrase
+# length), but a real sentence is better. Restoring punctuation is done here
+# by a small local classification model (FunASR's ct-punc) rather than a
+# generative one: it predicts one punctuation mark per input word rather than
+# rewriting the text, so it can't drop, add, or reword anything -- the
+# word-preservation check below is a safety net, not the primary defense.
+# This runs as a *second*, optional background pass after the video is
+# already marked ready with its raw cues, and quietly upgrades the cached
+# .srt in place if it succeeds; the existing no-cache polling picks up the
+# new content the same way it already does for progressive MKV extraction.
+
+_ct_punc_model_cache = "not_loaded"  # sentinel distinct from "tried, got None"
+_ct_punc_lock = threading.Lock()
+
+
+def _ct_punc_model():
+    """Resolved lazily and cached: most videos already have punctuated
+    subtitles and never need this, so most sessions should never pay for the
+    load (and possible first-run model download).
+
+    Double-checked locking: two videos hitting unpunctuated auto-captions
+    close together shouldn't each trigger their own concurrent load of the
+    model into separate memory.
+    """
+    global _ct_punc_model_cache
+    if _ct_punc_model_cache != "not_loaded":
+        return _ct_punc_model_cache
+    with _ct_punc_lock:
+        if _ct_punc_model_cache == "not_loaded":
+            try:
+                from funasr import AutoModel
+                _ct_punc_model_cache = AutoModel(model="ct-punc")
+            except Exception:
+                _ct_punc_model_cache = None
+    return _ct_punc_model_cache
+
+
+# Built from an explicit character list via re.escape rather than a literal
+# character-class string: that string has to hold ', ", and ] all at once,
+# and hand-escaping all three inside a regex character class is exactly the
+# kind of thing that's easy to get subtly wrong (an earlier version did).
+_PUNCTUATE_TRAILING_CHARS = list('.!?,;:"\')]')
+_PUNCTUATE_STRIP_RE = re.compile(
+    "[" + "".join(re.escape(c) for c in _PUNCTUATE_TRAILING_CHARS) + "]+$")
+
+# Cuts always fall on a whole-cue boundary (see _chunk_cues), so this isn't
+# defending against a model token limit -- ct-punc processes internally in
+# its own ~20-word windows with cross-window context, there's no external
+# ceiling to guess at. It only bounds how much of the track one failed
+# chunk's validation can affect, and how fine-grained progress reporting is.
+PUNCTUATE_CHUNK_WORDS = 260
+
+
+def _chunk_cues(cues, target_words):
+    """Group whole source cues into chunks of about `target_words` words
+    each. Cuts always fall on a cue boundary, never mid-cue -- a YouTube
+    caption line is only 7-10 words, so this is barely coarser than cutting
+    by word count, and what it buys back matters: when a chunk fails
+    validation (see punctuate_with_funasr), the fallback is that chunk's own
+    original cues, completely unmodified.
+    """
+    chunks: list[list[tuple[int, int, str]]] = []
+    current: list[tuple[int, int, str]] = []
+    current_words = 0
+    for cue in cues:
+        n = len(cue[2].split())
+        if current and current_words + n > target_words:
+            chunks.append(current)
+            current, current_words = [], 0
+        current.append(cue)
+        current_words += n
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+# ct-punc's own tokenizer mangles several kinds of real-transcript tokens in
+# ways that break the strict 1:1 word correspondence this validation needs --
+# found by running this against a real, messy auto-caption transcript, where
+# it silently failed validation on every single chunk. Specifically: plain
+# numbers get split into digit groups ("2020" -> "202" "0"), hyphenated
+# compounds get split on every hyphen ("off-the-shelf" -> "off-" "the-"
+# "shelf"), and YouTube's own non-speech markers get shredded into
+# single-letter fragments ("[Music]" -> "M" "usi" "c"). A word matching any
+# of these gets swapped for an inert placeholder before the model ever sees
+# it; the model still gets to decide what punctuation belongs around that
+# position (from the surrounding real words), it just never has to tokenize
+# the risky word itself, so the count-preserving guarantee from ct-punc's own
+# per-word design (see the module docstring above) actually holds.
+_RISKY_TOKEN_RE = re.compile(r"[0-9\-\[\]_]")
+_PLACEHOLDER = "placeholder"
+
+
+def _punctuate_chunk(words):
+    """One chunk through the model. Returns None on any failure -- the model
+    being unavailable, a crash, or (this is the important one) the response
+    not being a word-for-word match for the input -- so the caller can fall
+    back to leaving that stretch unpunctuated instead of trusting a response
+    that may have silently dropped, added, or reworded something."""
+    model = _ct_punc_model()
+    if not model:
+        return None
+
+    # Stripped of any pre-existing punctuation before sending: a track flagged
+    # "unpunctuated" overall (by cue-level density, see is_unpunctuated) can
+    # still have a handful of cues with stray leftover punctuation, and
+    # feeding the model text that's already partly punctuated makes it stack
+    # its own prediction on top instead of cleanly replacing it.
+    originals = [_PUNCTUATE_STRIP_RE.sub("", w[2]) for w in words]
+    risky = [bool(_RISKY_TOKEN_RE.search(t)) for t in originals]
+    tokens = [_PLACEHOLDER if r else t for t, r in zip(originals, risky)]
+
+    try:
+        with _ct_punc_lock:
+            result = model.generate(input=" ".join(tokens))
+        out_text = result[0]["text"]
+    except Exception:
+        return None
+
+    out_tokens = out_text.split()
+    if len(out_tokens) != len(tokens):
+        return None
+
+    produced = []
+    for original, is_risky, sent in zip(originals, risky, out_tokens):
+        if is_risky:
+            # Keep the real word untouched, just carry over whatever
+            # trailing punctuation the model attached after the placeholder
+            # standing in for it.
+            if not sent.lower().startswith(_PLACEHOLDER):
+                return None
+            suffix = sent[len(_PLACEHOLDER):]
+            if not re.fullmatch(r'''[.!?,;:"')\]]*''', suffix):
+                return None  # something unexpected happened to the placeholder itself
+            produced.append(original + suffix)
+        else:
+            # Case-insensitive, and only the punctuation this pass is allowed
+            # to add is stripped before comparing -- so a response that
+            # changed a word, merged two words together, or reordered
+            # anything fails validation rather than being silently trusted.
+            if original.lower() != _PUNCTUATE_STRIP_RE.sub("", sent).lower():
+                return None
+            produced.append(sent)
+
+    return [(s, e, p) for (s, e, _), p in zip(words, produced)]
+
+
+def punctuate_with_funasr(cues, on_chunk=None):
+    """Restore punctuation to an unpunctuated track via the local ct-punc
+    model, one chunk of whole cues at a time. Returns a list of
+    (start_ms, end_ms, text) cues ready to write out directly, or None if the
+    model is unavailable or every chunk failed -- in which case the caller
+    keeps what it already has rather than replacing a working file with an
+    empty one.
+
+    A chunk that fails validation contributes its own original cues,
+    untouched, rather than aborting the whole video or recutting its
+    fallback words with the same weak pause/length heuristic that produces
+    long, awkward cards when there's no real punctuation to cut on -- a
+    failed chunk can only ever leave that stretch exactly as good as it
+    already was, never worse.
+
+    Sequential, not concurrent: this is local CPU/GPU inference, not a
+    network round trip, so there's no latency to hide behind a thread pool --
+    and it avoids hammering one loaded model instance from multiple threads
+    at once (see _ct_punc_lock).
+    """
+    if not _ct_punc_model() or not cues:
+        return None
+
+    chunks = _chunk_cues(cues, PUNCTUATE_CHUNK_WORDS)
+    out: list[tuple[int, int, str]] = []
+    any_succeeded = False
+    for i, chunk in enumerate(chunks, 1):
+        punctuated_words = _punctuate_chunk(words_from_cues(chunk))
+        if punctuated_words is not None:
+            out.extend(cut_words_into_cues(punctuated_words))
+            any_succeeded = True
+        else:
+            out.extend(chunk)
+        if on_chunk:
+            on_chunk(i, len(chunks))
+    return out if any_succeeded else None
+
+
+def polish_auto_captions_in_background(base: Path) -> None:
+    """Best-effort second pass: if the .srt this video ended up with has no
+    real punctuation, try to restore it and recut into sentences, then swap
+    it in. Never raises -- this runs fire-and-forget after the video is
+    already marked ready, and a failure here should leave the already-working
+    subtitle file exactly as it was, not break it.
+    """
+    try:
+        srt = _english_subtitle(base)
+        if not srt:
+            return
+        cues = subs_now.parse_cues(srt)
+        if not is_unpunctuated(cues):
+            return
+
+        _set_stage(base, "!正在加载标点模型…")
+
+        def report(done, total):
+            _set_stage(base, "!正在优化字幕断句 (%d/%d)" % (done, total))
+            # The leading "!" above is subtitle_status's error marker, reused
+            # here as a lightweight "still working" note rather than adding a
+            # third state -- see subtitle_status. It is overwritten as soon
+            # as this finishes, one way or the other.
+
+        cues = punctuate_with_funasr(cues, on_chunk=report)
+        if cues is None:
+            _set_stage(base, None)
+            return
+
+        # punctuate_with_funasr already returns finished (start, end, text)
+        # cues -- successful chunks cut into sentences, failed ones passed
+        # through as their own original cues -- so there's nothing left to
+        # recut here.
+        tmp = srt.with_suffix(".polish.tmp")
+        write_srt(cues, tmp)
+        os.replace(tmp, srt)  # atomic: a concurrent reader sees old or new, never partial
+    except Exception:
+        pass
+    finally:
+        _set_stage(base, None)
+
+
 # Subtitle fetching costs ~12s of network round trips after the metadata is
 # known, and none of it has to happen before playback can start. Videos are
 # registered as soon as their title is known and the subtitles land later,
@@ -456,19 +686,16 @@ def _fetch_subtitles(base: Path, url: str) -> None:
         meta["subtitle_kind"] = kind
         marker.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
-        # AI punctuation restoration (polish_auto_captions_in_background,
-        # below) is built but deliberately not wired in here. On a real,
-        # uncontended run it only punctuated ~12% of a genuinely unpunctuated
-        # video -- most chunks failed the strict word-preservation check --
-        # and switching the model behind it to Kimi in instant mode traded
-        # that for real content drift (a dropped word, a silently "corrected"
-        # spelling) instead of the earlier merge/split false positives. Not
-        # worth the background Claude usage it would otherwise spend on every
-        # future unpunctuated auto-caption video for that little benefit.
-        # The raw per-line cues this falls back to are already reasonable
-        # (see resegment_sentences) -- this was chasing an improvement on
-        # top of an already-working baseline, not fixing something broken.
         _set_stage(base, None)
+        if kind == "auto":
+            # Human-written subs already have real punctuation; only the
+            # auto-caption fallback ever needs this. Fires after the ready
+            # signal above so it never delays subtitles being usable --
+            # polish_auto_captions_in_background re-checks is_unpunctuated
+            # itself and no-ops if this track turned out fine already.
+            threading.Thread(
+                target=polish_auto_captions_in_background, args=(base,), daemon=True
+            ).start()
     except Exception as e:
         _set_stage(base, "!" + (str(e) or repr(e))[-300:])
 
