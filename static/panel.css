@@ -129,6 +129,11 @@
   transition: color 0.15s var(--ease), background 0.15s var(--ease), right 0.2s var(--ease);
 }
 .toggle:hover { color: var(--ink); background: var(--panel-2); }
+/* Spelled out because the shared `button:active` press effect below is a bare
+   `transform`, and transform is one property rather than a list -- it would
+   replace the centering translate above instead of composing with it, dropping
+   the button half its own height down the screen for as long as it's held. */
+.toggle:active { transform: translateY(-50%) scale(0.97); }
 .toggle svg { transition: transform 0.2s var(--ease); }
 :host([hidden-panel]) .toggle { right: 0; }
 :host([hidden-panel]) .toggle svg { transform: rotate(180deg); }
@@ -687,6 +692,10 @@ button:focus-visible {
     background: var(--panel);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   }
+  /* Bottom-anchored here, so there's no centering translate to preserve --
+     but .toggle:active up top outranks the `transform: none` above (media
+     queries add no specificity), so it has to be re-stated. */
+  .toggle:active { transform: scale(0.97); }
   .toggle svg { transform: rotate(180deg); width: 20px; height: 20px; }
   :host([hidden-panel]) .toggle { right: 12px; }
   :host([hidden-panel]) .toggle svg { transform: rotate(0deg); }
