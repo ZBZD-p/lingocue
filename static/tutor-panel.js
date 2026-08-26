@@ -250,7 +250,29 @@
       if (window.marked) return resolve();
       try {
         const s = document.createElement("script");
-        s.src = `${API}/static/marked.min.js`;
+        const url = `${API}/static/marked.min.js`;
+        // Not relying on the "default" Trusted Types policy registered
+        // above for this one: only one "default" policy can exist per
+        // document, so if the host page (or another extension) already
+        // registered its own before this ran, ours was skipped and
+        // whatever's already there wins -- and it may well implement
+        // createHTML (which is why innerHTML elsewhere in this file still
+        // works under Trusted Types) without ever implementing
+        // createScriptURL, since its own code likely never needed to build
+        // a URL from a string. A policy under our own name is ours
+        // regardless of what else is registered as default.
+        if (window.trustedTypes && trustedTypes.createPolicy) {
+          try {
+            const policy = trustedTypes.createPolicy("english-tutor-marked", {
+              createScriptURL: (u) => u,
+            });
+            s.src = policy.createScriptURL(url);
+          } catch (e) {
+            s.src = url; // no Trusted Types enforcement, or this name is disallowed too
+          }
+        } else {
+          s.src = url;
+        }
         s.onload = resolve;
         // Markdown is a nicety; if it can't load, answers still render as text.
         s.onerror = resolve;

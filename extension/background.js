@@ -80,6 +80,21 @@ async function runContentBridge(tabId) {
 
 async function injectPanelIfNeeded(tabId) {
   if (await isPanelLoaded(tabId)) return;
+  // marked.min.js first: tutor-panel.js's own loadMarked() tries to fetch it
+  // from the backend via a plain <script src>, which hits the exact same
+  // wall tutor-panel.js itself used to (see the file-header comment) -- on
+  // one real page the CSP encountered didn't even allowlist localhost for
+  // script-src at all, Trusted Types aside. Pre-loading it here the same
+  // privileged way means window.marked already exists by the time
+  // loadMarked() runs, so it short-circuits before ever touching that
+  // script tag. Bundled as a real file for the same reason tutor-panel.js
+  // is (see below) -- it's a third-party library that essentially never
+  // changes, so the "re-copy on update" tradeoff barely applies here.
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    files: ["marked.min.js"],
+  });
   // files:, not a manually-created <script> element -- Trusted Types turned
   // out to also cover HTMLScriptElement.src assignment itself (not just
   // eval/script-src), regardless of what URL scheme it's set to. files:
