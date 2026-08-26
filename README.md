@@ -10,10 +10,10 @@
 
 配合 [Jellyfin](https://jellyfin.org/) 看自己的媒体库，或者装个 Chrome 扩展直接在 youtube.com 官网用。
 
-> **目前仅支持 Windows。** 注入脚本是 PowerShell 写的，路径处理也按 Windows 来。Mac/Linux 暂时跑不起来。
+> **目前仅支持 Windows**
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="LingoCue 侧边栏注入在 youtube.com 页面里，字幕卡片跟随播放高亮，悬停单词弹出词典释义、发音、存生词" width="820">
+  <img src="docs/demo.gif" alt="LingoCue 侧边栏注入在 youtube.com 页面里，字幕卡片跟随播放自动高亮切换，点单词弹出词典释义、发音、存生词" width="820">
 </p>
 
 ---
@@ -41,6 +41,7 @@
 - **问 AI** — 结合当前播放位置提问，比如「刚才那句 brace yourself 什么意思」。AI 有工具可以自己查当前播放位置和字幕，不需要你复制粘贴
 - **生词本** — 查到的词一键存下来，之后可以再让 AI 详细解释
 - **中英对照** — 有中文字幕轨的话，可以在每句英文下面显示对应中文
+- **深色 / 浅色外观** — 设置页一键切换，跟着喜好来
 - **YouTube** — 装个 Chrome 扩展，直接在 youtube.com 官网打开任意视频就有侧边栏，**只下载字幕，不下载视频**（一个视频占几十 KB）
 
 ---

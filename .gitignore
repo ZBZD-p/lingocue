@@ -20,6 +20,9 @@ ecdict.csv
 # YouTube 字幕缓存的默认位置（config.json 可以改到别处）。
 youtube/
 
+# UI 设计探索稿（Claude Design 画布导出），几个 3MB 的渲染 HTML，不进仓库。
+design/
+
 __pycache__/
 *.py[cod]
 
