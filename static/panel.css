@@ -617,6 +617,23 @@ button:focus-visible {
 .sub-word { border-radius: 4px; padding: 0 1px; }
 .sub-word:hover { background: var(--accent-soft-strong); cursor: pointer; }
 
+/* Word-by-word highlight: the line fills in as it's spoken, so you can see
+   at a glance how far along the reading is. The dimming sits on the
+   container and only the lit words are brightened, rather than the reverse
+   -- punctuation between words is a bare text node with no class of its own
+   to dim, and would otherwise sit there at full brightness inside an
+   otherwise-dim line.
+   Only present when the cue actually carried timings (see
+   renderSubtitleCards), so a video without them is untouched.
+   Deliberately a lighter dim than the context lines around it (--ctx-near):
+   the not-yet-spoken half of the current line still has to read as part of
+   the current line, not blend into the lines above and below it. */
+.sub-card.current .sub-text.has-word-times { color: var(--muted-2); }
+.sub-card.current .sub-text.has-word-times .sub-word {
+  transition: color 0.12s var(--ease);
+}
+.sub-card.current .sub-text.has-word-times .sub-word.spoken { color: var(--ink); }
+
 /* Loop/ask/read controls only exist inline under the current line -- there
    is nothing to hover-reveal on the other lines, so no absolute positioning
    or opacity dance is needed at all. */

@@ -90,6 +90,12 @@
     { value: "light", label: "浅色" },
   ];
 
+  // First entry is the default (see populateSelect), so this ships on.
+  const WORD_HIGHLIGHT_OPTIONS = [
+    { value: "on", label: "开" },
+    { value: "off", label: "关" },
+  ];
+
   // Everything on the settings page is declared here and rendered by one
   // generic pass, so adding a setting later means adding an entry rather
   // than touching markup, styles and wiring in three places. A setting that
@@ -154,6 +160,14 @@
       hint: "在每句英文下面显示对应的中文。第一次开启要再扫一遍视频提取中文轨（大文件约半分钟），英文会先显示出来。",
       options: SECONDARY_LANG_OPTIONS,
       storageKey: "english-tutor-secondary-lang",
+    },
+    {
+      key: "wordHighlight",
+      label: "逐词高亮",
+      hint: "当前这句跟着语音一个词一个词点亮，已经念过的保持亮色。" +
+        "只有 YouTube 自动字幕带逐词时间，人工字幕和本地视频没有这个数据，会自动跳过。",
+      options: WORD_HIGHLIGHT_OPTIONS,
+      storageKey: "english-tutor-word-highlight",
     },
     {
       key: "theme",
@@ -597,6 +611,23 @@
       if (currentPage === "subs") loadSubtitleCues();
     }
 
+    const wordHighlightOn = () => settingValue("wordHighlight") !== "off";
+
+    /** Same refetch reasoning as reloadForSecondary above -- the per-word
+     *  timings ride along in the cue payload and are only asked for when
+     *  this is on, so flipping it changes the request. It also changes how
+     *  often playback position has to be sampled (see startPositionPolling),
+     *  which is why this isn't purely a render concern. */
+    function reloadForWordHighlight(value, isUserChange) {
+      if (!isUserChange) return;
+      startPositionPolling();
+      subtitleCues = [];
+      subtitleIsPartial = false;
+      currentCueIndex = -1;
+      stopExtractPolling();
+      if (currentPage === "subs") loadSubtitleCues();
+    }
+
     // Settings whose effect is immediate rather than read-on-demand.
     // The key/model live in localStorage (so the field shows what you typed
     // last) but deepseek_chat.py runs as part of app.py, a separate process
@@ -625,6 +656,7 @@
     const SETTING_HANDLERS = {
       subSize: applySubSize,
       secondaryLang: reloadForSecondary,
+      wordHighlight: reloadForWordHighlight,
       deepseekKey: pushDeepSeekConfig,
       deepseekModel: pushDeepSeekConfig,
       theme: (value) => host.setAttribute("theme", value || "dark"),
@@ -1036,7 +1068,8 @@
         if (startedAt === null) subsScroll.innerHTML = "";
         const lang2 = settingValue("secondaryLang") || "";
         const data = await (await fetch(
-          `${API}/api/subtitles?lang=en${lang2 ? `&secondary=${lang2}` : ""}`
+          `${API}/api/subtitles?lang=en${lang2 ? `&secondary=${lang2}` : ""}` +
+          `${wordHighlightOn() ? "&words=1" : ""}`
         )).json();
         // "ready" | "extracting" | an error string; absent when no second
         // language was asked for.
@@ -1168,7 +1201,12 @@
 
         const text = document.createElement("div");
         text.className = "sub-text";
-        appendWordSpans(text, cue.text, i);
+        // The marker class is what gates the dimming in panel.css, so a
+        // video with no per-word data (human subtitles, anything from
+        // Jellyfin) renders exactly as it always did instead of showing a
+        // permanently dim line that never fills in.
+        if (cue.words) text.classList.add("has-word-times");
+        appendWordSpans(text, cue.text, i, cue.words);
         card.appendChild(text);
 
         if (cue.text2) {
@@ -1255,14 +1293,28 @@
 
     // Split a line into hoverable per-word spans so the popup can target the
     // exact word under the cursor, not the whole sentence.
-    function appendWordSpans(container, sentence, cueIndex) {
+    function appendWordSpans(container, sentence, cueIndex, times) {
+      // Counts every non-whitespace token, span or not. `times` came from
+      // splitting the cue's text on whitespace server-side, so a token that
+      // ends up as a bare text node below (pure punctuation, e.g. "--")
+      // still occupies a slot in it -- skipping those here would shift the
+      // rest of the line's timings by one and silently highlight the wrong
+      // words from that point on.
+      let wordIndex = 0;
       for (const token of sentence.split(/(\s+)/)) {
         if (!token) continue;
-        const word = /^\s+$/.test(token) ? "" : token.replace(/^[^\w']+|[^\w']+$/g, "");
+        if (/^\s+$/.test(token)) {
+          container.appendChild(document.createTextNode(token));
+          continue;
+        }
+        const time = times && times[wordIndex];
+        wordIndex++;
+        const word = token.replace(/^[^\w']+|[^\w']+$/g, "");
         if (!word) { container.appendChild(document.createTextNode(token)); continue; }
         const span = document.createElement("span");
         span.className = "sub-word";
         span.textContent = token;
+        if (time) span.dataset.start = time[0];
         // A click opens the popup (stopped here so it doesn't also fall
         // through to the card's own click, which seeks the player) -- hover
         // is left to the plain CSS :hover highlight on .sub-word, not a
@@ -1445,14 +1497,42 @@
         if (subtitleCues[i].start_ms <= positionMs) idx = i;
         else break;
       }
-      if (idx === currentCueIndex) return;
-      highlightCue(idx, Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS);
+      if (idx !== currentCueIndex) {
+        highlightCue(idx, Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS);
+      }
+      // Outside the cue-changed check on purpose: the whole point is to keep
+      // moving *within* one line, which is exactly the case that check skips.
+      updateSpokenWords(positionMs);
+    }
+
+    // How many words of the current line are lit. Kept so the common tick --
+    // same word still being spoken -- costs one comparison instead of a
+    // classList write per word, which at this poll rate is most ticks.
+    let spokenWordCount = -1;
+
+    function updateSpokenWords(positionMs) {
+      // No match when the setting is off (nothing was requested, so no cue
+      // carries the marker) or when this video has no per-word data at all,
+      // which is what makes both cases a no-op without checking either.
+      const line = subsScroll.querySelector(".sub-card.current .has-word-times");
+      if (!line) return;
+      const spans = line.querySelectorAll(".sub-word");
+      let lit = 0;
+      while (lit < spans.length && Number(spans[lit].dataset.start) <= positionMs) lit++;
+      if (lit === spokenWordCount) return;
+      spokenWordCount = lit;
+      spans.forEach((span, i) => span.classList.toggle("spoken", i < lit));
     }
 
     function highlightCue(idx, autoScroll) {
       const prev = subsScroll.querySelector(".sub-card.current");
       if (prev) prev.classList.remove("current");
       currentCueIndex = idx;
+      // The new line starts unlit, and its count has to be invalidated
+      // rather than carried over -- otherwise the first tick on a line that
+      // happens to light the same number of words as the last one would be
+      // mistaken for "nothing changed" and never paint.
+      spokenWordCount = -1;
       if (idx < 0) return;
       const card = subsScroll.querySelector(`.sub-card[data-index="${idx}"]`);
       if (!card) return;
@@ -1870,12 +1950,26 @@
     // Position for the highlight comes from the element directly (smooth, no
     // network); the POST above is throttled separately since it only needs to
     // keep the backend roughly current for chat/MCP lookups.
-    setInterval(() => {
-      const p = player();
-      if (!p) return;
-      const nowMs = p.currentTimeMs();
-      if (!isNaN(nowMs)) updateCurrentCue(nowMs);
-    }, 250);
+    //
+    // A quarter second is plenty to land on the right *line*, but plenty of
+    // spoken words are shorter than that, so the word-by-word highlight
+    // needs a finer clock. Only when it's actually on -- the extra ticks buy
+    // nothing for anyone who has it off, and nothing at all under Jellyfin,
+    // where no video has per-word timings to begin with.
+    const POSITION_POLL_MS = 250;
+    const POSITION_POLL_WORD_MS = 100;
+    let positionTimer = null;
+
+    function startPositionPolling() {
+      clearInterval(positionTimer);
+      positionTimer = setInterval(() => {
+        const p = player();
+        if (!p) return;
+        const nowMs = p.currentTimeMs();
+        if (!isNaN(nowMs)) updateCurrentCue(nowMs);
+      }, wordHighlightOn() ? POSITION_POLL_WORD_MS : POSITION_POLL_MS);
+    }
+    startPositionPolling();
     setInterval(reportPlaybackState, 2000);
 
     async function refreshContext() {
