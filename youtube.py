@@ -36,6 +36,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -59,6 +60,10 @@ ILLEGAL_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 VTT_TIME_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})\.(\d{3})")
 VTT_TAG_RE = re.compile(r"<[^>]*>")
+# Same timestamp shape as VTT_TIME_RE, but wrapped in its literal <...> tag
+# and captured whole -- used to split a block's raw payload into alternating
+# (text, timestamp) pieces rather than just find matches within it.
+VTT_TIME_TAG_RE = re.compile(r"<(\d{2}:\d{2}:\d{2}\.\d{3})>")
 
 # Rolling captions advance by emitting a ~10ms cue between real ones. They
 # carry no new text, only the transition.
@@ -70,7 +75,80 @@ def _vtt_ms(groups) -> int:
     return ((int(h) * 60 + int(m)) * 60 + int(sec)) * 1000 + int(milli)
 
 
-def clean_auto_captions(vtt_path: Path) -> list[tuple[int, int, str]]:
+_C_TAG_RE = re.compile(r"</?c>")
+
+
+def _word_stamps(payload: list[str]) -> list[tuple[str, int | None]]:
+    """Per-word (word, real_start_ms) for one cue block, tokenized the same
+    way `text` below is (whitespace-split after stripping all tags) -- so
+    the two line up word-for-word by position and a caller can zip them.
+
+    A word with no inline timestamp immediately before it in *this*
+    particular block comes back with `None` -- per the module docstring
+    above, a word's real stamp often only shows up once it scrolls into a
+    *later* block, not the one where it first appears. clean_auto_captions
+    backfills those from that later block when it can; whatever's still
+    `None` after that falls to _fill_word_gaps' interpolation.
+    """
+    raw = html.unescape(_C_TAG_RE.sub("", " ".join(payload)))
+    parts = VTT_TIME_TAG_RE.split(raw)
+    pairs: list[tuple[str, int | None]] = [(w, None) for w in parts[0].split()]
+    for i in range(1, len(parts), 2):
+        ms = _vtt_ms(VTT_TIME_RE.match(parts[i]).groups())
+        text_after = parts[i + 1] if i + 1 < len(parts) else ""
+        pairs.extend((w, ms) for w in text_after.split())
+    return pairs
+
+
+def _fill_word_gaps(stream: list[list], doc_end_ms: int) -> list[tuple[int, int, str]]:
+    """Turns the (word, start_ms-or-None) pairs collected while walking the
+    vtt into finished (start_ms, end_ms, word) triples.
+
+    Most words end up with a real stamp (their own block's, or backfilled
+    from a later one); whatever's left -- the source is uneven enough that
+    a handful of words never pick one up -- gets evenly spaced between
+    whichever real timestamps (or the transcript's own edges) bracket the
+    gap. Same interpolation used everywhere else in this module, just
+    scoped to however small that particular gap turned out to be, instead
+    of guessing across an entire resegmented sentence like today's fallback
+    -- see words_from_cues, which is exactly that fallback, kept for
+    sources with no real per-word data to lean on at all.
+    """
+    n = len(stream)
+    i = 0
+    prev_ms = 0
+    while i < n:
+        if stream[i][1] is not None:
+            prev_ms = stream[i][1]
+            i += 1
+            continue
+        j = i
+        while j < n and stream[j][1] is None:
+            j += 1
+        next_ms = stream[j][1] if j < n else doc_end_ms
+        span = max(1, next_ms - prev_ms)
+        count = j - i
+        # count+1 slots, not count: dividing by count alone puts the first
+        # gap word's start at exactly prev_ms -- indistinguishable from the
+        # anchor word right before it, which collapses that anchor's own
+        # end (the next word's start, set below once this word has one) to
+        # zero-length. Starting from slot 1 instead leaves every gap word a
+        # real step past prev_ms.
+        for k in range(count):
+            stream[i + k][1] = prev_ms + span * (k + 1) // (count + 1)
+        prev_ms = next_ms
+        i = j
+
+    out: list[tuple[int, int, str]] = []
+    for idx, (word, start_ms) in enumerate(stream):
+        end_ms = stream[idx + 1][1] if idx + 1 < n else doc_end_ms
+        out.append((start_ms, end_ms, word))
+    return out
+
+
+def clean_auto_captions(
+    vtt_path: Path,
+) -> tuple[list[tuple[int, int, str]], list[tuple[int, int, str]]]:
     """Rebuild YouTube's rolling auto-captions into ordinary cues.
 
     The raw form shows two lines at a time and re-emits the whole visible
@@ -88,13 +166,23 @@ def clean_auto_captions(vtt_path: Path) -> list[tuple[int, int, str]]:
     stripping already removes the repeats, which is the only job that filter
     was doing correctly.
 
-    Per-word stamps are still read where present, because they date the line
-    better than the block does: a block's own start is when the *previous*
-    line was still on screen.
+    Returns (cues, word_stream): word_stream is real, not estimated,
+    per-word timing for the whole transcript (see _word_stamps /
+    _fill_word_gaps), in the same word order `cues` flattens to.
+    resegment_sentences below is handed it directly, so cue-cutting doesn't
+    have to guess where a resegmented sentence's words actually fall; the
+    caller also gets it back to persist alongside the .srt (see
+    _fetch_auto_captions) so a later pass -- punctuation restoration, or a
+    future word-level highlight -- can reuse it without re-parsing the vtt.
     """
     blocks = re.split(r"\n\s*\n", vtt_path.read_text(encoding="utf-8", errors="ignore").strip())
     cues: list[tuple[int, int, str]] = []
+    # [word, start_ms-or-None] rather than a tuple: backfill (below) patches
+    # an already-appended entry's timestamp in place once a later block
+    # reveals it.
+    word_stream: list[list] = []
     previous_words: list[str] = []
+    doc_end_ms = 0
 
     for block in blocks:
         lines = block.splitlines()
@@ -107,6 +195,7 @@ def clean_auto_captions(vtt_path: Path) -> list[tuple[int, int, str]]:
         start, end = _vtt_ms(stamps[0]), _vtt_ms(stamps[1])
         if end - start <= SPACER_MAX_MS:
             continue
+        doc_end_ms = max(doc_end_ms, end)
 
         payload = lines[time_idx + 1:]
         timed = [l for l in payload if VTT_TIME_RE.search(l)]
@@ -116,18 +205,42 @@ def clean_auto_captions(vtt_path: Path) -> list[tuple[int, int, str]]:
             continue
 
         words = text.split()
+        pairs = _word_stamps(payload)
+        if [w for w, _ in pairs] != words:
+            # This block's markup didn't tokenize the same way the plain
+            # text did (a stray entity, an unusual line -- rare, but seen in
+            # the wild). Rather than risk pairing a timestamp with the wrong
+            # word, treat the whole block as carrying none at all; the gap
+            # fill at the end covers it the same as any other unstamped run.
+            pairs = [(w, None) for w in words]
+
         overlap = min(len(previous_words), len(words))
         while overlap > 0 and previous_words[-overlap:] != words[:overlap]:
             overlap -= 1
+
+        # Backfill: the repeated prefix here is the exact same words already
+        # appended to word_stream when an earlier block introduced them as
+        # fresh. If THIS block's own markup happens to carry a real stamp
+        # for one of them -- the "picks it up on the next block" case from
+        # the docstring above -- patch it into that earlier, still-empty
+        # slot instead of leaving it for interpolation to guess.
+        base_idx = len(word_stream) - overlap
+        for k in range(overlap):
+            ms = pairs[k][1]
+            if ms is not None and word_stream[base_idx + k][1] is None:
+                word_stream[base_idx + k][1] = ms
+
         previous_words = words
         fresh = words[overlap:]
         if not fresh:
             continue
+        word_stream.extend([word, ms] for word, ms in pairs[overlap:])
 
         inner = VTT_TIME_RE.findall(" ".join(timed)) if timed else []
         cues.append((min(_vtt_ms(inner[0]), end) if inner else start, end, " ".join(fresh)))
 
-    return resegment_sentences(cues)
+    filled = _fill_word_gaps(word_stream, doc_end_ms)
+    return resegment_sentences(cues, word_stream=filled), filled
 
 
 
@@ -164,15 +277,20 @@ HARD_CAP_CHARS = 180
 PUNCTUATED_SHARE = 0.25
 
 
-def resegment_sentences(cues: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+def resegment_sentences(
+    cues: list[tuple[int, int, str]],
+    word_stream: list[tuple[int, int, str]] | None = None,
+) -> list[tuple[int, int, str]]:
     """Recut cues so each one is a sentence.
 
     Works on a word stream rather than by merging whole cues: a cue boundary
     frequently falls mid-sentence *and* a sentence frequently ends mid-cue, so
-    merging alone can never produce clean sentences. Word times interpolated
-    across a cue's span -- the exact per-word stamps exist only in the raw vtt,
-    and evenly spacing them is off by a fraction of a second at worst, which is
-    well inside the loop's own lead-in padding.
+    merging alone can never produce clean sentences. Word positions come from
+    `word_stream` when the caller has real ones (see clean_auto_captions);
+    otherwise words_from_cues below estimates them by evenly spacing across
+    each cue's span, off by a fraction of a second at worst -- well inside
+    the loop's own lead-in padding, but enough to be felt by plain
+    current-line highlighting, which has no such padding to hide behind.
 
     An unpunctuated track is returned untouched. There are no sentences to cut
     to, and the fallbacks that keep such a track from becoming one giant card
@@ -184,7 +302,7 @@ def resegment_sentences(cues: list[tuple[int, int, str]]) -> list[tuple[int, int
     """
     if is_unpunctuated(cues):
         return cues
-    return cut_words_into_cues(words_from_cues(cues))
+    return cut_words_into_cues(words_from_cues(cues, word_stream=word_stream))
 
 
 def cut_words_into_cues(words: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
@@ -244,16 +362,28 @@ def is_unpunctuated(cues: list[tuple[int, int, str]]) -> bool:
     return punctuated / len(cues) < PUNCTUATED_SHARE
 
 
-def words_from_cues(cues: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+def words_from_cues(
+    cues: list[tuple[int, int, str]],
+    word_stream: list[tuple[int, int, str]] | None = None,
+) -> list[tuple[int, int, str]]:
     """Flatten cues into a word stream, one (start_ms, end_ms, word) per word.
 
-    Word times are interpolated across each cue's span rather than read from
-    per-word stamps -- those exist only in the raw vtt, and evenly spacing
-    them is off by a fraction of a second at worst, well inside the loop's
-    own lead-in padding. Shared by resegment_sentences and the AI punctuation
-    pass below, which both need the same word-level view for different
-    reasons (cutting on punctuation vs. sending chunks to the model).
+    `word_stream` -- real per-word timing already known for this exact text
+    (see clean_auto_captions) -- is used as-is when its words line up
+    one-for-one with what `cues` actually flattens to. Otherwise (no
+    word_stream, or its word sequence doesn't match -- a mismatch never
+    happens by construction at either of today's call sites, but nothing
+    here should trust that blindly) times are interpolated across each
+    cue's span instead, off by a fraction of a second at worst, well inside
+    the loop's own lead-in padding. Shared by resegment_sentences and the AI
+    punctuation pass below, which both need the same word-level view for
+    different reasons (cutting on punctuation vs. sending chunks to the
+    model).
     """
+    flat_words = [token for _, _, text in cues for token in text.split()]
+    if word_stream is not None and [w for _, _, w in word_stream] == flat_words:
+        return word_stream
+
     words: list[tuple[int, int, str]] = []
     for start, end, text in cues:
         tokens = text.split()
@@ -279,6 +409,32 @@ def write_srt(cues: list[tuple[int, int, str]], path: Path) -> None:
             f"{i}\n{_srt_clock(s)} --> {_srt_clock(e)}\n{t}\n\n"
             for i, (s, e, t) in enumerate(cues, 1)
         ),
+        encoding="utf-8",
+    )
+
+
+def _word_stream_path(srt: Path) -> Path:
+    # srt.stem strips only the .srt suffix, leaving the language tag on --
+    # "Some Title [id].en.srt" -> "Some Title [id].en.words.json" -- so this
+    # sits next to whichever exact sidecar _english_subtitle actually found.
+    return srt.with_name(srt.stem + ".words.json")
+
+
+def load_word_stream(srt: Path) -> list[tuple[int, int, str]] | None:
+    """Real per-word timing saved alongside an auto-caption .srt, if any --
+    see clean_auto_captions. `None` for anything else (human subtitles, MKV
+    extractions, or an auto-caption fetched before this existed), which
+    callers treat as "fall back to interpolating"."""
+    try:
+        data = json.loads(_word_stream_path(srt).read_text(encoding="utf-8"))
+        return [(s, e, w) for s, e, w in data]
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def save_word_stream(srt: Path, word_stream: list[tuple[int, int, str]]) -> None:
+    _word_stream_path(srt).write_text(
+        json.dumps([[s, e, w] for s, e, w in word_stream], ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -440,13 +596,21 @@ def _punctuate_chunk(words):
     return [(s, e, p) for (s, e, _), p in zip(words, produced)]
 
 
-def punctuate_with_funasr(cues, on_chunk=None):
+def punctuate_with_funasr(cues, on_chunk=None, word_stream=None):
     """Restore punctuation to an unpunctuated track via the local ct-punc
     model, one chunk of whole cues at a time. Returns a list of
     (start_ms, end_ms, text) cues ready to write out directly, or None if the
     model is unavailable or every chunk failed -- in which case the caller
     keeps what it already has rather than replacing a working file with an
     empty one.
+
+    `word_stream` -- the real per-word timing saved alongside the .srt when
+    it came from clean_auto_captions -- is sliced per chunk and handed to
+    words_from_cues, so the cues this produces land on real speech timing
+    instead of words_from_cues' own interpolation fallback. Slicing by
+    running word count works because _chunk_cues only ever cuts on whole-cue
+    boundaries, so a chunk's words are always a contiguous run of the same
+    stream this was built from.
 
     A chunk that fails validation contributes its own original cues,
     untouched, rather than aborting the whole video or recutting its
@@ -466,8 +630,14 @@ def punctuate_with_funasr(cues, on_chunk=None):
     chunks = _chunk_cues(cues, PUNCTUATE_CHUNK_WORDS)
     out: list[tuple[int, int, str]] = []
     any_succeeded = False
+    offset = 0
     for i, chunk in enumerate(chunks, 1):
-        punctuated_words = _punctuate_chunk(words_from_cues(chunk))
+        chunk_word_count = sum(len(c[2].split()) for c in chunk)
+        chunk_stream = (word_stream[offset:offset + chunk_word_count]
+                        if word_stream is not None else None)
+        offset += chunk_word_count
+
+        punctuated_words = _punctuate_chunk(words_from_cues(chunk, word_stream=chunk_stream))
         if punctuated_words is not None:
             out.extend(cut_words_into_cues(punctuated_words))
             any_succeeded = True
@@ -557,7 +727,12 @@ def polish_auto_captions_in_background(base: Path) -> None:
             # third state -- see subtitle_status. It is overwritten as soon
             # as this finishes, one way or the other.
 
-        cues = punctuate_with_funasr(cues, on_chunk=report)
+        # Real per-word timing from the original vtt, if the auto-caption
+        # fetch that produced this .srt saved one (see clean_auto_captions /
+        # _fetch_auto_captions) -- lets the recut below land cues on actual
+        # speech timing instead of words_from_cues' interpolation fallback.
+        word_stream = load_word_stream(srt)
+        cues = punctuate_with_funasr(cues, on_chunk=report, word_stream=word_stream)
         if cues is None:
             _set_stage(base, None)
             return
@@ -582,14 +757,33 @@ def polish_auto_captions_in_background(base: Path) -> None:
 # handlers -- same split the MKV extraction already uses.
 _fetch_lock = threading.Lock()
 _fetch_states: dict[str, str] = {}  # base name -> stage text, or an error
+# base name -> time.monotonic() of its last failure. Separate from
+# _fetch_states (whose error text ensure_current below has no reason to
+# parse) and checked there to stop a video with no subtitles available from
+# being silently re-fetched from scratch every single time it's reported as
+# current again -- which, for a video the extension reports on every SPA
+# navigation to it, used to mean every re-visit (or even just switching away
+# and back) kicked off a fresh yt-dlp round trip for a result already known
+# to fail, no better the second time than the first.
+_fetch_failed_at: dict[str, float] = {}
+RETRY_COOLDOWN_S = 600  # 10 minutes -- long enough that idle re-navigation stops re-triggering it, short enough that a transient failure (rate limiting, a network blip) isn't stuck until the process restarts.
 
 
 def _set_stage(base: Path, stage: str | None) -> None:
     with _fetch_lock:
         if stage is None:
             _fetch_states.pop(base.name, None)
+            _fetch_failed_at.pop(base.name, None)
         else:
             _fetch_states[base.name] = stage
+            if stage.startswith("!"):
+                _fetch_failed_at[base.name] = time.monotonic()
+
+
+def _recently_failed(base: Path) -> bool:
+    with _fetch_lock:
+        failed_at = _fetch_failed_at.get(base.name)
+    return failed_at is not None and time.monotonic() - failed_at < RETRY_COOLDOWN_S
 
 
 def subtitle_status(path: Path) -> tuple[str, str]:
@@ -615,13 +809,46 @@ def _yt_dlp() -> str:
     return found
 
 
+def _cookie_args() -> list[str]:
+    # The file wins when both are set: it's what youtube_cookies_file exists
+    # for in the first place -- sidestepping the browser's live, often-locked
+    # cookie database -- so a stale browser setting left behind shouldn't
+    # override a file someone deliberately configured instead.
+    cookies_file = app_config.youtube_cookies_file()
+    if cookies_file:
+        return ["--cookies", str(cookies_file)]
+    browser = app_config.youtube_cookies_from_browser()
+    return ["--cookies-from-browser", browser] if browser else []
+
+
+# yt-dlp needs to solve a JS-based "n challenge" to reach real video/audio
+# formats; without a solver it silently prefers whichever client can dodge
+# that requirement, and paired with real cookies (see _cookie_args above)
+# that turned out to be "tv" -- which YouTube then answers with "The page
+# needs to be reloaded" instead of the actual data (a PO token requirement
+# this client doesn't satisfy, not anything on this project's end).
+# Confirmed by testing directly: with a JS runtime (Deno) on PATH but this
+# flag missing, yt-dlp downloads nothing and hits the same error; adding it
+# is what actually let a real fetch succeed. yt-dlp's own first-party
+# solver script (github.com/yt-dlp/ejs) is what gets fetched -- disabled by
+# default because it's remote code execution, which is exactly why yt-dlp
+# gates it behind an explicit opt-in rather than silently downloading it.
+_EXTRACTOR_ARGS = ["--remote-components", "ejs:github"]
+
+
 def _run(args: list[str], on_line=None) -> str:
     """Run yt-dlp to completion and return its stdout.
 
     With `on_line`, output is streamed line by line as it arrives instead of
     being collected at the end, so a caller can narrate what's happening --
     see _friendly_stage for why that's worth the extra plumbing.
+
+    Every call goes through here, so _cookie_args() (opt-in, see
+    app_config.youtube_cookies_from_browser) and _EXTRACTOR_ARGS only have
+    to be threaded in once rather than at each of the two call sites that
+    build a yt-dlp command.
     """
+    args = [*args, *_cookie_args(), *_EXTRACTOR_ARGS]
     if on_line is None:
         result = subprocess.run(
             [_yt_dlp(), *args],
@@ -822,7 +1049,7 @@ def _fetch_auto_captions(base: Path, url: str, on_stage=None) -> Path | None:
         return None
     stage("正在整理字幕")
     try:
-        cues = clean_auto_captions(vtt)
+        cues, word_stream = clean_auto_captions(vtt)
     finally:
         # .vtt is itself a subtitle extension, so a leftover would be picked
         # up by the sidecar scan ahead of the cleaned file.
@@ -832,6 +1059,11 @@ def _fetch_auto_captions(base: Path, url: str, on_stage=None) -> Path | None:
 
     srt = base.with_name(f"{base.name}.en.srt")
     write_srt(cues, srt)
+    # Real per-word timing, saved alongside the .srt so a later pass --
+    # punctuation restoration recutting sentences, or a future word-level
+    # highlight -- can reuse it instead of re-parsing the (by then deleted)
+    # raw vtt. See load_word_stream / clean_auto_captions.
+    save_word_stream(srt, word_stream)
     return srt
 
 
@@ -956,10 +1188,22 @@ def ensure_current(video_id: str, title: str, url: str) -> dict:
     navigation to a video it may well have seen before) -- re-registering on
     every one of those would nuke a perfectly good cached .srt and kick off a
     pointless yt-dlp round trip each time.
+
+    Same reasoning covers a video that has no cached .srt because the *last*
+    attempt failed, not because none was ever made: without the
+    _recently_failed check below, every re-navigation to it would retry
+    immediately, indistinguishable from the success case above in how often
+    it fires. Left unchecked that turns one bad video (no captions at all,
+    or a transient block) into a source of repeated yt-dlp round trips for
+    as long as it stays "current" -- exactly the kind of traffic that risks
+    provoking the rate limiting it's often failing from in the first place.
     """
     base = CACHE_DIR / safe_base_name(title, video_id)
     if _english_subtitle(base):
         return {"id": video_id, "path": str(base.with_name(f"{base.name}.strm"))}
+    placeholder = base.with_name(f"{base.name}.strm")
+    if placeholder.exists() and _recently_failed(base):
+        return {"id": video_id, "path": str(placeholder)}
     return _register(video_id, title, 0, url)
 
 

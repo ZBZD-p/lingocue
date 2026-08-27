@@ -29,7 +29,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -240,6 +240,33 @@ def youtube_watch(body: YouTubeWatch):
     path = Path(info["path"])
     playback.write(str(path), 0, 0, "paused")
     return {"ok": True, "path": str(path), "video_id": body.id}
+
+
+# Where the extension's periodic cookie sync (see extension/background.js)
+# writes its Netscape-format export -- see youtube.py's _cookie_args, which
+# uses this file for yt-dlp once it exists, no config.json entry required.
+YOUTUBE_COOKIES_FILE = ROOT / "youtube_cookies.txt"
+
+
+@app.post("/api/youtube/cookies")
+async def youtube_cookies(request: Request):
+    """Receives the youtube.com cookie jar from the extension's background
+    script (chrome.cookies.getAll, not a raw read of Chrome's on-disk
+    database -- see that file for why the distinction matters) and writes it
+    out as a plain Netscape-format cookies.txt, which is exactly the file
+    format `yt-dlp --cookies` expects.
+
+    Plain text body, not JSON: the extension already builds the finished
+    cookies.txt content itself, so this is just "write what you're given" --
+    no parsing, no validation of cookie contents needed on this side.
+    """
+    body = await request.body()
+    if not body:
+        raise HTTPException(400, "空的 cookie 内容")
+    tmp = YOUTUBE_COOKIES_FILE.with_suffix(".tmp")
+    tmp.write_bytes(body)
+    tmp.replace(YOUTUBE_COOKIES_FILE)  # atomic: a concurrent yt-dlp run sees old or new, never partial
+    return {"ok": True}
 
 
 @app.get("/api/vocab")

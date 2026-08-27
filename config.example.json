@@ -1,4 +1,6 @@
 {
   "youtube_cache_dir": "",
-  "ffmpeg_dir": ""
+  "ffmpeg_dir": "",
+  "youtube_cookies_from_browser": "",
+  "youtube_cookies_file": ""
 }

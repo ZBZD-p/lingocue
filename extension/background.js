@@ -43,6 +43,98 @@
 const DEFAULT_BACKEND = "http://127.0.0.1:8420";
 const WATCH_URL_FILTER = [{ hostEquals: "www.youtube.com", pathEquals: "/watch" }];
 
+// ---- cookie sync ----------------------------------------------------------
+// yt-dlp's own `--cookies-from-browser` reads Chrome's cookie database
+// directly off disk, which recent Chrome versions deliberately make
+// unreliable on Windows (Chrome keeps it locked while running, and newer
+// releases add "App-Bound Encryption" specifically to make that kind of
+// external, non-interactive read hard -- the same technique credential
+// -stealing malware relies on, so Chrome hardens against it on purpose).
+// An extension asking for cookies through chrome.cookies.getAll() is a
+// completely different, sanctioned path -- Chrome hands them over through
+// its own API to whatever the user granted the "cookies" permission to,
+// same as any cookie-export extension does. This keeps yt-dlp working
+// through youtube.com's occasional "confirm you're not a bot" checks
+// without giving up on Chrome or requiring a separate extension.
+const COOKIE_SYNC_ALARM = "lingocue-cookie-sync";
+const COOKIE_SYNC_PERIOD_MIN = 360; // 6h -- a YouTube session cookie is good for weeks; this just keeps the file from ever going stale long enough to matter.
+
+function toNetscapeCookiesTxt(cookies) {
+  const lines = ["# Netscape HTTP Cookie File", "# Written by the LingoCue extension -- do not edit."];
+  for (const c of cookies) {
+    // A leading dot means "this domain and all its subdomains" in the
+    // Netscape format; chrome.cookies already prefixes non-host-only
+    // cookies with one, so hostOnly is exactly the inverse of that flag.
+    const domain = c.hostOnly ? c.domain.replace(/^\./, "") : (c.domain.startsWith(".") ? c.domain : `.${c.domain}`);
+    const includeSubdomains = c.hostOnly ? "FALSE" : "TRUE";
+    const secure = c.secure ? "TRUE" : "FALSE";
+    // 0 is the conventional Netscape-format stand-in for "expires with the
+    // session" -- there's no real expiry to report for those.
+    const expiry = c.session ? 0 : Math.round(c.expirationDate || 0);
+    lines.push([domain, includeSubdomains, c.path, secure, expiry, c.name, c.value].join("\t"));
+  }
+  return lines.join("\n") + "\n";
+}
+
+async function syncYouTubeCookies() {
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: "youtube.com" });
+    if (!cookies.length) {
+      // Not an error -- getAll() resolves with an empty array rather than
+      // rejecting when the extension lacks host permission for the
+      // requested domain, so a silent `return` here would look identical to
+      // "not signed into YouTube yet" and "the permission grant didn't take"
+      // from the console. Logging it is what actually told us, the first
+      // time this ever happened, that host_permissions needed to cover
+      // *.youtube.com and not just www.youtube.com.
+      console.log("[lingocue] cookie sync: chrome.cookies.getAll returned 0 cookies for youtube.com");
+      return;
+    }
+    const base = await getBackendBase();
+    await fetch(`${base}/api/youtube/cookies`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: toNetscapeCookiesTxt(cookies),
+    });
+    await chrome.storage.local.set({ lastCookieSyncAt: Date.now() });
+    console.log(`[lingocue] synced ${cookies.length} youtube.com cookies`);
+  } catch (e) {
+    // Backend not running, or the extension lost host permission for
+    // youtube.com -- neither is worth surfacing beyond the console; the
+    // next scheduled sync (or the next video load, see below) tries again.
+    console.error("[lingocue] cookie sync failed", e);
+  }
+}
+
+// onInstalled/onStartup below are the "keep it fresh" path, but neither is
+// guaranteed to actually fire for what most people mean by "I just enabled
+// this" -- manually clicking Reload on an unpacked extension in
+// chrome://extensions doesn't reliably raise onInstalled (reports of this
+// vary by Chrome version), and onStartup only fires on a real browser
+// launch, not a reload. So this is also checked opportunistically on every
+// video load (see handle() below) -- throttled here, rather than in the
+// caller, so every call site gets the same "don't sync more than once an
+// hour" rule for free without having to remember to add it themselves.
+const OPPORTUNISTIC_SYNC_MIN_GAP_MS = 60 * 60 * 1000;
+
+async function maybeSyncYouTubeCookies() {
+  const { lastCookieSyncAt } = await chrome.storage.local.get("lastCookieSyncAt");
+  if (lastCookieSyncAt && Date.now() - lastCookieSyncAt < OPPORTUNISTIC_SYNC_MIN_GAP_MS) return;
+  await syncYouTubeCookies();
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === COOKIE_SYNC_ALARM) syncYouTubeCookies();
+});
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create(COOKIE_SYNC_ALARM, { periodInMinutes: COOKIE_SYNC_PERIOD_MIN });
+  syncYouTubeCookies();
+});
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(COOKIE_SYNC_ALARM, { periodInMinutes: COOKIE_SYNC_PERIOD_MIN });
+  syncYouTubeCookies();
+});
+
 async function getBackendBase() {
   const stored = await chrome.storage.local.get("backendBase");
   return stored.backendBase || DEFAULT_BACKEND;
@@ -114,6 +206,7 @@ async function handle(tabId) {
     await setApiBase(tabId, base);
     await runContentBridge(tabId);
     await injectPanelIfNeeded(tabId);
+    maybeSyncYouTubeCookies(); // not awaited -- a slow/failed sync shouldn't hold up injection
   } catch (e) {
     // Tab navigated away/closed mid-injection, or the extension lacks
     // permission for this origin yet -- neither is worth surfacing to the

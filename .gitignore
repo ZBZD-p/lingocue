@@ -4,6 +4,10 @@ config.json
 jellyfin_config.json
 deepseek_config.json
 
+# 扩展的 cookie 同步自动写的（见 app.py 的 /api/youtube/cookies），是你
+# youtube.com 的登录态，跟密码一个级别，绝对不能提交。
+youtube_cookies.txt
+
 # 启动时由 app.py 按本机路径重新生成（write_mcp_config），提交了也没用。
 mcp_config.json
 
