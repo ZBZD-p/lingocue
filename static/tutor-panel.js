@@ -1497,6 +1497,14 @@
         if (subtitleCues[i].start_ms <= positionMs) idx = i;
         else break;
       }
+      // The loop's own seek deliberately lands LOOP_LEAD_MS before the
+      // loop-start cue's start_ms, as a pre-roll so the line's first word
+      // doesn't get clipped -- but that position genuinely falls inside the
+      // *previous* cue's span, so without this the previous line's card
+      // flashes "current" for that ~150ms on every single lap. While a loop
+      // is running, the line being drilled is never actually the one before
+      // it, so floor the display at the loop's own start.
+      if (loopActive() && idx < loopStartIdx) idx = loopStartIdx;
       if (idx !== currentCueIndex) {
         highlightCue(idx, Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS);
       }
@@ -1549,10 +1557,18 @@
     // keeps this working across Direct Play, Direct Stream and transcode
     // alike.
 
-    // Subtitle timings sit tight against the speech, and SRT end times in
-    // particular tend to clip the last consonant. Padding both sides makes
-    // the repeat sound like a phrase instead of a fragment.
+    // A cue's start_ms sits right at the first word's own timestamp, so
+    // LOOP_LEAD_MS backs off a little before it -- otherwise the loop would
+    // clip the word's own attack on every lap.
     const LOOP_LEAD_MS = 150;
+    // A cue's end_ms is NOT "when this sentence's speech ends" -- by
+    // construction (see youtube.py's _fill_word_gaps and cut_words_into_cues)
+    // it's literally the start_ms of the next sentence's first word: a
+    // word's end is defined as the next word's start, all the way through to
+    // a cue's last word, whose "next word" is the next sentence's first one.
+    // So end_ms already reaches into the next sentence, not short of this
+    // one -- LOOP_TAIL_MS has to pull back from it, not pad past it, or
+    // every lap plays a beat of the next line before jumping back.
     const LOOP_TAIL_MS = 250;
     // Bounds how far past the end playback can get before the seek fires,
     // so at 50ms the next line never becomes audible. The timer only exists
@@ -1574,10 +1590,16 @@
       const a = subtitleCues[loopStartIdx];
       const b = subtitleCues[loopEndIdx];
       if (!a || !b) return null;
-      return {
-        startMs: Math.max(0, a.start_ms - LOOP_LEAD_MS),
-        endMs: b.end_ms + LOOP_TAIL_MS,
-      };
+      const startMs = Math.max(0, a.start_ms - LOOP_LEAD_MS);
+      // A very short cue (a one-word "Yes." with barely a beat before the
+      // next line) could see end_ms sit less than LOOP_TAIL_MS past its own
+      // start, which would pull endMs back past startMs and stall the loop
+      // (seek to startMs, immediately past endMs, seek again forever). Floor
+      // it instead of letting that invert -- worst case such a cue plays a
+      // sliver into the next line, same as before this fix, rather than
+      // never playing at all.
+      const endMs = Math.max(b.end_ms - LOOP_TAIL_MS, startMs + LOOP_TAIL_MS);
+      return { startMs, endMs };
     }
 
     function setLoop(startIdx, endIdx) {
