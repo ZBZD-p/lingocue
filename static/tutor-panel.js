@@ -1406,11 +1406,19 @@
         saveBtn.disabled = true;
         saveBtn.textContent = "存中…";
         try {
+          // Reuses whatever fillDefinition already fetched for the popup
+          // itself -- the point is saving the Chinese gloss along with the
+          // word, not looking it up a second time. A card with no answer
+          // renders as "问一下具体意思" instead (see renderVocabList), so
+          // an empty/not-yet-loaded lookup just falls back to that, same as
+          // before this existed.
+          const def = defCache.get(word);
+          const answer = def && def.found ? def.translation : "";
           await saveVocabEntry({
             video_title: lastKnownVideoTitle,
             subtitle_text: sentence,
             question: word,
-            answer: "",
+            answer,
           });
           saveBtn.innerHTML = `${icon("check")} 已存`;
         } catch (e) {
