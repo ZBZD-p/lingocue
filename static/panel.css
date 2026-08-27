@@ -60,6 +60,15 @@
   --radius-lg: 20px;
   --shadow-lift: 0 14px 36px rgba(10, 8, 6, 0.4);
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /* For the subtitle line handover specifically. Almost all of the motion
+     happens up front and then eases out over a long tail, which is what
+     makes a line change read as settling into place rather than as a
+     transition running on a timer. Paired with a duration long enough to
+     actually see -- the usual 0.15s UI tempo is right for a button
+     acknowledging a click and far too abrupt for a whole line of text
+     changing size, weight and colour at once. */
+  --ease-soft: cubic-bezier(0.22, 0.61, 0.24, 1);
+  --line-change: 0.42s;
   --font-heading: "Caprasimo", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-body: "Figtree", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 
@@ -443,8 +452,23 @@ button:focus-visible {
 }
 .pulse-icon.done { animation: none; color: var(--muted-3); }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* The current line growing into place as playback moves between cues. */
+@keyframes line-reveal {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pulse-icon { animation: none; }
+  /* Zero rather than "shorter": the line handover fires on its own every
+     few seconds while a video plays, which is exactly the kind of unasked-for
+     motion this setting exists to stop. Everything still changes, just
+     instantly. */
+  :host {
+    --line-change: 0s;
+  }
+  .sub-card.current .sub-time,
+  .sub-card.current .sub-actions { animation: none; }
 }
 
 .thinking-box { margin: 9px 0; font-size: 12px; color: var(--muted); }
@@ -525,6 +549,12 @@ button:focus-visible {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Stated explicitly, not left to default. Setting overflow on one axis
+     makes the other compute from `visible` to `auto`, so this column of
+     wrapped text was one stray overhanging pixel away from growing a
+     sideways scrollbar at all times -- which is never the right answer
+     here, since anything too wide should wrap instead (see .sub-text). */
+  overflow-x: hidden;
   padding: 10px 22px 18px;
   display: flex;
   flex-direction: column;
@@ -552,9 +582,15 @@ button:focus-visible {
 }
 .subs-hint { color: var(--muted-3); font-size: 11.5px; }
 
-/* Subtitle text is the thing actually being studied here, so context lines
-   run a couple of sizes larger than the surrounding chrome, and the current
-   line larger still. */
+/* Subtitle text is the thing actually being studied here, so it runs a
+   couple of sizes larger than the surrounding chrome.
+   Every line is the same size and the same face, current or not, and that
+   is load-bearing rather than a simplification: where a line wraps depends
+   on its font size and metrics against the column width, so a current line
+   set larger (or in a different face) re-wraps its own text -- words jump
+   between rows at the exact moment you are reading them. The current line
+   is called out with colour, the word-by-word fill, its timestamp and its
+   controls instead, none of which touch layout. */
 .sub-card {
   padding: 0;
   margin: 0;
@@ -567,15 +603,21 @@ button:focus-visible {
      lives in the fallback rather than in a separate rule. */
   font-size: var(--english-tutor-sub-size, 16px);
   line-height: 1.5;
-  transition: color 0.15s var(--ease);
+  /* Flex on every card, not just the current one. Stacking is identical to
+     the block default at gap 0, and it buys the one thing that matters:
+     `gap` becomes a number that can be animated, where switching `display`
+     to flex only when current made the row spacing snap open. */
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  transition: color var(--line-change) var(--ease-soft),
+              gap var(--line-change) var(--ease-soft);
 }
 .sub-card:nth-child(odd) { color: var(--ctx-far); }
 .sub-card:hover { color: var(--muted-2); }
 
 .sub-card.current {
   color: var(--ink);
-  display: flex;
-  flex-direction: column;
   gap: 14px;
 }
 .sub-card.current .sub-time {
@@ -583,6 +625,7 @@ button:focus-visible {
   align-items: center;
   gap: 10px;
   margin: 0;
+  animation: line-reveal var(--line-change) var(--ease-soft) both;
 }
 .sub-card.current .sub-time::before {
   content: "";
@@ -597,10 +640,19 @@ button:focus-visible {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
-.sub-card.current .sub-text {
-  font-family: var(--font-heading);
-  font-size: calc(var(--english-tutor-sub-size, 16px) * 1.55);
-  line-height: 1.3;
+/* Nothing here scales, resizes or re-faces the current line, and that is
+   the point: all three change where the text wraps, and re-wrapping a line
+   at the moment you start reading it is worse than any emphasis it buys.
+   A transform was tried and removed -- it leaves layout alone but still
+   counts toward the scroll container's overflow, so the enlarged line
+   painted past the right edge and produced a sideways scrollbar in a list
+   that should only ever scroll vertically.
+   The current line is called out by colour, the word-by-word fill, its
+   timestamp and its controls -- none of which touch layout at all. */
+.sub-text {
+  /* A long unbroken token (a URL in a caption) would otherwise push the
+     column wider than the panel and bring that scrollbar back. */
+  overflow-wrap: break-word;
 }
 
 /* Sized in em so it tracks the subtitle-size setting instead of needing its
@@ -642,7 +694,13 @@ button:focus-visible {
   gap: 22px;
   padding-top: 2px;
 }
-.sub-card.current .sub-actions { display: flex; }
+/* An animation rather than a transition: these go display:none -> flex, and
+   a transition has nothing to interpolate from when the element wasn't being
+   laid out a frame earlier. */
+.sub-card.current .sub-actions {
+  display: flex;
+  animation: line-reveal var(--line-change) var(--ease-soft) both;
+}
 .sub-ask-btn, .sub-loop-btn, .sub-read-btn {
   padding: 0;
   gap: 7px;
@@ -861,8 +919,10 @@ button:focus-visible {
   .composer textarea { font-size: 16px; }  /* 16px stops iOS zooming on focus */
   #sendBtn { width: 44px; height: 44px; }
 
+  /* Bumped for every line together, current or not -- sizing the current
+     one separately is exactly what re-wraps it (see .sub-text above), and
+     a phone's narrower column makes that worse, not better. */
   .sub-card { font-size: var(--english-tutor-sub-size, 18px); }
-  .sub-card.current .sub-text { font-size: calc(var(--english-tutor-sub-size, 18px) * 1.5); }
   .sub-actions { gap: 26px; }
   .sub-ask-btn, .sub-loop-btn, .sub-read-btn { font-size: 15px; }
   .loop-pill { height: 40px; font-size: 14px; }
