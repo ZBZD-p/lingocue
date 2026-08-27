@@ -103,20 +103,31 @@ def _word_stamps(payload: list[str]) -> list[tuple[str, int | None]]:
 
 
 def _fill_word_gaps(stream: list[list], doc_end_ms: int) -> list[tuple[int, int, str]]:
-    """Turns the (word, start_ms-or-None) pairs collected while walking the
-    vtt into finished (start_ms, end_ms, word) triples.
+    """Turns the [word, start_ms|None, fallback_ms|None] entries collected
+    while walking the vtt into finished (start_ms, end_ms, word) triples.
 
-    Most words end up with a real stamp (their own block's, or backfilled
-    from a later one); whatever's left -- the source is uneven enough that
-    a handful of words never pick one up -- gets evenly spaced between
-    whichever real timestamps (or the transcript's own edges) bracket the
-    gap. Same interpolation used everywhere else in this module, just
-    scoped to however small that particular gap turned out to be, instead
-    of guessing across an entire resegmented sentence like today's fallback
-    -- see words_from_cues, which is exactly that fallback, kept for
-    sources with no real per-word data to lean on at all.
+    Three sources of truth, in descending order of trust:
+
+    1. The word's own inline `<00:00:02.520>` stamp, or one backfilled from
+       a later block that carried it.
+    2. `fallback_ms` -- the start of the block the word first appeared in.
+       Only the first new word of each block lacks an inline stamp (the tag
+       sits *between* words, so the first one has nothing before it), and
+       for exactly that word the block's own start is when it appeared on
+       screen. This matters far more than its one-in-seven frequency
+       suggests: those words are the ones that follow a pause, so
+       interpolating them instead lands them in the middle of the silence.
+       Measured on a real transcript before this used the block start: every
+       such word was early, by 307ms on average and up to 8.6 seconds.
+    3. Even spacing between whichever real stamps bracket the gap -- the
+       last resort, for sources irregular enough that neither of the above
+       turned anything up.
     """
     n = len(stream)
+    for entry in stream:
+        if entry[1] is None and entry[2] is not None:
+            entry[1] = entry[2]
+
     i = 0
     prev_ms = 0
     while i < n:
@@ -141,10 +152,17 @@ def _fill_word_gaps(stream: list[list], doc_end_ms: int) -> list[tuple[int, int,
         prev_ms = next_ms
         i = j
 
+    # Sources disagreeing (a block start later than a stamp inside it, say)
+    # would otherwise put a word before the one it follows, and the
+    # highlight walks this list assuming it only ever moves forward.
+    for idx in range(1, n):
+        if stream[idx][1] < stream[idx - 1][1]:
+            stream[idx][1] = stream[idx - 1][1]
+
     out: list[tuple[int, int, str]] = []
-    for idx, (word, start_ms) in enumerate(stream):
+    for idx, entry in enumerate(stream):
         end_ms = stream[idx + 1][1] if idx + 1 < n else doc_end_ms
-        out.append((start_ms, end_ms, word))
+        out.append((entry[1], end_ms, entry[0]))
     return out
 
 
@@ -177,11 +195,21 @@ def clean_auto_captions(
     _fetch_auto_captions) so a later pass -- punctuation restoration, or a
     future word-level highlight -- can reuse it without re-parsing the vtt.
     """
-    blocks = re.split(r"\n\s*\n", vtt_path.read_text(encoding="utf-8", errors="ignore").strip())
-    cues: list[tuple[int, int, str]] = []
-    # [word, start_ms-or-None] rather than a tuple: backfill (below) patches
-    # an already-appended entry's timestamp in place once a later block
-    # reveals it.
+    # Split on genuinely empty lines only, not on any whitespace-only line.
+    # A one-line rolling caption arrives as an *empty top line* holding a
+    # single space, directly under the timing header -- treating that as a
+    # separator cut those headers away from their own text, and the words
+    # underneath lost every inline timestamp they had. Measured on a real
+    # transcript: 15 of 557 blocks orphaned that way, including the very
+    # first one.
+    blocks = re.split(r"\n\n+", vtt_path.read_text(encoding="utf-8", errors="ignore").strip())
+    # (first word's index into word_stream, block end, text) -- turned into
+    # real cues once _fill_word_gaps below has resolved the word timings.
+    cue_spans: list[tuple[int, int, str]] = []
+    # [word, start_ms|None, fallback_ms|None] lists rather than tuples:
+    # backfill (below) patches an already-appended entry's timestamp in
+    # place once a later block reveals it. See _fill_word_gaps for how the
+    # two timestamp slots rank against each other.
     word_stream: list[list] = []
     previous_words: list[str] = []
     doc_end_ms = 0
@@ -200,7 +228,6 @@ def clean_auto_captions(
         doc_end_ms = max(doc_end_ms, end)
 
         payload = lines[time_idx + 1:]
-        timed = [l for l in payload if VTT_TIME_RE.search(l)]
         text = html.unescape(VTT_TAG_RE.sub("", " ".join(payload)))
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
@@ -236,12 +263,23 @@ def clean_auto_captions(
         fresh = words[overlap:]
         if not fresh:
             continue
-        word_stream.extend([word, ms] for word, ms in pairs[overlap:])
-
-        inner = VTT_TIME_RE.findall(" ".join(timed)) if timed else []
-        cues.append((min(_vtt_ms(inner[0]), end) if inner else start, end, " ".join(fresh)))
+        # Only the first new word gets the block start as a fallback -- it's
+        # the one the block start actually describes. Handing it to the rest
+        # would claim they were all spoken at that same instant.
+        first_index = len(word_stream)
+        word_stream.extend(
+            [word, ms, start if k == 0 else None]
+            for k, (word, ms) in enumerate(pairs[overlap:])
+        )
+        # Start is filled in below, once the word timings are resolved, so a
+        # cue always begins exactly when its own first word does. Reading a
+        # timestamp straight out of the block here can't do that: in a
+        # rolling block the earliest inline stamp belongs to the *second*
+        # new word, the first having only the block start to go on.
+        cue_spans.append((first_index, end, " ".join(fresh)))
 
     filled = _fill_word_gaps(word_stream, doc_end_ms)
+    cues = [(filled[i][0], end, text) for i, end, text in cue_spans]
     return resegment_sentences(cues, word_stream=filled), filled
 
 
