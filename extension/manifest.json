@@ -3,7 +3,7 @@
   "name": "LingoCue for YouTube",
   "version": "0.1.0",
   "description": "Injects the LingoCue subtitle/vocab sidebar straight into youtube.com.",
-  "permissions": ["scripting", "webNavigation", "storage", "cookies", "alarms"],
+  "permissions": ["scripting", "webNavigation", "storage"],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://*.youtube.com/*",

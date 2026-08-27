@@ -11,9 +11,10 @@ difference. Playback itself happens in YouTube's own embedded player.
 
 What actually lands on disk per video is a few tens of KB:
 
-    Some Title [dQw4w9WgXcQ].strm       <- a few dozen bytes, holds the URL
-    Some Title [dQw4w9WgXcQ].en.srt     <- the real payload
-    Some Title [dQw4w9WgXcQ].info.json  <- title / duration / id
+    Some Title [dQw4w9WgXcQ].strm            <- a few dozen bytes, holds the URL
+    Some Title [dQw4w9WgXcQ].en.srt          <- the real payload
+    Some Title [dQw4w9WgXcQ].en.words.json   <- per-word timings, auto captions only
+    Some Title [dQw4w9WgXcQ].tutor.json      <- id / title / which kind of subtitles
 
 Human-written subtitles are preferred, but they turned out to be rare enough
 to be limiting -- measured hit rate across a search sample: TED 6/6, English
@@ -33,12 +34,12 @@ import html
 import json
 import os
 import re
-import shutil
-import subprocess
 import threading
 import time
-import urllib.request
+import urllib.parse
 from pathlib import Path
+
+import requests
 
 import app_config
 import subs_now
@@ -48,9 +49,10 @@ import subs_now
 # config.json takes effect on the next app.py start.
 CACHE_DIR = app_config.youtube_cache_dir()
 
-# English first because it's the one being studied; the Chinese variants feed
-# the 副字幕 setting when a video happens to have them (most don't).
-SUB_LANGS = "en.*,zh-Hans,zh-Hant,zh-CN,zh"
+# Language codes the 副字幕 setting can use, when a video happens to carry one
+# (most don't). Matched as prefixes, so this covers zh-Hans / zh-Hant / zh-CN
+# and any other regional variant YouTube reports.
+SECONDARY_PREFIXES = ("zh",)
 
 # Windows forbids these outright, and trailing dots/spaces get silently
 # stripped by the filesystem -- which would leave the .srt and the placeholder
@@ -802,123 +804,16 @@ def subtitle_status(path: Path) -> tuple[str, str]:
     return "fetching", stage
 
 
-def _yt_dlp() -> str:
-    found = shutil.which("yt-dlp")
-    if not found:
-        raise RuntimeError("找不到 yt-dlp，确认它已安装并在 PATH 里（pip install yt-dlp）。")
-    return found
-
-
-def _cookie_args() -> list[str]:
-    # The file wins when both are set: it's what youtube_cookies_file exists
-    # for in the first place -- sidestepping the browser's live, often-locked
-    # cookie database -- so a stale browser setting left behind shouldn't
-    # override a file someone deliberately configured instead.
-    cookies_file = app_config.youtube_cookies_file()
-    if cookies_file:
-        return ["--cookies", str(cookies_file)]
-    browser = app_config.youtube_cookies_from_browser()
-    return ["--cookies-from-browser", browser] if browser else []
-
-
-# yt-dlp needs to solve a JS-based "n challenge" to reach real video/audio
-# formats; without a solver it silently prefers whichever client can dodge
-# that requirement, and paired with real cookies (see _cookie_args above)
-# that turned out to be "tv" -- which YouTube then answers with "The page
-# needs to be reloaded" instead of the actual data (a PO token requirement
-# this client doesn't satisfy, not anything on this project's end).
-# Confirmed by testing directly: with a JS runtime (Deno) on PATH but this
-# flag missing, yt-dlp downloads nothing and hits the same error; adding it
-# is what actually let a real fetch succeed. yt-dlp's own first-party
-# solver script (github.com/yt-dlp/ejs) is what gets fetched -- disabled by
-# default because it's remote code execution, which is exactly why yt-dlp
-# gates it behind an explicit opt-in rather than silently downloading it.
-_EXTRACTOR_ARGS = ["--remote-components", "ejs:github"]
-
-
-def _run(args: list[str], on_line=None) -> str:
-    """Run yt-dlp to completion and return its stdout.
-
-    With `on_line`, output is streamed line by line as it arrives instead of
-    being collected at the end, so a caller can narrate what's happening --
-    see _friendly_stage for why that's worth the extra plumbing.
-
-    Every call goes through here, so _cookie_args() (opt-in, see
-    app_config.youtube_cookies_from_browser) and _EXTRACTOR_ARGS only have
-    to be threaded in once rather than at each of the two call sites that
-    build a yt-dlp command.
-    """
-    args = [*args, *_cookie_args(), *_EXTRACTOR_ARGS]
-    if on_line is None:
-        result = subprocess.run(
-            [_yt_dlp(), *args],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(detail[-600:] or f"yt-dlp 退出码 {result.returncode}")
-        return result.stdout
-
-    # stderr folded into stdout so the two can't interleave into a garbled
-    # error message, and --newline so progress lines arrive as lines rather
-    # than carriage-return redraws that would never terminate a read.
-    proc = subprocess.Popen(
-        [_yt_dlp(), *args, "--newline"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", bufsize=1,
-    )
-    lines = []
-    for line in proc.stdout:
-        line = line.rstrip()
-        lines.append(line)
-        on_line(line)
-    if proc.wait() != 0:
-        detail = "\n".join(lines).strip()
-        raise RuntimeError(detail[-600:] or f"yt-dlp 退出码 {proc.returncode}")
-    return "\n".join(lines)
-
-
-# yt-dlp narrates itself on stdout -- "[youtube] <id>: Downloading webpage",
-# "Downloading android vr player API JSON", and so on. Those lines are the
-# only visible structure inside what is otherwise a single opaque ~5s wait,
-# so they get translated into something worth showing rather than left to
-# scroll past in a console nobody is looking at. Matched by substring
-# because the exact wording varies with whichever player client yt-dlp picks
-# on the day, and an unrecognized line simply leaves the last stage standing.
-_YT_STAGE_TEXT = (
-    ("downloading webpage", "正在打开视频页"),
-    ("player api json", "正在解析播放信息"),
-    ("player api", "正在解析播放信息"),
-    ("downloading api json", "正在解析播放信息"),
-    ("downloading m3u8", "正在解析播放信息"),
-    ("downloading subtitles", "正在下载字幕"),
-    ("writing video subtitles", "正在保存字幕"),
-    ("converting subtitles", "正在转换字幕格式"),
-    ("writing video metadata", "正在读取视频信息"),
-)
-
-
-def _friendly_stage(line: str) -> str | None:
-    low = line.lower()
-    for needle, text in _YT_STAGE_TEXT:
-        if needle in low:
-            return text
-    return None
-
 
 def safe_base_name(title: str, video_id: str) -> str:
     """Filename stem for a video, sanitized for Windows.
-
-    Built here rather than left to yt-dlp's own output template so the exact
-    resulting path is known up front. Guessing it afterwards would mean
-    globbing the directory and hoping the newest match is the right one.
 
     The id is kept in the name because titles collide and get edited, while
     the id is what the embedded player actually needs.
     """
     title = ILLEGAL_CHARS_RE.sub("_", title).strip(". ")
-    # Leave room for the longest suffix this writes (".info.json") inside the
-    # 255-char limit, and don't let a trailing space sneak back in.
+    # Leave room for the longest suffix this writes (".en.words.json") inside
+    # the 255-char limit, and don't let a trailing space sneak back in.
     title = title[:150].strip() or "video"
     return f"{title} [{video_id}]"
 
@@ -950,103 +845,154 @@ def _english_subtitle(base: Path) -> Path | None:
     return None
 
 
-def _info_json(base: Path) -> Path:
-    return base.with_name(f"{base.name}.info.json")
+# ---- caption tracks via youtube-transcript-api ----------------------------
+#
+# Subtitles deliberately do *not* go through yt-dlp. yt-dlp is built to reach
+# playable media, so it drives YouTube's full player API -- which now means a
+# JS "n challenge" (needing a JS runtime), and, for anything authenticated, a
+# Proof-of-Origin token it cannot mint. Measured on this machine, same moment,
+# same videos: yt-dlp was refused ("Sign in to confirm you're not a bot")
+# while these plain timedtext requests returned full transcripts.
+#
+# None of that machinery was ever wanted here -- this project only reads
+# caption tracks and never downloads a single frame of video, so the whole
+# player-API gauntlet was a toll being paid for nothing. Going straight at
+# the caption endpoint drops the JS runtime, the remote solver script and the
+# cookie handling along with it.
+#
+# Still an undocumented endpoint that YouTube can change without notice, same
+# as yt-dlp's own extractors -- the tradeoff is a much smaller surface, not a
+# supported one.
 
 
-def _auto_caption_url(base: Path) -> str | None:
-    """Direct URL of the en-orig auto-caption vtt, read out of the info.json
-    the human-subtitle pass already wrote.
+def _caption_tracks(video_id: str):
+    """Real caption tracks for a video, or [] if the library isn't installed.
 
-    This exists purely to skip a second yt-dlp run. Asking yt-dlp for auto
-    captions separately means re-doing the entire page extraction -- the
-    expensive part, measured at ~4.7s of the ~5s -- just to arrive at a URL
-    the first pass already had in hand. Measured end to end: 12.6s for the
-    two-run version against 7.2s going straight to the URL.
+    Machine-translated variants are deliberately absent: the API lists only
+    tracks that genuinely exist (a 16-language translation menu shows up as
+    `translation_languages` on each track, reachable only by explicitly
+    asking to translate, which nothing here does). That distinction is the
+    whole point -- an auto-caption *translated* into English from another
+    language is a machine translation of a machine transcription, no longer
+    matching what is actually being said, and worthless for listening
+    practice in a way that is not obvious from looking at it.
     """
     try:
-        data = json.loads(_info_json(base).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    tracks = (data.get("automatic_captions") or {}).get("en-orig") or []
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except ImportError:
+        return []
+    try:
+        return list(YouTubeTranscriptApi().list(video_id))
+    except Exception:
+        # No captions at all, video unavailable, network refusal -- all of
+        # which mean the same thing to every caller: nothing to work with.
+        return []
+
+
+def _pick_track(tracks, lang_prefixes: tuple[str, ...], generated: bool):
     for track in tracks:
-        if track.get("ext") == "vtt" and track.get("url"):
-            return track["url"]
+        code = (track.language_code or "").lower()
+        if track.is_generated == generated and code.startswith(lang_prefixes):
+            return track
     return None
 
 
-def _download(url: str, dest: Path, on_progress=None) -> None:
-    """Fetch `url` into `dest`, reporting (bytes_done, bytes_total) as it
-    goes -- total is 0 when the server doesn't say."""
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=60) as response:
-        total = int(response.headers.get("Content-Length") or 0)
-        done = 0
-        with dest.open("wb") as out:
-            while True:
-                chunk = response.read(65536)
-                if not chunk:
-                    break
-                out.write(chunk)
-                done += len(chunk)
-                if on_progress:
-                    on_progress(done, total)
+def _track_vtt(track) -> str:
+    """The track's raw vtt, which is the only form carrying the inline
+    per-word timestamps (`<00:00:02.520><c> Americans</c>`) that
+    clean_auto_captions rebuilds rolling captions from -- and that the
+    word-by-word highlight is then built on. The library's own fetch()
+    returns text already flattened to one string per cue, losing them.
+
+    Reaches for the resolved URL the library worked out, which is private
+    API: a URL scraped independently comes back 200 with an empty body,
+    tested directly, so what matters is that this one was obtained the way
+    the library obtains it. Callers treat a failure here as "no word timings
+    available" rather than "no subtitles".
+    """
+    response = requests.get(
+        track._url + "&fmt=vtt",
+        headers={"User-Agent": _CAPTION_UA, "Accept-Language": "en-US"},
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.text
 
 
-def _fetch_auto_captions(base: Path, url: str, on_stage=None) -> Path | None:
+_CAPTION_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+
+def _video_id_from_url(url: str) -> str:
+    return urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("v", [""])[0]
+
+
+def _snippets_to_cues(track) -> list[tuple[int, int, str]]:
+    """A track's own fetch(), as (start_ms, end_ms, text) cues.
+
+    Used for tracks where the raw vtt buys nothing: human-written subtitles
+    are already whole lines with real punctuation, and the second language
+    is only ever read as a block of text under the English.
+    """
+    cues = []
+    for snippet in track.fetch():
+        text = " ".join(snippet.text.split())
+        if not text:
+            continue
+        start = int(snippet.start * 1000)
+        cues.append((start, start + int(snippet.duration * 1000), text))
+    return cues
+
+
+def _write_manual_english(base: Path, tracks) -> Path | None:
+    track = _pick_track(tracks, ("en",), generated=False)
+    if not track:
+        return None
+    cues = _snippets_to_cues(track)
+    if not cues:
+        return None
+    srt = base.with_name(f"{base.name}.en.srt")
+    write_srt(cues, srt)
+    return srt
+
+
+def _write_secondary(base: Path, tracks) -> None:
+    """The 副字幕 track, if this video happens to have a human-written one.
+
+    Generated ones are skipped on purpose: a Chinese auto-caption on an
+    English video can only be a machine translation of a machine
+    transcription, which is exactly the thing the English side already
+    refuses (see _caption_tracks).
+    """
+    try:
+        track = _pick_track(tracks, SECONDARY_PREFIXES, generated=False)
+        if not track:
+            return
+        cues = _snippets_to_cues(track)
+        if cues:
+            write_srt(cues, base.with_name(f"{base.name}.{track.language_code}.srt"))
+    except Exception:
+        pass  # an optional extra; never worth failing the English track over
+
+
+def _fetch_auto_captions(base: Path, tracks, on_stage=None) -> Path | None:
     """Auto captions, repaired, written out as an ordinary .srt sidecar.
 
-    Only an `en-orig` track is requested, and its absence is taken as a
-    refusal. That tag is YouTube's marker for "the original audio is
-    English"; a plain `en` on a video spoken in another language is a machine
-    translation of a machine transcription, which no longer corresponds to
-    what is actually being said -- worthless for listening practice, and
-    quietly so, which is worse.
+    Only an English track generated *for this video's own audio* counts --
+    see _caption_tracks for why a translated one would be worse than none.
     """
     def stage(text):
         if on_stage:
             on_stage(text)
 
-    vtt = None
-    direct = _auto_caption_url(base)
-    if direct:
-        candidate = base.with_name(f"{base.name}.en-orig.vtt")
-
-        def progress(done, total):
-            stage("正在下载自动字幕 %d%%" % (done * 100 // total) if total
-                  else "正在下载自动字幕")
-
-        try:
-            _download(direct, candidate, progress)
-            vtt = candidate
-        except Exception:
-            # A stale or rejected caption URL shouldn't cost the whole
-            # fallback -- drop the partial file and take the slow path.
-            candidate.unlink(missing_ok=True)
-
-    if vtt is None:
-        stage("正在抓自动字幕")
-
-        def narrate(line):
-            text = _friendly_stage(line)
-            if text:
-                stage(text)
-
-        _run([
-            "--skip-download",
-            "--write-auto-subs",
-            "--sub-langs", "en-orig",
-            # No --convert-subs here on purpose: the per-word timestamps that
-            # make the rolling-caption repair possible only exist in the raw
-            # vtt, and the conversion flattens them away.
-            "--no-warnings",
-            "-o", f"{base}.%(ext)s",
-            url,
-        ], on_line=narrate)
-        vtt = next(iter(_siblings(base, ".vtt")), None)
-
-    if not vtt:
+    track = _pick_track(tracks, ("en",), generated=True)
+    if not track:
         return None
+
+    stage("正在下载自动字幕")
+    vtt = base.with_name(f"{base.name}.en-orig.vtt")
+    vtt.write_text(_track_vtt(track), encoding="utf-8")
+
     stage("正在整理字幕")
     try:
         cues, word_stream = clean_auto_captions(vtt)
@@ -1060,7 +1006,7 @@ def _fetch_auto_captions(base: Path, url: str, on_stage=None) -> Path | None:
     srt = base.with_name(f"{base.name}.en.srt")
     write_srt(cues, srt)
     # Real per-word timing, saved alongside the .srt so a later pass --
-    # punctuation restoration recutting sentences, or a future word-level
+    # punctuation restoration recutting sentences, or the word-by-word
     # highlight -- can reuse it instead of re-parsing the (by then deleted)
     # raw vtt. See load_word_stream / clean_auto_captions.
     save_word_stream(srt, word_stream)
@@ -1075,33 +1021,24 @@ def _fetch_subtitles(base: Path, url: str) -> None:
     is long gone and the video is already on screen.
     """
     try:
+        _set_stage(base, "正在查可用字幕")
+        # One listing serves every branch below -- the English track (human
+        # or generated) and the optional second language all come out of it,
+        # where the yt-dlp version needed a separate run per kind.
+        tracks = _caption_tracks(_video_id_from_url(url))
+
         _set_stage(base, "正在找人工字幕")
-
-        def narrate(line):
-            text = _friendly_stage(line)
-            if text:
-                _set_stage(base, text)
-
-        _run([
-            "--skip-download",
-            "--write-subs",           # human-written only; the fallback is below
-            "--sub-langs", SUB_LANGS,
-            "--convert-subs", "srt",  # YouTube serves vtt; srt is what parse_cues expects
-            # Costs nothing measurable on top of the extraction this pass is
-            # already doing, and carries the auto-caption URLs -- which is
-            # what lets the fallback below skip a second extraction entirely.
-            "--write-info-json",
-            "--no-warnings",
-            "-o", f"{base}.%(ext)s",
-            url,
-        ], on_line=narrate)
-
-        subtitle, kind = _english_subtitle(base), "manual"
+        subtitle, kind = _write_manual_english(base, tracks), "manual"
         if not subtitle:
             _set_stage(base, "没有人工字幕，正在抓自动字幕")
             subtitle = _fetch_auto_captions(
-                base, url, on_stage=lambda text: _set_stage(base, text))
+                base, tracks, on_stage=lambda text: _set_stage(base, text))
             kind = "auto"
+
+        # Best-effort and deliberately after English is settled: the second
+        # language is an optional reading aid, and a video having none is
+        # normal rather than a failure worth reporting.
+        _write_secondary(base, tracks)
 
         if not subtitle:
             _set_stage(base, "!这个视频没有可用的英文字幕（既没有人工字幕，也没有英文原声的自动字幕）。")
@@ -1127,11 +1064,6 @@ def _fetch_subtitles(base: Path, url: str) -> None:
             request_polish(base)
     except Exception as e:
         _set_stage(base, "!" + (str(e) or repr(e))[-300:])
-    finally:
-        # Half a megabyte per video of metadata nothing downstream reads --
-        # it's fetched only for the caption URLs in _auto_caption_url, and
-        # those have been used by now one way or the other.
-        _info_json(base).unlink(missing_ok=True)
 
 
 def _register(video_id: str, title: str, duration: float, url: str) -> dict:

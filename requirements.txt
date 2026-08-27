@@ -2,6 +2,14 @@ fastapi
 uvicorn
 pydantic
 
+# YouTube 字幕就靠这一个包（youtube.py 的 _caption_tracks）。之前用的是
+# yt-dlp，但那是个"取视频"的工具，为此要过 YouTube 完整的播放器 API：JS 挑战
+# （得再装 Deno）、已登录请求还要 PO token（它生成不了，结果是自动字幕直接
+# 消失）。我们从头到尾只读字幕、一帧视频都不下，那套关卡全是白付的代价。
+# 直接打字幕接口就没这些事，顺带省掉 Deno、远程解题脚本和整套 cookie 处理。
+youtube-transcript-api
+requests
+
 # mcp_server.py 用它把字幕/播放查询暴露给 Claude Code CLI。
 # 只用 DeepSeek 引擎的话用不到，但装上不影响。
 mcp>=2.0.0

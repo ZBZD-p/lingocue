@@ -1,9 +1,8 @@
 ﻿# One-shot dependency installer for LingoCue.
 #
 # Installs everything that has a legitimate "just install it, no interaction
-# needed" story: the Python packages, yt-dlp, ffmpeg (downloaded straight
-# into the project -- no separate installer, no PATH edit required), Deno
-# (yt-dlp needs it to solve YouTube's JS challenge), and the local
+# needed" story: the Python packages, ffmpeg (downloaded straight into the
+# project -- no separate installer, no PATH edit required), and the local
 # dictionary database. Two things genuinely can't be scripted and are
 # printed as next steps instead: loading the Chrome extension (Chrome
 # deliberately refuses to let anything but a person click through that,
@@ -54,10 +53,6 @@ Write-Step '安装 Python 依赖 (fastapi / uvicorn / pydantic / mcp)'
 python -m pip install -r (Join-Path $ProjectRoot 'requirements.txt') --quiet
 Write-Ok '完成'
 
-Write-Step '安装 yt-dlp'
-python -m pip install --upgrade yt-dlp --quiet
-Write-Ok '完成'
-
 if ($WithPunctuation) {
     Write-Step '安装标点优化功能 (torch + torchaudio + funasr，体积较大，耐心等一下)'
     python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
@@ -65,17 +60,6 @@ if ($WithPunctuation) {
     Write-Ok '完成（ct-punc 模型约 1.2GB，第一次真正遇到没标点的自动字幕时才会自动下载）'
 } else {
     Write-Skip '跳过标点优化功能（默认不装，完整装上大约再加 5.7GB）。想要的话加 -WithPunctuation 参数重跑这个脚本。'
-}
-
-# ---- Deno ---------------------------------------------------------------
-Write-Step '检查 Deno (yt-dlp 解 YouTube 的 JS 验证要用到)'
-$denoCmd = Get-Command deno -ErrorAction SilentlyContinue
-if ($denoCmd) {
-    Write-Skip ('已安装：' + $denoCmd.Source)
-} else {
-    Write-Host '    正在安装 Deno...'
-    irm https://deno.land/install.ps1 | iex
-    Write-Ok '安装完成（可能要开一个新的终端窗口 PATH 才会生效——如果下一步找不到 deno，重开个窗口重跑这个脚本就行）'
 }
 
 # ---- ffmpeg ---------------------------------------------------------------

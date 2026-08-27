@@ -63,8 +63,6 @@
 
 | 依赖 | 什么时候需要 |
 |------|-------------|
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | 用 YouTube 功能时（`pip install yt-dlp`） |
-| [Deno](https://deno.land/) | 用 YouTube 功能时——yt-dlp 现在要靠它解一段 JS 才能拿到 YouTube 的真实播放地址，没有的话字幕会抓不下来（报 `The page needs to be reloaded`）|
 | [Jellyfin](https://jellyfin.org/) | 想看自己媒体库里的片子时 |
 | [Claude Code CLI](https://claude.com/claude-code) 或 DeepSeek API key | 对话功能二选一，见下面「对话引擎」 |
 | [funasr](https://github.com/modelscope/FunASR)（连 `torch`/`torchaudio`） | 想让完全没标点的 YouTube 自动字幕自动补标点时，见 `requirements.txt` 里的装法说明——**这一项单独就要装约 5.7GB**（依赖 + 模型），是这个项目里迄今为止最占地方的一块，其余全部加起来大约 300MB |
@@ -84,7 +82,7 @@ cd lingocue
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-这一步会自动装好 Python 依赖、yt-dlp、Deno、ffmpeg（直接下载解压进项目里，不用配 PATH），再生成本地词典。想要标点优化功能（约再加 5.7GB）的话加个参数：`.\setup.ps1 -WithPunctuation`。重复跑是安全的，已经装好的东西会自动跳过。
+这一步会自动装好 Python 依赖、ffmpeg（直接下载解压进项目里，不用配 PATH），再生成本地词典。想要标点优化功能（约再加 5.7GB）的话加个参数：`.\setup.ps1 -WithPunctuation`。重复跑是安全的，已经装好的东西会自动跳过。
 
 脚本自动不了的只剩两步：装 [Chrome 扩展](#2-看-youtube)（浏览器出于安全考虑不允许脚本代劳），以及对话引擎二选一（装 [Claude Code CLI](https://claude.com/claude-code) 并登录，或者在设置页填 DeepSeek API key）。
 
@@ -166,7 +164,7 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 | 文件 | 干什么的 |
 |------|---------|
-| `config.json` | 文件路径类配置。`youtube_cache_dir` 是 YouTube 字幕存哪（默认项目下的 `youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录，`youtube_cookies_from_browser`/`youtube_cookies_file` 见下面「已知的坑」 |
+| `config.json` | 文件路径类配置。`youtube_cache_dir` 是 YouTube 字幕存哪（默认项目下的 `youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录 |
 | `jellyfin_config.json` | Jellyfin 地址和 API key（在 Jellyfin 控制台 → API 密钥里生成） |
 | `deepseek_config.json` | DeepSeek 的 key 和模型。也可以直接在设置页里填，会自动写到这里 |
 
@@ -195,9 +193,8 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 ## 已知的坑
 
 - **YouTube 自动字幕质量参差** —— 没标点的会自动补（见上面），但个别单词本身识别错是 YouTube 自己转录的问题，改不了
-- **yt-dlp 偶尔被 YouTube 要求"确认你不是机器人"** —— 报错里会提示 `Sign in to confirm you're not a bot`，跟具体某个视频无关，是这台机器（IP）当下被限流了。装了 YouTube 扩展的话**这个默认就是自动解决的**：扩展每隔几小时会通过 Chrome 官方的 `chrome.cookies` API（跟"Get cookies.txt LOCALLY"这类扩展是同一套合规机制，不是去读 Chrome 那个被加密保护、外部程序碰不了的 cookie 数据库）把 youtube.com 的登录态同步给后端，后端存成 `youtube_cookies.txt`（已在 `.gitignore` 里，不会被提交），yt-dlp 自动用这份文件，不用你做任何配置。
-  - 只在没装这个扩展、只用独立页面/Jellyfin 那两种用法时，才需要自己在 `config.json` 里配 `youtube_cookies_from_browser`（读 Firefox 之类不锁库的浏览器）或手动指定 `youtube_cookies_file`
-  - 两者都留空也完全能用，只是偶尔遇到限流时字幕会抓失败
+- **字幕接口是逆向来的，YouTube 改了就会坏** —— `youtube-transcript-api` 用的是 YouTube 没有公开文档的字幕接口。这是所有同类工具（包括 yt-dlp）的共同处境，不存在"官方稳定"的选项，只能等上游跟进更新。
+- **短时间大量请求会被判定成机器人** —— 表现是抓字幕失败。这是按 IP 算的信誉问题，跟视频无关，等一阵子会自己恢复。别对着同一个视频反复重试——每次重试都是真实请求，只会让恢复更慢（代码里已经加了 10 分钟的失败冷却，但手动切视频仍会触发新的抓取）。
 - **少数浏览器扩展会给页面加固 CSP（Trusted Types）**，如果侧边栏在 youtube.com 上完全不出现，先查一下是不是装了这类隐私/广告拦截扩展
 - **图形字幕（PGS/VobSub）不支持** —— 那种字幕是图片，需要 OCR，不在范围内
 - **后端没有鉴权**，默认监听 `0.0.0.0` 是为了手机能访问。请只在信任的局域网里用

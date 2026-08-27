@@ -6,11 +6,9 @@
 // be visible to it) on every navigation to a /watch page, including
 // YouTube's own SPA navigations between videos, not just full page loads.
 //
-// Two jobs: (1) keep window.__englishTutorYouTube -- the same bridge shape
-// static/youtube.html has always provided (tutor-panel.js:1644) -- pointed
-// at the real, same-origin <video> element instead of an IFrame API player;
-// (2) tell the backend which video is current, the equivalent of the old
-// library's add()+select() combined into one call.
+// Two jobs: (1) keep window.__englishTutorYouTube -- the player bridge
+// tutor-panel.js reads through youtubePlayer() -- pointed at the real,
+// same-origin <video> element; (2) tell the backend which video is current.
 //
 // State lives on `window`, not in this function's own closures: this whole
 // script re-runs from scratch on every navigation (it's re-injected each
@@ -89,8 +87,8 @@
       .then(function (data) {
         if (!data || !data.ok) return;
         window.__lingocueCurrentSource = data.path;
-        // Same event static/youtube.html's own script dispatches on a video
-        // switch -- tutor-panel.js already knows how to handle it.
+        // tutor-panel.js listens for this and reloads its cue list; it's the
+        // only signal it gets that the video changed under it.
         window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
       })
       .catch(function (e) { console.error("[lingocue] failed to register video", e); });
