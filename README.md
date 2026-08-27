@@ -12,9 +12,15 @@
 
 > **目前仅支持 Windows**
 
+<p align="center"><sub>电脑浏览器访问 youtube.com</sub></p>
+
 <p align="center">
   <img src="docs/demo.gif" alt="LingoCue 侧边栏注入在 youtube.com 页面里，字幕卡片跟随播放自动高亮切换，点单词弹出词典释义、发音、存生词" width="820">
 </p>
+
+<p align="center"><sub>手机浏览器访问 Jellyfin</sub></p>
+
+https://github.com/user-attachments/assets/dd743a49-2c15-4c71-824c-329899140c09
 
 ---
 
@@ -43,10 +49,6 @@
 - **中英对照** — 有中文字幕轨的话，可以在每句英文下面显示对应中文
 - **深色 / 浅色外观** — 设置页一键切换，跟着喜好来
 - **YouTube** — 装个 Chrome 扩展，直接在 youtube.com 官网打开任意视频就有侧边栏，**只下载字幕，不下载视频**（一个视频占几十 KB）
-
-<p align="center">
-  <img src="docs/vocab.png" alt="生词本页面：存下的单词、来源例句和存词时间，点「问一下具体意思」可以让 AI 展开讲解" width="360">
-</p>
 
 ---
 
