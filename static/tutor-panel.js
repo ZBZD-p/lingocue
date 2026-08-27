@@ -47,6 +47,30 @@
   // phone.
   const API = window.__englishTutorApiBase
     || `${location.protocol}//${location.hostname}:8420`;
+  // Stable per browser tab (sessionStorage, unlike localStorage, is never
+  // shared between tabs even on the same origin) so the backend can tell
+  // this tab's video apart from whatever's playing in another one -- see
+  // playback.py's module docstring. content.js generates the same id
+  // independently for /api/youtube/watch, since it's a separately-injected
+  // script and can't assume load order against this one.
+  //
+  // Deliberately not crypto.randomUUID(): that's gated to secure contexts
+  // (https, or http on localhost/127.0.0.1 specifically), and Jellyfin is
+  // routinely reached over plain http on a LAN hostname or IP -- calling it
+  // there throws, and since this ran before anything else on the page, that
+  // exception took the whole panel down with it rather than just leaving
+  // tabs unidentified. This ID is only ever compared for equality, never
+  // trusted as unguessable, so Math.random() is plenty.
+  const TAB_ID = (() => {
+    const fresh = () => `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      let id = sessionStorage.getItem("lingocueTabId");
+      if (!id) { id = fresh(); sessionStorage.setItem("lingocueTabId", id); }
+      return id;
+    } catch (e) {
+      return fresh(); // storage blocked (private browsing etc.) -- unique for this load, at least
+    }
+  })();
   const HISTORY_KEY = "english-tutor-chat-v1";
   const COLLAPSE_KEY = "english-tutor-collapsed";
   const WIDTH_KEY = "english-tutor-width";
@@ -1068,7 +1092,7 @@
         if (startedAt === null) subsScroll.innerHTML = "";
         const lang2 = settingValue("secondaryLang") || "";
         const data = await (await fetch(
-          `${API}/api/subtitles?lang=en${lang2 ? `&secondary=${lang2}` : ""}` +
+          `${API}/api/subtitles?lang=en&tab_id=${TAB_ID}${lang2 ? `&secondary=${lang2}` : ""}` +
           `${wordHighlightOn() ? "&words=1" : ""}`
         )).json();
         // "ready" | "extracting" | an error string; absent when no second
@@ -1922,6 +1946,7 @@
             position_ms: Math.round(p.currentTimeMs()),
             duration_ms: Math.round(p.durationMs()),
             status: p.paused() ? "paused" : "playing",
+            tab_id: TAB_ID,
             ...(p.source ? { source: p.source } : {}),
           }),
         });
@@ -1996,7 +2021,7 @@
 
     async function refreshContext() {
       try {
-        const data = await (await fetch(`${API}/api/context`)).json();
+        const data = await (await fetch(`${API}/api/context?tab_id=${TAB_ID}`)).json();
         if (!data.available) {
           // lastProbe says what the panel itself sees; without it a detection
           // failure is indistinguishable from "nothing is playing yet".

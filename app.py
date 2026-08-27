@@ -200,6 +200,10 @@ class PlaybackState(BaseModel):
     # Set by the YouTube page, which knows exactly what it loaded. Absent for
     # the Jellyfin panel, whose <video> element carries no identity at all.
     source: str | None = None
+    # Client-generated, stable per browser tab (see tutor-panel.js's TAB_ID) --
+    # keeps two tabs watching different videos from overwriting each other's
+    # playback_state.json entry. See playback.py's module docstring.
+    tab_id: str
 
 
 class YouTubeWatch(BaseModel):
@@ -208,6 +212,8 @@ class YouTubeWatch(BaseModel):
     id: str
     title: str
     url: str
+    # See PlaybackState.tab_id above.
+    tab_id: str
 
 
 def load_vocab() -> list[dict]:
@@ -236,7 +242,7 @@ def youtube_watch(body: YouTubeWatch):
     except Exception as e:
         raise HTTPException(400, str(e))
     path = Path(info["path"])
-    playback.write(str(path), 0, 0, "paused")
+    playback.write(body.tab_id, str(path), 0, 0, "paused")
     return {"ok": True, "path": str(path), "video_id": body.id}
 
 
@@ -309,7 +315,7 @@ def report_playback_state(state: PlaybackState):
         path = Path(state.source)
         if not youtube.is_cached_path(path) or not path.exists():
             raise HTTPException(400, "source 不是已添加的 YouTube 视频")
-        playback.write(str(path), state.position_ms, state.duration_ms, state.status)
+        playback.write(state.tab_id, str(path), state.position_ms, state.duration_ms, state.status)
         return {"ok": True, "path": str(path), "play_method": "YouTube"}
 
     try:
@@ -319,7 +325,7 @@ def report_playback_state(state: PlaybackState):
     if not playing or not playing.get("path"):
         raise HTTPException(409, "Jellyfin 当前没有在播放任何内容")
 
-    playback.write(playing["path"], state.position_ms, state.duration_ms, state.status)
+    playback.write(state.tab_id, playing["path"], state.position_ms, state.duration_ms, state.status)
     return {"ok": True, "path": playing["path"], "play_method": playing.get("play_method")}
 
 
@@ -429,19 +435,19 @@ def prefetch_next_episode(video: Path, lang: str) -> None:
 
 
 @app.get("/api/position")
-def get_position():
+def get_position(tab_id: str | None = None):
     """Just the live position, straight out of the state file the panel
     keeps updated -- cheap enough for the subtitle page to poll frequently.
     /api/context does a bit more work (subtitle-window lookup) but stays
     cheap too, since it only needs to refresh a few times a minute."""
     try:
-        return {"available": True, **playback.read()}
+        return {"available": True, **playback.read(tab_id)}
     except RuntimeError as e:
         return {"available": False, "error": str(e)}
 
 
 @app.get("/api/context")
-def get_context(lang: str = "en", lookback_minutes: float = 5.0):
+def get_context(lang: str = "en", lookback_minutes: float = 5.0, tab_id: str | None = None):
     """Current video/position plus the subtitle window up to now.
 
     Calls subs_now in-process (not a subprocess) so it shares the same
@@ -449,14 +455,14 @@ def get_context(lang: str = "en", lookback_minutes: float = 5.0):
     subtitle-card page loading at the same time on a freshly-opened video
     would both independently kick off extraction for it."""
     try:
-        progress = playback.read()
+        progress = playback.read(tab_id)
     except RuntimeError as e:
         return {"available": False, "error": str(e)}
 
     subtitle_text = ""
     status_line = ""
     try:
-        video = playback.current_video()
+        video = playback.current_video(tab_id)
         status = start_extraction_if_needed(video, lang)
         prefetch_next_episode(video, lang)
         if status == "extracting":
@@ -556,7 +562,8 @@ def attach_word_times(rows: list[dict], word_stream: list | None) -> list[dict]:
 
 
 @app.get("/api/subtitles")
-def get_subtitles(lang: str = "en", secondary: str | None = None, words: int = 0):
+def get_subtitles(lang: str = "en", secondary: str | None = None, words: int = 0,
+                   tab_id: str | None = None):
     """Full timestamped cue list for the currently-playing video -- powers
     the card-by-card subtitle browser (as opposed to /api/context, which
     only returns a deduplicated text blob for chat purposes).
@@ -570,7 +577,7 @@ def get_subtitles(lang: str = "en", secondary: str | None = None, words: int = 0
     panel's settings ever wants it -- and because only YouTube auto-captions
     have the data at all, so most videos would pay the check for nothing."""
     try:
-        video = playback.current_video()
+        video = playback.current_video(tab_id)
     except Exception as e:
         return {"available": False, "error": str(e)}
 

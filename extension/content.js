@@ -72,6 +72,27 @@
     return /^(\(\d+\)\s*)?YouTube$/.test(t);
   }
 
+  // Same key, same derivation as tutor-panel.js's TAB_ID -- this script and
+  // that one are injected independently (see background.js) so neither can
+  // assume the other has run first; sessionStorage makes whichever runs
+  // first create it and the other just read it back, no ordering needed.
+  // Math.random() rather than crypto.randomUUID(): the latter is gated to
+  // secure contexts and this only ever needs to be compared for equality,
+  // never unguessable -- see tutor-panel.js's TAB_ID for the fuller reason
+  // (it bit the Jellyfin panel there since that one isn't always reached
+  // over a secure origin; youtube.com always is, but keeping both the same
+  // avoids two divergent implementations of one id scheme).
+  var TAB_ID = (function () {
+    function fresh() { return "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10); }
+    try {
+      var id = sessionStorage.getItem("lingocueTabId");
+      if (!id) { id = fresh(); sessionStorage.setItem("lingocueTabId", id); }
+      return id;
+    } catch (e) {
+      return fresh();
+    }
+  })();
+
   var id = videoIdFromUrl();
   if (!id || id === window.__lingocueLastVideoId) return;
   window.__lingocueLastVideoId = id;
@@ -81,7 +102,7 @@
     fetch(window.__englishTutorApiBase + "/api/youtube/watch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: id, title: title, url: location.href }),
+      body: JSON.stringify({ id: id, title: title, url: location.href, tab_id: TAB_ID }),
     })
       .then(function (res) { return res.json(); })
       .then(function (data) {
