@@ -44,6 +44,10 @@
 - **深色 / 浅色外观** — 设置页一键切换，跟着喜好来
 - **YouTube** — 装个 Chrome 扩展，直接在 youtube.com 官网打开任意视频就有侧边栏，**只下载字幕，不下载视频**（一个视频占几十 KB）
 
+<p align="center">
+  <img src="docs/vocab.png" alt="生词本页面：存下的单词、来源例句和存词时间，点「问一下具体意思」可以让 AI 展开讲解" width="360">
+</p>
+
 ---
 
 ## 装之前需要什么
@@ -60,9 +64,10 @@
 | 依赖 | 什么时候需要 |
 |------|-------------|
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | 用 YouTube 功能时（`pip install yt-dlp`） |
+| [Deno](https://deno.land/) | 用 YouTube 功能时——yt-dlp 现在要靠它解一段 JS 才能拿到 YouTube 的真实播放地址，没有的话字幕会抓不下来（报 `The page needs to be reloaded`）|
 | [Jellyfin](https://jellyfin.org/) | 想看自己媒体库里的片子时 |
 | [Claude Code CLI](https://claude.com/claude-code) 或 DeepSeek API key | 对话功能二选一，见下面「对话引擎」 |
-| [funasr](https://github.com/modelscope/FunASR)（连 `torch`/`torchaudio`） | 想让完全没标点的 YouTube 自动字幕自动补标点时，见 `requirements.txt` 里的装法说明 |
+| [funasr](https://github.com/modelscope/FunASR)（连 `torch`/`torchaudio`） | 想让完全没标点的 YouTube 自动字幕自动补标点时，见 `requirements.txt` 里的装法说明——**这一项单独就要装约 5.7GB**（依赖 + 模型），是这个项目里迄今为止最占地方的一块，其余全部加起来大约 300MB |
 
 ---
 
@@ -71,10 +76,21 @@
 ```bash
 git clone https://github.com/ZBZD-p/lingocue.git
 cd lingocue
-pip install -r requirements.txt
 ```
 
-**生成本地词典**（悬停查词用，一次就够）：
+**一键装依赖**（推荐）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+这一步会自动装好 Python 依赖、yt-dlp、Deno、ffmpeg（直接下载解压进项目里，不用配 PATH），再生成本地词典。想要标点优化功能（约再加 5.7GB）的话加个参数：`.\setup.ps1 -WithPunctuation`。重复跑是安全的，已经装好的东西会自动跳过。
+
+脚本自动不了的只剩两步：装 [Chrome 扩展](#2-看-youtube)（浏览器出于安全考虑不允许脚本代劳），以及对话引擎二选一（装 [Claude Code CLI](https://claude.com/claude-code) 并登录，或者在设置页填 DeepSeek API key）。
+
+**不想用脚本、想自己手动装**也可以，就是 `pip install -r requirements.txt` 之外把上面表格里那几样按需要的依赖自己装一遍。
+
+**生成本地词典**（`setup.ps1` 已经做了这一步，手动装的话单独跑一下）：
 
 ```bash
 python build_dict.py
@@ -150,7 +166,7 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 | 文件 | 干什么的 |
 |------|---------|
-| `config.json` | 文件路径类配置。`youtube_cache_dir` 是 YouTube 字幕存哪（默认项目下的 `youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录 |
+| `config.json` | 文件路径类配置。`youtube_cache_dir` 是 YouTube 字幕存哪（默认项目下的 `youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录，`youtube_cookies_from_browser`/`youtube_cookies_file` 见下面「已知的坑」 |
 | `jellyfin_config.json` | Jellyfin 地址和 API key（在 Jellyfin 控制台 → API 密钥里生成） |
 | `deepseek_config.json` | DeepSeek 的 key 和模型。也可以直接在设置页里填，会自动写到这里 |
 
@@ -179,6 +195,9 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 ## 已知的坑
 
 - **YouTube 自动字幕质量参差** —— 没标点的会自动补（见上面），但个别单词本身识别错是 YouTube 自己转录的问题，改不了
+- **yt-dlp 偶尔被 YouTube 要求"确认你不是机器人"** —— 报错里会提示 `Sign in to confirm you're not a bot`，跟具体某个视频无关，是这台机器（IP）当下被限流了。装了 YouTube 扩展的话**这个默认就是自动解决的**：扩展每隔几小时会通过 Chrome 官方的 `chrome.cookies` API（跟"Get cookies.txt LOCALLY"这类扩展是同一套合规机制，不是去读 Chrome 那个被加密保护、外部程序碰不了的 cookie 数据库）把 youtube.com 的登录态同步给后端，后端存成 `youtube_cookies.txt`（已在 `.gitignore` 里，不会被提交），yt-dlp 自动用这份文件，不用你做任何配置。
+  - 只在没装这个扩展、只用独立页面/Jellyfin 那两种用法时，才需要自己在 `config.json` 里配 `youtube_cookies_from_browser`（读 Firefox 之类不锁库的浏览器）或手动指定 `youtube_cookies_file`
+  - 两者都留空也完全能用，只是偶尔遇到限流时字幕会抓失败
 - **少数浏览器扩展会给页面加固 CSP（Trusted Types）**，如果侧边栏在 youtube.com 上完全不出现，先查一下是不是装了这类隐私/广告拦截扩展
 - **图形字幕（PGS/VobSub）不支持** —— 那种字幕是图片，需要 OCR，不在范围内
 - **后端没有鉴权**，默认监听 `0.0.0.0` 是为了手机能访问。请只在信任的局域网里用
