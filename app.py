@@ -690,10 +690,12 @@ def build_claude_command(req: ChatRequest) -> list[str]:
     ]
     cmd += ["--agents", json.dumps(AGENTS, ensure_ascii=False)]
     cmd += ["--agent", TUTOR_AGENT_NAME]
-    if req.model:
-        cmd += ["--model", req.model]
-    if req.effort:
-        cmd += ["--effort", req.effort]
+    # Passed explicitly rather than left unset -- leaving them out would hand
+    # the choice to claude's own CLI default, which this project doesn't
+    # control and isn't necessarily "sonnet"/"medium" (see MODEL_OPTIONS'/
+    # EFFORT_OPTIONS' labels in tutor-panel.js, which promise exactly that).
+    cmd += ["--model", req.model or "sonnet"]
+    cmd += ["--effort", req.effort or "medium"]
     if req.session_id:
         cmd += ["--resume", req.session_id]
     return cmd
@@ -717,6 +719,8 @@ def stream_claude_events(cmd: list[str], prompt: str):
 
     full_reply = ""
     got_result = False
+    result_is_error = False
+    result_message = None
 
     for line in proc.stdout:
         line = line.strip()
@@ -746,7 +750,14 @@ def stream_claude_events(cmd: list[str], prompt: str):
         elif evt_type == "result":
             got_result = True
             if evt.get("is_error"):
-                yield ndjson({"type": "error", "message": evt.get("result") or "claude 返回了错误"})
+                # Deferred rather than yielded here: a failure that happens
+                # before claude ever frames a `result` (bad --resume session
+                # id, expired auth) leaves `result` empty, and the actual
+                # reason is only on stderr -- which isn't fully written until
+                # the process exits. Reading it now could mean reading it
+                # too early.
+                result_is_error = True
+                result_message = evt.get("result")
             else:
                 yield ndjson({
                     "type": "done",
@@ -770,6 +781,11 @@ def stream_claude_events(cmd: list[str], prompt: str):
                 or full_reply[:1000]
                 or "claude 没有返回任何内容"
             ),
+        })
+    elif result_is_error:
+        yield ndjson({
+            "type": "error",
+            "message": result_message or stderr_text.strip()[:1000] or "claude 返回了错误",
         })
 
 

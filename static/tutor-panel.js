@@ -90,7 +90,7 @@
   const EFFORT_OPTIONS = [
     { value: "", label: "思考程度：默认" },
     { value: "low", label: "低" },
-    { value: "medium", label: "中" },
+    { value: "medium", label: "中（默认）" },
     { value: "high", label: "高" },
     { value: "xhigh", label: "很高" },
     { value: "max", label: "最高" },
@@ -142,27 +142,30 @@
     {
       key: "deepseekKey",
       label: "DeepSeek API Key",
-      hint: "只在切到 DeepSeek 引擎时用得上。存在本地配置文件里，不会显示已保存的内容。",
+      hint: "存在本地配置文件里，不会显示已保存的内容。",
       type: "text",
       inputType: "password",
       placeholder: "sk-...",
       storageKey: "english-tutor-deepseek-key",
+      showWhen: (engine) => engine === "deepseek",
     },
     {
       key: "deepseekModel",
       label: "DeepSeek 模型",
-      hint: "留空默认用 deepseek-chat（V3，均衡）。深度推理可以填 deepseek-reasoner。",
+      hint: "留空默认用 deepseek-v4-flash（快，均衡）。深度推理可以填 deepseek-v4-pro。",
       type: "text",
       inputType: "text",
-      placeholder: "deepseek-chat",
+      placeholder: "deepseek-v4-flash",
       storageKey: "english-tutor-deepseek-model",
+      showWhen: (engine) => engine === "deepseek",
     },
     {
       key: "model",
       label: "AI 模型",
-      hint: "只在使用 Claude Code 引擎时生效。换模型不会中断当前对话。留空则用 Claude Code 的默认模型。",
+      hint: "换模型不会中断当前对话。",
       options: MODEL_OPTIONS,
       storageKey: "english-tutor-model",
+      showWhen: (engine) => engine !== "deepseek",
     },
     {
       key: "effort",
@@ -170,6 +173,7 @@
       hint: "越高回答越细致，但更慢也更贵。解释语法/语境时调高比较值得。",
       options: EFFORT_OPTIONS,
       storageKey: "english-tutor-effort",
+      showWhen: (engine) => engine !== "deepseek",
     },
     {
       key: "subSize",
@@ -677,6 +681,19 @@
       }
     }
 
+    // Only one engine's settings are ever relevant at a time (see each
+    // setting's `showWhen` above) -- recomputed on every engine switch
+    // rather than kept in sync incrementally, since it's just a handful of
+    // rows and this way it can't drift out of sync with SETTINGS itself.
+    function updateSettingVisibility() {
+      const engine = settingValue("engine") || "";
+      for (const setting of SETTINGS) {
+        if (!setting.showWhen) continue;
+        const row = settingRows.get(setting.key);
+        if (row) row.hidden = !setting.showWhen(engine);
+      }
+    }
+
     const SETTING_HANDLERS = {
       subSize: applySubSize,
       secondaryLang: reloadForSecondary,
@@ -684,12 +701,19 @@
       deepseekKey: pushDeepSeekConfig,
       deepseekModel: pushDeepSeekConfig,
       theme: (value) => host.setAttribute("theme", value || "dark"),
+      // Not called during the boot-time restore (isUserChange false) --
+      // at that point the loop below hasn't reached the later rows yet
+      // (engine is declared first in SETTINGS), so settingRows wouldn't
+      // have them. The explicit call after the loop handles that initial
+      // pass; this only needs to cover it changing again afterwards.
+      engine: (value, isUserChange) => { if (isUserChange) updateSettingVisibility(); },
     };
 
     // Rendered from the SETTINGS declaration, and the resulting controls are
     // kept in a map so the rest of the panel reads values by key
     // (settingValue("model")) instead of holding element references.
     const settingControls = new Map();
+    const settingRows = new Map();
 
     // A free-text field (the DeepSeek key/model) has no fixed option set, so
     // it can't go through populateSelect -- but it still needs to behave
@@ -752,6 +776,7 @@
       }
 
       settingControls.set(setting.key, control);
+      settingRows.set(setting.key, row);
     }
 
     // Re-appending moves it below the generated rows: the things you'd
@@ -762,6 +787,7 @@
       const control = settingControls.get(key);
       return control ? control.value : null;
     };
+    updateSettingVisibility(); // initial pass -- covers a saved engine choice from a previous visit; needs settingValue, so after its declaration
 
     root.addEventListener("click", (e) => {
       if (!e.target.closest(".dropdown")) {

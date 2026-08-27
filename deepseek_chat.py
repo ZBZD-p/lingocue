@@ -30,7 +30,7 @@ from pathlib import Path
 import tutor_tools
 
 CONFIG_FILE = Path(__file__).resolve().parent / "deepseek_config.json"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 
 # A runaway tool-call loop (model keeps calling tools and never answers)
