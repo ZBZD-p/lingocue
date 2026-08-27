@@ -29,7 +29,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -82,8 +82,6 @@ import jellyfin  # noqa: E402
 import playback  # noqa: E402
 import subs_now  # noqa: E402
 import youtube  # noqa: E402
-
-JELLYFIN_ORIGIN = jellyfin.config()["base_url"]
 
 # On Windows `claude` resolves to claude.cmd; subprocess.run() with a plain
 # argv list won't find .cmd files via CreateProcess (no shell, no PATHEXT
@@ -240,33 +238,6 @@ def youtube_watch(body: YouTubeWatch):
     path = Path(info["path"])
     playback.write(str(path), 0, 0, "paused")
     return {"ok": True, "path": str(path), "video_id": body.id}
-
-
-# Where the extension's periodic cookie sync (see extension/background.js)
-# writes its Netscape-format export -- see youtube.py's _cookie_args, which
-# uses this file for yt-dlp once it exists, no config.json entry required.
-YOUTUBE_COOKIES_FILE = ROOT / "youtube_cookies.txt"
-
-
-@app.post("/api/youtube/cookies")
-async def youtube_cookies(request: Request):
-    """Receives the youtube.com cookie jar from the extension's background
-    script (chrome.cookies.getAll, not a raw read of Chrome's on-disk
-    database -- see that file for why the distinction matters) and writes it
-    out as a plain Netscape-format cookies.txt, which is exactly the file
-    format `yt-dlp --cookies` expects.
-
-    Plain text body, not JSON: the extension already builds the finished
-    cookies.txt content itself, so this is just "write what you're given" --
-    no parsing, no validation of cookie contents needed on this side.
-    """
-    body = await request.body()
-    if not body:
-        raise HTTPException(400, "空的 cookie 内容")
-    tmp = YOUTUBE_COOKIES_FILE.with_suffix(".tmp")
-    tmp.write_bytes(body)
-    tmp.replace(YOUTUBE_COOKIES_FILE)  # atomic: a concurrent yt-dlp run sees old or new, never partial
-    return {"ok": True}
 
 
 @app.get("/api/vocab")
@@ -538,23 +509,66 @@ def secondary_cues(video: Path, lang: str) -> tuple[list, str]:
         return [], str(e) or repr(e)
 
 
-def serialize_cues(cues: list, secondary: list | None) -> list[dict]:
+def serialize_cues(cues: list, secondary: list | None,
+                   word_stream: list | None = None) -> list[dict]:
     if secondary is None:
-        return [{"start_ms": s, "end_ms": e, "text": t} for s, e, t in cues]
-    return [
-        {"start_ms": s, "end_ms": e, "text": t, "text2": t2}
-        for s, e, t, t2 in subs_now.merge_cues(cues, secondary)
-    ]
+        rows = [{"start_ms": s, "end_ms": e, "text": t} for s, e, t in cues]
+    else:
+        rows = [
+            {"start_ms": s, "end_ms": e, "text": t, "text2": t2}
+            for s, e, t, t2 in subs_now.merge_cues(cues, secondary)
+        ]
+    return attach_word_times(rows, word_stream)
+
+
+def attach_word_times(rows: list[dict], word_stream: list | None) -> list[dict]:
+    """Give each cue a `words` list of [start_ms, end_ms] pairs, one per word
+    of its own text, for the panel's word-by-word highlight.
+
+    `word_stream` is the whole track's real per-word timing (youtube.py's
+    .words.json sidecar), flat and in the same order the cues flatten to --
+    which holds by construction, see clean_auto_captions. The only check
+    worth making is the total count: if that matches, position i of the
+    stream is position i of the flattened cues, full stop. Comparing the
+    *text* would be actively wrong, since the punctuation pass legitimately
+    changes trailing punctuation and capitalization after the sidecar was
+    written.
+
+    A mismatch drops the timings entirely rather than attaching a shifted
+    subset -- the panel treats an absent `words` as "no word highlighting
+    for this video" and renders exactly as it did before, which is a much
+    better failure than highlighting the wrong words.
+
+    Times only, no text: the text is already in each cue, and repeating it
+    per word measurably inflates the payload on a feature-length video
+    (20k+ words).
+    """
+    if not word_stream:
+        return rows
+    counts = [len(row["text"].split()) for row in rows]
+    if sum(counts) != len(word_stream):
+        return rows
+    at = 0
+    for row, n in zip(rows, counts):
+        row["words"] = [[s, e] for s, e, _ in word_stream[at:at + n]]
+        at += n
+    return rows
 
 
 @app.get("/api/subtitles")
-def get_subtitles(lang: str = "en", secondary: str | None = None):
+def get_subtitles(lang: str = "en", secondary: str | None = None, words: int = 0):
     """Full timestamped cue list for the currently-playing video -- powers
     the card-by-card subtitle browser (as opposed to /api/context, which
     only returns a deduplicated text blob for chat purposes).
 
     With `secondary` set, each cue also carries `text2`: the line covering the
-    same moment in that language, for the side-by-side bilingual view."""
+    same moment in that language, for the side-by-side bilingual view.
+
+    With `words` set, each cue also carries `words`: per-word timings for the
+    word-by-word highlight (see attach_word_times). Behind a parameter rather
+    than always-on because it roughly doubles the payload and only one of the
+    panel's settings ever wants it -- and because only YouTube auto-captions
+    have the data at all, so most videos would pay the check for nothing."""
     try:
         video = playback.current_video()
     except Exception as e:
@@ -623,11 +637,17 @@ def get_subtitles(lang: str = "en", secondary: str | None = None):
     except Exception as e:
         return reply({"available": False, "status": "error", "error": str(e)})
 
+    # None for anything that isn't a YouTube auto-caption track -- human
+    # subtitles and MKV extractions never get a sidecar written, and
+    # load_word_stream answers for that without needing to be asked what
+    # kind of video this is.
+    word_stream = youtube.load_word_stream(subtitle_path) if words else None
+
     return reply({
         "available": True,
         "complete": True,
         "video_title": video.name,
-        "cues": serialize_cues(cues, sec_cues),
+        "cues": serialize_cues(cues, sec_cues, word_stream),
         # True while a YouTube auto-caption track is queued/running through
         # local punctuation restoration -- the cues above are already the
         # (currently unpunctuated) working copy, this just tells the panel
