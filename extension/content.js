@@ -93,7 +93,12 @@
     }
   })();
 
-  function registerVideo(id, title) {
+  var id = videoIdFromUrl();
+  if (!id || id === window.__lingocueLastVideoId) return;
+  window.__lingocueLastVideoId = id;
+  window.__lingocueCurrentSource = null; // cleared until the backend confirms it
+
+  function registerVideo(title) {
     fetch(window.__englishTutorApiBase + "/api/youtube/watch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -110,13 +115,13 @@
       .catch(function (e) { console.error("[lingocue] failed to register video", e); });
   }
 
-  function registerWhenReady(id, attemptsLeft) {
+  function registerWhenReady(attemptsLeft) {
     var title = titleFromPage();
     if (isPlaceholderTitle(title) && attemptsLeft > 0) {
-      setTimeout(function () { registerWhenReady(id, attemptsLeft - 1); }, 300);
+      setTimeout(function () { registerWhenReady(attemptsLeft - 1); }, 300);
       return;
     }
-    registerVideo(id, title);
+    registerVideo(title);
     // Case (b) above: the title read just now looked plausible but could
     // still be the previous video's leftover. A plain retry loop can't tell
     // the difference by looking at the string alone, so instead this
@@ -128,36 +133,9 @@
       if (id !== window.__lingocueLastVideoId) return; // already on to another video
       var laterTitle = titleFromPage();
       if (laterTitle !== title && !isPlaceholderTitle(laterTitle)) {
-        registerVideo(id, laterTitle);
+        registerVideo(laterTitle);
       }
     }, 1500);
   }
-
-  // The shared "did the video change" check -- run once for whatever
-  // triggered this particular injection, and again by the poller below.
-  // YouTube switches videos more ways than the extension's own nav-event
-  // triggers (background.js) reliably catch -- autoplay-into-next and some
-  // related-video clicks don't always fire a pushState/replaceState that
-  // chrome.webNavigation.onHistoryStateUpdated picks up. Miss one and the
-  // panel is stuck showing the previous video indefinitely, since nothing
-  // else would ever re-check.
-  function checkForVideoChange() {
-    var id = videoIdFromUrl();
-    if (!id || id === window.__lingocueLastVideoId) return;
-    window.__lingocueLastVideoId = id;
-    window.__lingocueCurrentSource = null; // cleared until the backend confirms it
-    registerWhenReady(id, 5); // ~1.5s of retries at 300ms apart if the title starts out blank
-  }
-
-  checkForVideoChange();
-
-  // Re-injected on every detected nav event (see file header), but this
-  // script's context -- and anything running inside it, like this interval
-  // -- survives every one of YouTube's internal video switches regardless,
-  // real navigation event or not, so one poller outlives any number of
-  // re-injections. Guarded so a re-injection doesn't stack a second one.
-  if (!window.__lingocuePollStarted) {
-    window.__lingocuePollStarted = true;
-    setInterval(checkForVideoChange, 2000);
-  }
+  registerWhenReady(5); // ~1.5s of retries at 300ms apart if it starts out blank
 })();
