@@ -70,7 +70,7 @@ async function runContentBridge(tabId) {
   // Re-run on every navigation: it re-checks the video id and, if it
   // changed, tells the backend and re-dispatches english-tutor:source-changed.
   // Cheap and idempotent when the video hasn't actually changed (see the
-  // `id === window.__lingocueLastVideoId` short-circuit in content.js).
+  // `session.isClaimed(id)` short-circuit in content.js).
   await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",

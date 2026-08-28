@@ -8,13 +8,27 @@
 //
 // Two jobs: (1) keep window.__englishTutorYouTube -- the player bridge
 // tutor-panel.js reads through youtubePlayer() -- pointed at the real,
-// same-origin <video> element; (2) tell the backend which video is current.
+// same-origin <video> element; (2) tell the backend which video is current,
+// and (if the backend's own unauthenticated fetch can't reach it -- see
+// save_uploaded_subtitles's docstring in youtube.py) fetch its captions
+// from inside this real, logged-in tab instead.
 //
 // State lives on `window`, not in this function's own closures: this whole
 // script re-runs from scratch on every navigation (it's re-injected each
 // time, not a long-lived listener), so anything that needs to survive
 // between runs -- or be readable by tutor-panel.js's ongoing polling --
 // has to be a window property.
+//
+// The registration/fallback orchestration below is deliberately structured
+// as a small session store + two "ports" (backend HTTP, live page/player)
+// feeding one orchestrator, rather than the flatter version this used to
+// be. Reason: a real bug shipped here twice from the flat version -- an
+// async response arriving after the user had already navigated on would
+// overwrite newer state, because the "is this still current" check was a
+// convention each callback had to remember individually (and one of them,
+// registerVideo's own success handler, didn't). Routing every callback
+// through one token's guard() makes that check structural instead of a
+// convention -- see makeSessionStore below.
 
 (function () {
   "use strict";
@@ -23,9 +37,11 @@
     window.__englishTutorYouTube = {
       ready: function () {
         var v = document.querySelector("video");
-        return !!(v && window.__lingocueCurrentSource && v.duration > 0);
+        return !!(v && window.__lingocueOrchestrator && window.__lingocueOrchestrator.currentSource() && v.duration > 0);
       },
-      source: function () { return window.__lingocueCurrentSource || null; },
+      source: function () {
+        return (window.__lingocueOrchestrator && window.__lingocueOrchestrator.currentSource()) || null;
+      },
       currentTime: function () {
         var v = document.querySelector("video");
         return v ? v.currentTime : 0;
@@ -93,56 +109,140 @@
     }
   })();
 
-  var id = videoIdFromUrl();
-  if (!id || id === window.__lingocueLastVideoId) return;
-  window.__lingocueLastVideoId = id;
-  window.__lingocueCurrentSource = null; // cleared until the backend confirms it
+  // ---- session store: the one place "is this still current" is decided --
+  //
+  // A token is a receipt for one call to enterVideo(). Every async
+  // continuation anywhere in the orchestrator wraps itself in that token's
+  // guard() before touching shared state, so a response that arrives after
+  // a newer enterVideo() call has superseded it is silently dropped instead
+  // of overwriting fresher state with staler data -- this is the actual
+  // fix for the bug described in this file's header comment. No call site
+  // compares a raw id against a raw global by hand anymore; they can't, by
+  // construction, forget to.
+  //
+  // Exposed on window (not a closure var) for the same reason TAB_ID would
+  // need to be if it survived navigations: this script re-runs from
+  // scratch on every SPA navigation, so only a window property survives
+  // from one run to the next.
+  function makeSessionStore() {
+    var epoch = 0;
+    var claimedVideoId = null; // set synchronously, see claim() below
+    var source = null;
 
-  function registerVideo(title) {
-    fetch(window.__englishTutorApiBase + "/api/youtube/watch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: id, title: title, url: location.href, tab_id: TAB_ID }),
-    })
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (!data || !data.ok) return;
-        window.__lingocueCurrentSource = data.path;
-        // tutor-panel.js listens for this and reloads its cue list; it's the
-        // only signal it gets that the video changed under it.
-        window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
-        // The backend's own fetch has no login of its own, so it comes up
-        // empty for anything gated behind one -- members-only being the
-        // main case. Only this tab, actually signed in, can do any better;
-        // watchSubtitleFailure below finds out whether it needs to try.
-        watchSubtitleFailure(id, title, 40);
-      })
-      .catch(function (e) { console.error("[lingocue] failed to register video", e); });
+    return {
+      // Claims a video id immediately and synchronously, before any of the
+      // async title-resolution work (registerWhenReady's placeholder-title
+      // retry loop) even starts. This is deliberately separate from
+      // begin()/epoch below: it's what the top-level dedup check uses, so a
+      // second script re-injection for a video whose title is still being
+      // resolved doesn't restart that whole process from scratch.
+      isClaimed: function (vid) { return vid === claimedVideoId; },
+      claim: function (vid) { claimedVideoId = vid; source = null; },
+      currentSource: function () { return source; },
+      // Mints a token for guarding ASYNC responses (the actual bug fix).
+      // Independent of claim() above -- can be called more than once for
+      // the same claimed video (the title-correction re-registration does
+      // exactly that), each call superseding the last token's guard.
+      begin: function (vid) {
+        var myEpoch = ++epoch;
+        return {
+          videoId: vid,
+          isCurrent: function () { return myEpoch === epoch; },
+          setSource: function (path) { if (myEpoch === epoch) source = path; },
+          // Wraps an async callback so it silently no-ops once superseded,
+          // instead of every call site re-deriving that check by hand.
+          guard: function (fn) {
+            return function (a, b) {
+              if (myEpoch !== epoch) return;
+              return fn(a, b);
+            };
+          },
+        };
+      },
+    };
   }
+  var session = window.__lingocueSession || (window.__lingocueSession = makeSessionStore());
 
-  // Polls the same status the panel's subtitle tab does, purely to notice a
-  // failure -- success needs nothing from this script, and "still fetching"
-  // just means keep waiting (subtitle fetch normally takes ~12s per
-  // youtube.py). Stops on its own once this video is no longer the current
-  // one (a quick re-navigation) or attempts run out (~60s).
-  function watchSubtitleFailure(videoId, title, attemptsLeft) {
-    if (attemptsLeft <= 0 || videoId !== window.__lingocueLastVideoId) return;
-    fetch(window.__englishTutorApiBase + "/api/subtitles?tab_id=" + encodeURIComponent(TAB_ID))
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (videoId !== window.__lingocueLastVideoId) return;
-        if (data && data.available) return; // succeeded the normal way
-        if (data && data.status === "error") {
-          tryBrowserCaptionFallback(videoId, title);
+  // ---- backend port: the local FastAPI server -------------------------
+  var backendPort = {
+    registerVideo: function (videoId, title) {
+      return fetch(window.__englishTutorApiBase + "/api/youtube/watch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: videoId, title: title, url: location.href, tab_id: TAB_ID }),
+      }).then(function (res) { return res.json(); });
+    },
+    getSubtitleStatus: function () {
+      return fetch(window.__englishTutorApiBase + "/api/subtitles?tab_id=" + encodeURIComponent(TAB_ID))
+        .then(function (res) { return res.json(); });
+    },
+    uploadCaptions: function (videoId, title, kind, json3Text) {
+      return fetch(window.__englishTutorApiBase + "/api/youtube/subtitles-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: videoId, title: title, kind: kind, json3: json3Text }),
+      }).then(function (res) { return res.json(); });
+    },
+  };
+
+  // ---- page port: the live YouTube DOM/player --------------------------
+  //
+  // Everything here reads whatever's on screen *right now* -- notably
+  // player.getPlayerResponse(), not window.ytInitialPlayerResponse, which
+  // is set once at the very first page load and never again (confirmed for
+  // real: clicking through a chain of recommended videos, it kept
+  // reporting the first one's title and captions three videos later). The
+  // videoId check on the response is an extra guard against reading it
+  // before the player itself has caught up.
+  var pagePort = {
+    notifySourceChanged: function () {
+      // tutor-panel.js listens for this and reloads its cue list; it's the
+      // only signal it gets that the video changed under it.
+      window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
+    },
+    captionTracks: function (videoId) {
+      var player = document.querySelector("#movie_player");
+      var pr = player && typeof player.getPlayerResponse === "function"
+        ? player.getPlayerResponse() : null;
+      if (!pr || (pr.videoDetails && pr.videoDetails.videoId !== videoId)) return null;
+      return (pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
+              pr.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
+    },
+    // Toggling captions off (if already on) then back on reliably fires a
+    // fresh timedtext request -- confirmed for real, an already-on button
+    // that's clicked once doesn't necessarily re-request anything.
+    toggleCaptionsButton: function () {
+      var btn = document.querySelector(".ytp-subtitles-button");
+      if (!btn) return false;
+      if (btn.getAttribute("aria-pressed") === "true") btn.click();
+      btn.click();
+      return true;
+    },
+    // performance's resource-timing entries persist across this script's
+    // own re-injection (they're the tab's, not this closure's), so a
+    // request fired by the click above shows up here shortly after --
+    // polled rather than awaited since there's no event for "a resource
+    // entry appeared".
+    waitForTimedtextRequest: function (videoId, attemptsLeft, cb) {
+      var entries = performance.getEntriesByType("resource");
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].name.indexOf("/api/timedtext") !== -1 &&
+            entries[i].name.indexOf("v=" + videoId) !== -1) {
+          cb(entries[i].name);
           return;
         }
-        setTimeout(function () { watchSubtitleFailure(videoId, title, attemptsLeft - 1); }, 1500);
-      })
-      .catch(function () {
-        setTimeout(function () { watchSubtitleFailure(videoId, title, attemptsLeft - 1); }, 1500);
-      });
-  }
+      }
+      if (attemptsLeft <= 0) { cb(null); return; }
+      var self = this;
+      setTimeout(function () { self.waitForTimedtextRequest(videoId, attemptsLeft - 1, cb); }, 500);
+    },
+    fetchCaptionText: function (url) {
+      return fetch(url, { credentials: "include" }).then(function (res) { return res.text(); });
+    },
+  };
 
+  // ---- fallback cooldown, unchanged from before -------------------------
+  //
   // Same cooldown value and reasoning as youtube.py's RETRY_COOLDOWN_S (that
   // one guards the backend's own plain request; this guards this one) --
   // long enough that idle re-navigation stops re-triggering it, short
@@ -152,136 +252,154 @@
   // re-runs from scratch on every navigation, so nothing in its own closures
   // survives to remember an earlier attempt the way youtube.py's
   // _fetch_failed_at dict can.
-  var FALLBACK_COOLDOWN_MS = 600000;
-  var FALLBACK_ATTEMPTS_KEY = "lingocueCaptionFallbackAttempts";
-
-  // Keyed by title+id, not id alone: registerWhenReady above can register
-  // the *same* video twice under two different titles (the page's title
-  // element trailing the SPA navigation -- see its own comment), and each
-  // is a genuinely different backend cache entry (youtube.safe_base_name
-  // folds the title in too). Keying on id alone was confirmed for real to
-  // cost a video its subtitles: the first (stale-title) registration's
-  // fallback won the race, marked the video's id as attempted, and the
-  // second, *correctly*-titled registration -- the one the panel actually
-  // ends up reading from -- silently found itself on cooldown and never
-  // even tried.
-  function fallbackKey(videoId, title) { return videoId + "::" + title; }
-
-  function recentlyAttemptedFallback(key) {
-    var map;
-    try { map = JSON.parse(localStorage.getItem(FALLBACK_ATTEMPTS_KEY)) || {}; }
-    catch (e) { map = {}; }
-    return typeof map[key] === "number" && Date.now() - map[key] < FALLBACK_COOLDOWN_MS;
-  }
-
-  function markFallbackAttempted(key) {
-    var map;
-    try { map = JSON.parse(localStorage.getItem(FALLBACK_ATTEMPTS_KEY)) || {}; }
-    catch (e) { map = {}; }
-    map[key] = Date.now();
-    // Trimmed on write rather than kept forever -- this is scratch state for
-    // a rate limit, not a record anything ever needs to look back on.
-    var cutoff = Date.now() - FALLBACK_COOLDOWN_MS;
-    for (var k in map) { if (map[k] < cutoff) delete map[k]; }
-    try { localStorage.setItem(FALLBACK_ATTEMPTS_KEY, JSON.stringify(map)); } catch (e) { /* full/disabled storage -- best effort only */ }
-  }
-
-  // The fallback itself: reuse a caption request the player already made --
-  // it carries a Proof-of-Origin token this tab's own JS can't mint, tied to
-  // this video and this login, which is exactly what the backend's plain
-  // request above lacks. See youtube.py's save_uploaded_subtitles docstring
-  // for the full picture, including why this is safe to just always try
-  // rather than needing to first detect "is this members-only": a video
-  // with no caption track at all (the ordinary case a failure usually
-  // means) shows that here too, and this quietly does nothing.
-  function tryBrowserCaptionFallback(videoId, title) {
-    var key = fallbackKey(videoId, title);
-    if (recentlyAttemptedFallback(key)) return;
-    markFallbackAttempted(key);
-
-    // window.ytInitialPlayerResponse is set once, at the very first page
-    // load, and never again -- confirmed for real by clicking through a
-    // chain of recommended videos and watching it keep reporting the first
-    // one's title and captions three videos later. The player element's own
-    // method is what actually tracks the current video across YouTube's SPA
-    // navigation; the videoId check below is an extra guard against reading
-    // it before it's caught up, on top of that.
-    var player = document.querySelector("#movie_player");
-    var pr = player && typeof player.getPlayerResponse === "function"
-      ? player.getPlayerResponse() : null;
-    if (!pr || (pr.videoDetails && pr.videoDetails.videoId !== videoId)) return;
-    var tracks = (pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
-                  pr.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
-    var target = null;
-    for (var i = 0; i < tracks.length; i++) {
-      if (tracks[i].languageCode === "en" && tracks[i].kind !== "asr") { target = tracks[i]; break; }
+  //
+  // Keyed by title+id, not id alone: the same video can get registered
+  // twice under two different titles (the page's title element trailing
+  // the SPA navigation -- see isPlaceholderTitle's comment), and each is a
+  // genuinely different backend cache entry (youtube.safe_base_name folds
+  // the title in too). Keying on id alone was confirmed for real to cost a
+  // video its subtitles: the first (stale-title) registration's fallback
+  // won the race, marked the video's id as attempted, and the second,
+  // *correctly*-titled registration -- the one the panel actually ends up
+  // reading from -- silently found itself on cooldown and never even tried.
+  var fallbackCooldown = (function () {
+    var COOLDOWN_MS = 600000;
+    var STORAGE_KEY = "lingocueCaptionFallbackAttempts";
+    function readMap() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
+      catch (e) { return {}; }
     }
-    var isGenerated = false;
-    if (!target) {
-      for (var j = 0; j < tracks.length; j++) {
-        if (tracks[j].languageCode === "en" && tracks[j].kind === "asr") { target = tracks[j]; isGenerated = true; break; }
+    return {
+      key: function (videoId, title) { return videoId + "::" + title; },
+      recentlyAttempted: function (key) {
+        var map = readMap();
+        return typeof map[key] === "number" && Date.now() - map[key] < COOLDOWN_MS;
+      },
+      markAttempted: function (key) {
+        var map = readMap();
+        map[key] = Date.now();
+        // Trimmed on write rather than kept forever -- this is scratch
+        // state for a rate limit, not a record anything needs to look back on.
+        var cutoff = Date.now() - COOLDOWN_MS;
+        for (var k in map) { if (map[k] < cutoff) delete map[k]; }
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(map)); } catch (e) { /* full/disabled storage -- best effort only */ }
+      },
+    };
+  })();
+
+  // ---- orchestrator: the actual decision logic, port-agnostic ----------
+  function createVideoOrchestrator(deps) {
+    function registerVideo(token, title) {
+      deps.backend.registerVideo(token.videoId, title)
+        .then(token.guard(function (data) {
+          if (!data || !data.ok) return;
+          token.setSource(data.path);
+          deps.page.notifySourceChanged();
+          // The backend's own fetch has no login of its own, so it comes up
+          // empty for anything gated behind one -- members-only being the
+          // main case. Only this tab, actually signed in, can do any
+          // better; watchSubtitleFailure below finds out whether it needs to.
+          watchSubtitleFailure(token, title, 40);
+        }))
+        .catch(function (e) { console.error("[lingocue] failed to register video", e); });
+    }
+
+    // Polls the same status the panel's subtitle tab does, purely to
+    // notice a failure -- success needs nothing from this script, and
+    // "still fetching" just means keep waiting (subtitle fetch normally
+    // takes ~12s per youtube.py). Stops on its own once this navigation is
+    // superseded or attempts run out (~60s).
+    function watchSubtitleFailure(token, title, attemptsLeft) {
+      if (attemptsLeft <= 0 || !token.isCurrent()) return;
+      deps.backend.getSubtitleStatus()
+        .then(token.guard(function (data) {
+          if (data && data.available) return; // succeeded the normal way
+          if (data && data.status === "error") {
+            tryBrowserCaptionFallback(token, title);
+            return;
+          }
+          setTimeout(function () { watchSubtitleFailure(token, title, attemptsLeft - 1); }, 1500);
+        }))
+        .catch(function () {
+          setTimeout(function () { watchSubtitleFailure(token, title, attemptsLeft - 1); }, 1500);
+        });
+    }
+
+    // The fallback itself: reuse a caption request the player already made
+    // -- it carries a Proof-of-Origin token this tab's own JS can't mint,
+    // tied to this video and this login, which is exactly what the
+    // backend's plain request above lacks. See youtube.py's
+    // save_uploaded_subtitles docstring for the full picture, including why
+    // this is safe to just always try rather than needing to first detect
+    // "is this members-only": a video with no caption track at all (the
+    // ordinary case a failure usually means) shows that here too, and this
+    // quietly does nothing.
+    function tryBrowserCaptionFallback(token, title) {
+      var key = fallbackCooldown.key(token.videoId, title);
+      if (fallbackCooldown.recentlyAttempted(key)) return;
+      fallbackCooldown.markAttempted(key);
+
+      var tracks = deps.page.captionTracks(token.videoId);
+      if (!tracks) return; // player hasn't caught up to this video yet
+      var target = null;
+      for (var i = 0; i < tracks.length; i++) {
+        if (tracks[i].languageCode === "en" && tracks[i].kind !== "asr") { target = tracks[i]; break; }
       }
-    }
-    if (!target) return; // this tab has no English track either -- nothing to fetch
-
-    // Toggling captions off (if already on) then back on reliably fires a
-    // fresh timedtext request -- confirmed for real, an already-on button
-    // that's clicked once doesn't necessarily re-request anything.
-    var btn = document.querySelector(".ytp-subtitles-button");
-    if (!btn) return;
-    if (btn.getAttribute("aria-pressed") === "true") btn.click();
-    btn.click();
-
-    waitForTimedtextRequest(videoId, 10, function (rawUrl) {
-      if (!rawUrl) return;
-      var u;
-      try { u = new URL(rawUrl); } catch (e) { return; }
-      // The signature covers v/ei/caps/... (see sparams in the URL itself)
-      // but not lang/kind -- confirmed for real by swapping them on an
-      // already-issued URL and still getting a valid response back -- so
-      // whatever track the player happened to request first can be
-      // redirected at the one actually wanted here.
-      u.searchParams.set("lang", target.languageCode);
-      if (isGenerated) u.searchParams.set("kind", "asr");
-      else u.searchParams.delete("kind");
-
-      fetch(u.toString(), { credentials: "include" })
-        .then(function (res) { return res.text(); })
-        .then(function (text) {
-          if (!text) return null;
-          return fetch(window.__englishTutorApiBase + "/api/youtube/subtitles-upload", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: videoId, title: title,
-              kind: isGenerated ? "auto" : "manual",
-              json3: text,
-            }),
-          }).then(function (res) { return res.json(); });
-        })
-        .then(function (data) {
-          if (data && data.ok) window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
-        })
-        .catch(function (e) { console.error("[lingocue] browser caption fallback failed", e); });
-    });
-  }
-
-  // performance's resource-timing entries persist across this script's own
-  // re-injection (they're the tab's, not this closure's), so a request
-  // fired by the click above shows up here shortly after -- polled rather
-  // than awaited since there's no event for "a resource entry appeared".
-  function waitForTimedtextRequest(videoId, attemptsLeft, cb) {
-    var entries = performance.getEntriesByType("resource");
-    for (var i = 0; i < entries.length; i++) {
-      if (entries[i].name.indexOf("/api/timedtext") !== -1 &&
-          entries[i].name.indexOf("v=" + videoId) !== -1) {
-        cb(entries[i].name);
-        return;
+      var isGenerated = false;
+      if (!target) {
+        for (var j = 0; j < tracks.length; j++) {
+          if (tracks[j].languageCode === "en" && tracks[j].kind === "asr") { target = tracks[j]; isGenerated = true; break; }
+        }
       }
+      if (!target) return; // this tab has no English track either -- nothing to fetch
+      if (!deps.page.toggleCaptionsButton()) return;
+
+      deps.page.waitForTimedtextRequest(token.videoId, 10, function (rawUrl) {
+        if (!rawUrl || !token.isCurrent()) return;
+        var u;
+        try { u = new URL(rawUrl); } catch (e) { return; }
+        // The signature covers v/ei/caps/... (see sparams in the URL
+        // itself) but not lang/kind -- confirmed for real by swapping them
+        // on an already-issued URL and still getting a valid response back
+        // -- so whatever track the player happened to request first can be
+        // redirected at the one actually wanted here.
+        u.searchParams.set("lang", target.languageCode);
+        if (isGenerated) u.searchParams.set("kind", "asr");
+        else u.searchParams.delete("kind");
+
+        deps.page.fetchCaptionText(u.toString())
+          .then(function (text) {
+            if (!text || !token.isCurrent()) return null;
+            return deps.backend.uploadCaptions(token.videoId, title, isGenerated ? "auto" : "manual", text);
+          })
+          .then(token.guard(function (data) {
+            if (data && data.ok) deps.page.notifySourceChanged();
+          }))
+          .catch(function (e) { console.error("[lingocue] browser caption fallback failed", e); });
+      });
     }
-    if (attemptsLeft <= 0) { cb(null); return; }
-    setTimeout(function () { waitForTimedtextRequest(videoId, attemptsLeft - 1, cb); }, 500);
+
+    return {
+      // Starts (or restarts, under a corrected title) registration for a
+      // video. Each call supersedes whatever the previous token was doing.
+      enterVideo: function (videoId, title) {
+        var token = deps.session.begin(videoId);
+        registerVideo(token, title);
+        return token;
+      },
+      currentSource: function () { return deps.session.currentSource(); },
+    };
   }
+
+  var orchestrator = window.__lingocueOrchestrator || (window.__lingocueOrchestrator = createVideoOrchestrator({
+    backend: backendPort,
+    page: pagePort,
+    session: session,
+  }));
+
+  var id = videoIdFromUrl();
+  if (!id || session.isClaimed(id)) return;
+  session.claim(id);
 
   function registerWhenReady(attemptsLeft) {
     var title = titleFromPage();
@@ -289,19 +407,21 @@
       setTimeout(function () { registerWhenReady(attemptsLeft - 1); }, 300);
       return;
     }
-    registerVideo(title);
-    // Case (b) above: the title read just now looked plausible but could
-    // still be the previous video's leftover. A plain retry loop can't tell
-    // the difference by looking at the string alone, so instead this
+    var token = orchestrator.enterVideo(id, title);
+    // The title read just now looked plausible but could still be the
+    // previous video's leftover (case (b) above). A plain retry loop can't
+    // tell the difference by looking at the string alone, so instead this
     // re-reads the title a beat later and, if it actually changed (and
     // isn't itself a placeholder), registers again under the corrected one
     // -- self-correcting rather than trying to guess up front whether the
-    // first read was trustworthy.
+    // first read was trustworthy. enterVideo again (not a bare
+    // registerVideo) so the corrected registration gets its own fresh
+    // token, superseding the first the same way a real re-navigation would.
     setTimeout(function () {
-      if (id !== window.__lingocueLastVideoId) return; // already on to another video
+      if (!token.isCurrent()) return; // already on to another video
       var laterTitle = titleFromPage();
       if (laterTitle !== title && !isPlaceholderTitle(laterTitle)) {
-        registerVideo(laterTitle);
+        orchestrator.enterVideo(id, laterTitle);
       }
     }, 1500);
   }
