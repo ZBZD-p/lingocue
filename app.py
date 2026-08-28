@@ -876,7 +876,13 @@ def stream_claude_events(cmd: list[str], prompt: str):
                         pending_tool_uses[idx]["json"] += delta.get("partial_json", "")
             elif inner_type == "content_block_stop":
                 pending = pending_tool_uses.pop(inner.get("index"), None)
-                if pending and pending["name"] == "suggest_phrase":
+                # Streamed under its full MCP-qualified name (see
+                # ALLOWED_TOOLS), not the bare "suggest_phrase" tutor_tools.py
+                # itself uses -- comparing against the bare name here silently
+                # dropped every real call, so the card never rendered and
+                # nothing ever reached phrases.json even though the model had
+                # genuinely called the tool and told the user it had.
+                if pending and pending["name"] == "mcp__video-subtitles__suggest_phrase":
                     try:
                         args = json.loads(pending["json"])
                     except json.JSONDecodeError:
@@ -904,9 +910,21 @@ def stream_claude_events(cmd: list[str], prompt: str):
                 result_is_error = True
                 result_message = evt.get("result")
             else:
+                # full_reply, not evt.get("result", ...): a response that
+                # pauses to call a tool (suggest_phrase, or a deferred tool
+                # needing its own ToolSearch lookup first -- see the CLI's
+                # own deferred-tools mechanism) spans several separate
+                # message_start/message_stop turns within this one process,
+                # and the CLI's own top-level "result" field only holds the
+                # LAST turn's text, not the whole conversation -- confirmed
+                # for real: it silently dropped everything the model said
+                # before the tool call. full_reply is built from every
+                # text_delta across every turn, so it's always the complete
+                # reply already (the frontend showed exactly this while
+                # streaming); the CLI's field can only ever be a subset.
                 yield ndjson({
                     "type": "done",
-                    "reply": evt.get("result", full_reply),
+                    "reply": full_reply,
                     "session_id": evt.get("session_id"),
                     "cost_usd": evt.get("total_cost_usd"),
                     "duration_ms": evt.get("duration_ms"),
