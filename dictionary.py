@@ -23,6 +23,11 @@ DB_PATH = Path(__file__).resolve().parent / "dictionary.db"
 # stored as "do not" territory, and subtitle text is full of contractions.
 CLITIC_RE = re.compile(r"['’](s|re|ve|ll|d|m|t)$", re.IGNORECASE)
 
+# Display order for a merged tag list (see define()) -- roughly ascending
+# difficulty, matching the order ECDICT's own data tends to list them in
+# and the panel's QUIZ_TAG_OPTIONS (static/tutor-panel.js).
+TAG_ORDER = ["zk", "gk", "cet4", "cet6", "ky", "toefl", "ielts", "gre"]
+
 
 def available() -> bool:
     return DB_PATH.exists()
@@ -30,7 +35,7 @@ def available() -> bool:
 
 def _row(db, word: str):
     return db.execute(
-        "SELECT word, phonetic, translation FROM entries WHERE word = ?", (word,)
+        "SELECT word, phonetic, translation, tags FROM entries WHERE word = ?", (word,)
     ).fetchone()
 
 
@@ -88,6 +93,24 @@ def define(word: str) -> dict | None:
     db = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     try:
         row, via = _resolve(db, cleaned)
+        extra_tags = []
+        if row and via is None:
+            # A word can have its own dictionary entry (a genuinely distinct
+            # sense/POS -- "engaging" the adjective isn't "engage" the verb)
+            # while ALSO being listed in the forms table as an inflected
+            # form of some other base word. ECDICT tags each spelling by
+            # its own corpus frequency independently, so an inflected
+            # form's tags routinely miss levels the base word already
+            # clearly belongs to -- confirmed for real: "engage" is cet4,
+            # "engaging" alone carries neither cet4 nor cet6. Only checked
+            # for a direct hit (via is None): when _resolve already went
+            # through the forms table itself (via is set), `row` is already
+            # the lemma's own row, so this would just look itself up again.
+            lemma = db.execute("SELECT lemma FROM forms WHERE form = ?", (row[0],)).fetchone()
+            if lemma and lemma[0] != row[0]:
+                lemma_row = _row(db, lemma[0])
+                if lemma_row:
+                    extra_tags = (lemma_row[3] or "").split()
     finally:
         db.close()
 
@@ -98,10 +121,17 @@ def define(word: str) -> dict | None:
     # so the frontend's `white-space: pre-line` renders actual line breaks
     # instead of the two visible characters.
     translation = (row[2] or "").replace("\\n", "\n")
+    # Union with the lemma's tags (if any were found above), not a
+    # replacement -- this word's own tags, however sparse, still count.
+    merged_tags = set((row[3] or "").split()) | set(extra_tags)
     return {
         "word": row[0],
         "phonetic": row[1] or "",
         "translation": translation,
         "queried": word,
         "inflected": bool(via),
+        # Exam syllabi this word belongs to (cet4, cet6, ielts, ...), if
+        # any -- see build_dict.py. Empty for the common case of a word
+        # that just isn't on any of those lists.
+        "tags": [t for t in TAG_ORDER if t in merged_tags],
     }

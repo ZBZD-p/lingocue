@@ -205,6 +205,10 @@ class VocabEntry(BaseModel):
     subtitle_text: str | None = None
     question: str
     answer: str = ""
+    # Exam syllabi the word belongs to (cet4, cet6, ielts, ...), from
+    # whatever the hover popup's dictionary lookup already returned -- see
+    # dictionary.define(). Empty for a word on no such list.
+    tags: list[str] = []
 
 
 class PhraseEntry(BaseModel):
@@ -284,7 +288,11 @@ def add_vocab(entry: VocabEntry):
         "subtitle_text": entry.subtitle_text,
         "question": entry.question,
         "answer": entry.answer,
+        "tags": entry.tags,
         "streak": 0,
+        # 0 means "due now" -- a freshly-saved word is immediately quizzable,
+        # same as before this field existed.
+        "next_review_at": 0,
     }
     entries.append(record)
     save_vocab(entries)
@@ -301,10 +309,14 @@ def delete_vocab(entry_id: str):
     return {"ok": True}
 
 
-# Consecutive "known" self-gradings before a word drops out of the quiz pool
-# (see grade_vocab below) -- it stays in the vocab book either way, this only
-# affects whether the flashcard quiz still offers it.
-MASTERED_STREAK = 3
+# Leitner-style spacing: box 0 is "never graded (or just got a wrong
+# answer), always due"; each correct grading moves up a box and pushes
+# next_review_at out by that box's interval, in days; a wrong grading drops
+# straight back to box 0, due immediately. The box concept itself isn't new
+# -- "streak" was already exactly this before real dates existed, just
+# without anything to say *when* a non-zero box should come due again.
+REVIEW_INTERVAL_DAYS = [0, 1, 2, 4, 8, 16]
+MASTERED_STREAK = 6
 
 
 class VocabGrade(BaseModel):
@@ -321,10 +333,18 @@ def grade_vocab(entry_id: str, body: VocabGrade):
             # "unknown" doubles as the reset path: the panel also sends it
             # when someone taps a mastered word's badge to pull it back into
             # rotation, not just for a genuine wrong answer in the quiz --
-            # both cases want the same "back to zero, eligible again" effect.
+            # both cases want the same "back to box 0, due now" effect, and
+            # REVIEW_INTERVAL_DAYS[0] == 0 gives them that for free below.
             e["streak"] = min(e.get("streak", 0) + 1, MASTERED_STREAK) if body.result == "known" else 0
+            days = REVIEW_INTERVAL_DAYS[min(e["streak"], len(REVIEW_INTERVAL_DAYS) - 1)]
+            e["next_review_at"] = time.time() + days * 86400
             save_vocab(entries)
-            return {"ok": True, "streak": e["streak"], "mastered": e["streak"] >= MASTERED_STREAK}
+            return {
+                "ok": True,
+                "streak": e["streak"],
+                "mastered": e["streak"] >= MASTERED_STREAK,
+                "next_review_at": e["next_review_at"],
+            }
     raise HTTPException(404, "没找到这条记录")
 
 

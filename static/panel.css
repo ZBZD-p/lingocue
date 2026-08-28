@@ -874,6 +874,26 @@ button:focus-visible {
 .vocab-subtitle { font-size: 13.5px; color: var(--muted-2); margin-bottom: 8px; line-height: 1.6; }
 .vocab-question { font-family: var(--font-heading); font-size: 22px; line-height: 1.2; color: var(--ink); padding-right: 60px; }
 .vocab-question.vocab-word { color: var(--ink); }
+/* Only the vocab list wraps .vocab-question in this row (the phrase list
+   doesn't have a speak button, so it keeps the bare rule above as-is);
+   moving the delete-button clearance onto the row lets the word text and
+   the speak button share the remaining width instead of the button
+   fighting the word's own padding. */
+.vocab-question-row { display: flex; align-items: center; gap: 8px; padding-right: 60px; }
+.vocab-question-row .vocab-question { padding-right: 0; }
+.vocab-speak-btn { flex-shrink: 0; width: 26px; height: 26px; padding: 0; color: var(--muted-3); }
+.vocab-speak-btn:hover { color: var(--accent); background: var(--accent-soft); }
+/* Read-only labels, not the quiz's clickable scope pills -- smaller and
+   quieter so they don't compete with the word itself for attention. */
+.vocab-tags-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.vocab-tag-pill {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted-2);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
 .vocab-answer { margin-top: 8px; font-size: 13.5px; line-height: 1.65; color: var(--muted-2); }
 .vocab-ask-btn { margin-top: 10px; padding: 0; font-size: 13px; color: var(--accent); }
 .vocab-ask-btn:hover { background: transparent; filter: brightness(1.1); }
@@ -904,6 +924,20 @@ button:focus-visible {
 .vocab-mastered-badge:hover { background: var(--accent-soft-strong); }
 .vocab-mastered-badge .icon { width: 11px; height: 11px; }
 
+/* Informational, not actionable -- a span, not a button -- so it's styled
+   quieter than the mastered badge's accent pill instead of competing with it. */
+.vocab-due-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted-2);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
+
 /* ---- vocab quiz ----
    One card at a time, centered -- deliberately not the flat list-row shape
    the vocab cards above use, since only one thing is ever on screen instead
@@ -913,6 +947,35 @@ button:focus-visible {
 .quiz-progress { font-size: 12px; color: var(--muted-3); letter-spacing: 0.02em; }
 .quiz-exit-btn { width: 30px; height: 30px; padding: 0; color: var(--muted-3); }
 .quiz-exit-btn:hover { color: var(--ink); background: var(--surface-2); }
+
+/* Sits above .quiz-start (a sibling, not part of it) so it stays visible
+   the whole time this tab is idle -- toggling it re-renders .quiz-start's
+   count/button below without touching this. */
+.quiz-scope { padding: 4px 4px 14px; border-bottom: 1px solid var(--line); }
+.quiz-scope-row { display: flex; flex-wrap: wrap; gap: 7px; }
+
+/* Toggle pills, not native checkboxes/<select> -- same accent-select
+   language as .tab-btn.active/.dropdown-item.selected elsewhere, so this
+   reads as part of the same panel instead of a bare HTML form dropped in. */
+.quiz-scope-pill, .quiz-batch-pill {
+  padding: 5px 13px;
+  height: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-2);
+  font-size: 12px;
+}
+.quiz-scope-pill:hover, .quiz-batch-pill:hover { border-color: var(--muted); color: var(--ink); background: var(--surface-2); }
+.quiz-scope-pill.selected, .quiz-batch-pill.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.quiz-batch-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.quiz-batch-label { font-size: 12px; color: var(--muted-2); }
+.quiz-batch-pills { display: flex; gap: 6px; }
 
 /* The idle "开始抽查" prompt -- what this tab shows before a round starts
    and what "退出抽查" returns to, so it fills the same space a card would. */
@@ -1058,8 +1121,10 @@ button:focus-visible {
   .vocab-question { font-size: 24px; }
   .vocab-answer { font-size: 15px; }
   .vocab-delete-btn { width: 32px; height: 32px; }
+  .vocab-speak-btn { width: 32px; height: 32px; }
 
   .quiz-start-btn { height: 50px; font-size: 15px; }
+  .quiz-scope-pill, .quiz-batch-pill { padding: 7px 15px; font-size: 13.5px; }
   .quiz-word { font-size: 32px; }
   .quiz-answer { font-size: 15px; }
   .quiz-grade-btn, .quiz-reveal-btn { height: 50px; font-size: 15px; }

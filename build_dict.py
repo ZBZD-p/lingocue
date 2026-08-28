@@ -149,7 +149,8 @@ def build(keep_csv: bool) -> None:
         CREATE TABLE entries (
             word       TEXT PRIMARY KEY,
             phonetic   TEXT,
-            translation TEXT
+            translation TEXT,
+            tags       TEXT
         );
         -- Maps any inflected spelling to its lemma. Separate table rather
         -- than a column so lookups stay a single indexed hit either way.
@@ -173,17 +174,23 @@ def build(keep_csv: bool) -> None:
                 continue
 
             kept += 1
-            entries.append((word.lower(), (row.get("phonetic") or "").strip(), translation))
+            # ECDICT's own space-separated format (e.g. "cet4 cet6"), stored
+            # verbatim -- previously only used to decide inclusion (see
+            # is_common), then discarded. Kept now so callers can filter by
+            # exam syllabus (生词本抽查's scope filter) without re-deriving
+            # it from a corpus this project doesn't otherwise keep around.
+            tags = (row.get("tag") or "").strip()
+            entries.append((word.lower(), (row.get("phonetic") or "").strip(), translation, tags))
             for form in inflections(row.get("exchange", "")):
                 forms.append((form.lower(), word.lower()))
 
             if len(entries) >= 20_000:
-                db.executemany("INSERT OR REPLACE INTO entries VALUES (?,?,?)", entries)
+                db.executemany("INSERT OR REPLACE INTO entries VALUES (?,?,?,?)", entries)
                 db.executemany("INSERT OR IGNORE INTO forms VALUES (?,?)", forms)
                 form_count += len(forms)
                 entries, forms = [], []
 
-    db.executemany("INSERT OR REPLACE INTO entries VALUES (?,?,?)", entries)
+    db.executemany("INSERT OR REPLACE INTO entries VALUES (?,?,?,?)", entries)
     db.executemany("INSERT OR IGNORE INTO forms VALUES (?,?)", forms)
     form_count += len(forms)
     db.commit()
