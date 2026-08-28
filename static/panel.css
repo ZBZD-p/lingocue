@@ -866,6 +866,107 @@ button:focus-visible {
 }
 .vocab-delete-btn:hover { color: var(--danger); background: var(--danger-soft); }
 
+.vocab-mastered-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 8px 2px 6px;
+  height: auto;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
+.vocab-mastered-badge:hover { background: var(--accent-soft-strong); }
+.vocab-mastered-badge .icon { width: 11px; height: 11px; }
+
+/* ---- vocab quiz ----
+   One card at a time, centered -- deliberately not the flat list-row shape
+   the vocab cards above use, since only one thing is ever on screen instead
+   of a scrolling stack. */
+.vocab-quiz { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 22px 18px; }
+.quiz-topbar { display: flex; align-items: center; justify-content: space-between; }
+.quiz-progress { font-size: 12px; color: var(--muted-3); letter-spacing: 0.02em; }
+.quiz-exit-btn { width: 30px; height: 30px; padding: 0; color: var(--muted-3); }
+.quiz-exit-btn:hover { color: var(--ink); background: var(--surface-2); }
+
+/* The idle "开始抽查" prompt -- what this tab shows before a round starts
+   and what "退出抽查" returns to, so it fills the same space a card would. */
+.quiz-start {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  padding: 12px 16px;
+}
+.quiz-start-count { font-size: 14px; color: var(--muted); }
+.quiz-start-empty { font-size: 12.5px; color: var(--muted); line-height: 1.7; max-width: 260px; }
+.quiz-start-btn {
+  padding: 0 22px;
+  height: 46px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 14px;
+}
+.quiz-start-btn:hover { filter: brightness(1.08); background: var(--accent); }
+
+.quiz-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 18px;
+  overflow-y: auto;
+  padding: 12px 0;
+}
+.quiz-word { font-family: var(--font-heading); font-size: 30px; line-height: 1.2; color: var(--ink); }
+.quiz-subtitle { font-size: 13.5px; color: var(--muted-2); line-height: 1.6; max-width: 100%; }
+.quiz-answer { font-size: 14px; line-height: 1.65; color: var(--muted-2); max-width: 100%; }
+.quiz-reveal-btn {
+  padding: 0 20px;
+  height: 42px;
+  background: var(--surface-3);
+  color: var(--ink);
+  font-size: 13.5px;
+}
+.quiz-reveal-btn:hover { filter: brightness(1.15); }
+
+.quiz-grade-row { display: flex; gap: 10px; width: 100%; margin-top: 4px; }
+.quiz-grade-btn { flex: 1; height: 46px; padding: 0 14px; font-size: 14px; }
+.quiz-grade-known { background: var(--accent); color: var(--accent-ink); }
+.quiz-grade-known:hover { filter: brightness(1.08); background: var(--accent); }
+.quiz-grade-unknown { border: 1px solid var(--danger-line); color: var(--danger-line); }
+.quiz-grade-unknown:hover { background: var(--danger-soft); }
+
+.quiz-summary {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+}
+.quiz-summary-line { display: flex; align-items: center; gap: 8px; font-size: 16px; color: var(--ink); }
+.quiz-summary-known .icon { color: var(--accent); }
+.quiz-summary-unknown .icon { color: var(--danger-line); }
+.quiz-summary-actions { display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 14px; }
+.quiz-retry-missed-btn, .quiz-exit-summary-btn { height: 42px; padding: 0 16px; font-size: 13.5px; }
+.quiz-retry-missed-btn { background: var(--accent); color: var(--accent-ink); }
+.quiz-retry-missed-btn:hover { filter: brightness(1.08); background: var(--accent); }
+.quiz-exit-summary-btn { border: 1px solid var(--line-strong); color: var(--ink); }
+.quiz-exit-summary-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 /* ---- phones / narrow screens ----
    The sidebar shape only makes sense next to a wide video area. On a phone
    there isn't room for both, so the panel becomes a full-screen overlay
@@ -935,6 +1036,12 @@ button:focus-visible {
   .vocab-question { font-size: 24px; }
   .vocab-answer { font-size: 15px; }
   .vocab-delete-btn { width: 32px; height: 32px; }
+
+  .quiz-start-btn { height: 50px; font-size: 15px; }
+  .quiz-word { font-size: 32px; }
+  .quiz-answer { font-size: 15px; }
+  .quiz-grade-btn, .quiz-reveal-btn { height: 50px; font-size: 15px; }
+  .quiz-exit-btn { width: 36px; height: 36px; }
 }
 
 /* scrollbars */

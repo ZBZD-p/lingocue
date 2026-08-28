@@ -33,6 +33,15 @@ CONFIG_FILE = Path(__file__).resolve().parent / "deepseek_config.json"
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 
+# The panel's shared 思考程度 dropdown (also used by Claude) offers a couple
+# of values DeepSeek's own reasoning_effort doesn't distinguish -- both
+# collapse to "high" per DeepSeek's documented mapping table. Left unmapped
+# (None) when the user leaves the setting on its blank default, which omits
+# reasoning_effort from the request entirely and lets DeepSeek's own default
+# (thinking on, effort high) apply rather than this project silently
+# guessing a value on their behalf.
+REASONING_EFFORT_MAP = {"low": "low", "medium": "high", "high": "high", "xhigh": "high", "max": "max"}
+
 # A runaway tool-call loop (model keeps calling tools and never answers)
 # shouldn't spin forever -- bounded the same way MAX_CARD_CHARS or
 # PUNCTUATE_TIMEOUT_S elsewhere in this project bound their own loops.
@@ -92,13 +101,19 @@ def ndjson(obj: dict) -> str:
     return json.dumps(obj, ensure_ascii=False) + "\n"
 
 
-def _post(cfg: dict, messages: list[dict]):
-    body = json.dumps({
+def _post(cfg: dict, messages: list[dict], reasoning_effort: str | None, thinking_enabled: bool):
+    payload = {
         "model": cfg.get("model") or DEFAULT_MODEL,
         "messages": messages,
         "tools": _tool_schemas(),
         "stream": True,
-    }).encode("utf-8")
+        "thinking": {"type": "enabled" if thinking_enabled else "disabled"},
+    }
+    # Meaningless with thinking off, and DeepSeek's own doc examples never
+    # send it alongside a disabled thinking mode.
+    if reasoning_effort and thinking_enabled:
+        payload["reasoning_effort"] = reasoning_effort
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         (cfg.get("base_url") or DEFAULT_BASE_URL).rstrip("/") + "/chat/completions",
         data=body, method="POST",
@@ -126,7 +141,8 @@ def _execute_tool(name: str, arguments_json: str):
 
 
 def stream_chat(system_prompt: str, user_message: str,
-                session_id: str | None = None, model: str | None = None):
+                session_id: str | None = None, model: str | None = None,
+                effort: str | None = None, thinking: str | None = None):
     """Mirrors stream_claude_events()'s contract: yields NDJSON strings,
     ending in exactly one `done` or `error` event."""
     cfg = config()
@@ -136,6 +152,8 @@ def stream_chat(system_prompt: str, user_message: str,
         return
     if model:
         cfg = {**cfg, "model": model}
+    reasoning_effort = REASONING_EFFORT_MAP.get(effort) if effort else None
+    thinking_enabled = thinking != "off"
 
     sid = session_id or str(uuid.uuid4())
     messages = _sessions.get(sid)
@@ -146,7 +164,7 @@ def stream_chat(system_prompt: str, user_message: str,
     full_reply = ""
     for _round in range(MAX_TOOL_ROUNDS):
         try:
-            resp = _post(cfg, messages)
+            resp = _post(cfg, messages, reasoning_effort, thinking_enabled)
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:500]
             yield ndjson({"type": "error", "message": f"DeepSeek 返回错误 {e.code}：{detail}"})
@@ -156,6 +174,13 @@ def stream_chat(system_prompt: str, user_message: str,
             return
 
         assistant_content = ""
+        # Accumulated (not just streamed out) because it has to be echoed
+        # back into `messages` below: with `tools` on every request (always,
+        # here), the API requires every prior assistant turn's
+        # reasoning_content to be replayed verbatim, tool calls or not --
+        # omitting it 400s the *next* request, not this one, so the failure
+        # would otherwise show up one round later looking unrelated.
+        reasoning_content = ""
         # Streamed tool calls arrive as fragments keyed by index -- one
         # chunk might carry only a few characters of one argument string --
         # so they're accumulated across the whole response, not read whole.
@@ -180,6 +205,7 @@ def stream_chat(system_prompt: str, user_message: str,
             delta = choice.get("delta") or {}
 
             if delta.get("reasoning_content"):
+                reasoning_content += delta["reasoning_content"]
                 yield ndjson({"type": "thinking_delta", "text": delta["reasoning_content"]})
             if delta.get("content"):
                 assistant_content += delta["content"]
@@ -203,6 +229,7 @@ def stream_chat(system_prompt: str, user_message: str,
             messages.append({
                 "role": "assistant",
                 "content": assistant_content or None,
+                "reasoning_content": reasoning_content or None,
                 "tool_calls": [
                     {"id": t["id"], "type": "function",
                      "function": {"name": t["name"], "arguments": t["arguments"]}}
@@ -218,7 +245,11 @@ def stream_chat(system_prompt: str, user_message: str,
                 })
             continue  # ask again with the tool results appended
 
-        messages.append({"role": "assistant", "content": assistant_content})
+        messages.append({
+            "role": "assistant",
+            "content": assistant_content,
+            "reasoning_content": reasoning_content or None,
+        })
         _sessions[sid] = messages
         yield ndjson({"type": "done", "reply": full_reply, "session_id": sid})
         return

@@ -90,7 +90,7 @@
   const EFFORT_OPTIONS = [
     { value: "", label: "思考程度：默认" },
     { value: "low", label: "低" },
-    { value: "medium", label: "中（默认）" },
+    { value: "medium", label: "中" },
     { value: "high", label: "高" },
     { value: "xhigh", label: "很高" },
     { value: "max", label: "最高" },
@@ -116,6 +116,14 @@
 
   // First entry is the default (see populateSelect), so this ships on.
   const WORD_HIGHLIGHT_OPTIONS = [
+    { value: "on", label: "开" },
+    { value: "off", label: "关" },
+  ];
+
+  // DeepSeek-only -- Claude's extended thinking has no "off" state exposed
+  // through the CLI's --effort flag, so this doesn't belong on the shared
+  // 思考程度 dropdown (see its showWhen).
+  const THINKING_OPTIONS = [
     { value: "on", label: "开" },
     { value: "off", label: "关" },
   ];
@@ -160,6 +168,15 @@
       showWhen: (engine) => engine === "deepseek",
     },
     {
+      key: "deepseekThinking",
+      label: "DeepSeek 思考模式",
+      hint: "开启时会先想再答（回复里能看到思考过程），关闭更快但准确度可能下降。" +
+        "关闭时下面的思考程度设置对 DeepSeek 不生效。",
+      options: THINKING_OPTIONS,
+      storageKey: "english-tutor-deepseek-thinking",
+      showWhen: (engine) => engine === "deepseek",
+    },
+    {
       key: "model",
       label: "AI 模型",
       hint: "换模型不会中断当前对话。",
@@ -170,10 +187,11 @@
     {
       key: "effort",
       label: "思考程度",
-      hint: "越高回答越细致，但更慢也更贵。解释语法/语境时调高比较值得。",
+      hint: "越高回答越细致，但更慢也更贵。解释语法/语境时调高比较值得。" +
+        "两边引擎共用这一个设置，但各自的默认不同：Claude 留空按中等算；" +
+        "DeepSeek 留空则用它自己的默认强度（高），且不区分中/很高，都按高处理。",
       options: EFFORT_OPTIONS,
       storageKey: "english-tutor-effort",
-      showWhen: (engine) => engine !== "deepseek",
     },
     {
       key: "subSize",
@@ -248,6 +266,7 @@
           <button class="tab-btn active" data-page="chat">${icon("chat")}<span class="tab-label">对话</span><span class="tab-dot"></span></button>
           <button class="tab-btn" data-page="subs">${icon("subs")}<span class="tab-label">字幕</span><span class="tab-dot"></span></button>
           <button class="tab-btn" data-page="vocab">${icon("vocab")}<span class="tab-label">生词本</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="quiz">${icon("repeat")}<span class="tab-label">抽查</span><span class="tab-dot"></span></button>
           <button class="tab-btn" data-page="settings">${icon("settings")}<span class="tab-label">设置</span><span class="tab-dot"></span></button>
         </div>
         <button id="newChatBtn" class="new-chat-btn" title="开始新对话" aria-label="开始新对话">${icon("plus")}</button>
@@ -273,6 +292,9 @@
           <div class="vocab-list" id="vocabList">
             <div class="vocab-empty" id="vocabEmpty">还没有生词。在字幕里把鼠标放到单词上，点"存生词"。</div>
           </div>
+        </div>
+        <div class="page" id="quizPage">
+          <div class="vocab-quiz" id="vocabQuiz"></div>
         </div>
         <div class="page" id="settingsPage">
           <div class="settings-list" id="settingsList">
@@ -434,6 +456,7 @@
     const loopStopBtn = $("loopStopBtn");
     const vocabList = $("vocabList");
     const vocabEmpty = $("vocabEmpty");
+    const vocabQuiz = $("vocabQuiz");
     const wordPopup = $("wordPopup");
     const wordPopupDef = $("wordPopupDef");
     const tabBtns = root.querySelectorAll(".tab-btn");
@@ -441,6 +464,7 @@
       chat: $("chatPage"),
       subs: $("subsPage"),
       vocab: $("vocabPage"),
+      quiz: $("quizPage"),
       settings: $("settingsPage"),
     };
 
@@ -814,8 +838,14 @@
       } catch (e) { /* corrupt/old format -- start fresh */ }
     })();
 
-    // Only auto-follow new content while the user is already at the bottom;
-    // if they scrolled up to re-read something, don't yank them back down.
+    // Streaming deltas (onThinkingDelta/onTextDelta below) never auto-scroll
+    // at all -- constantly chasing the growing text mid-stream is exactly
+    // the jitter this used to cause. addMessage/createAiMessage still jump
+    // to the bottom once, unconditionally, for the new message they're
+    // adding; finalize() below is the one mid-turn spot that still checks
+    // nearBottom() first, so the one-time settle when a reply completes
+    // doesn't yank someone back down if they'd scrolled up to re-read
+    // something earlier in the conversation.
     const BOTTOM_THRESHOLD_PX = 80;
     const nearBottom = () =>
       chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < BOTTOM_THRESHOLD_PX;
@@ -889,15 +919,12 @@
 
       return {
         onThinkingDelta(text) {
-          const stick = nearBottom();
           charCount += text.length;
           thinkingBox.style.display = "block";
           thinkingBox.querySelector(".thinking-content").textContent += text;
           status.querySelector(".status-text").textContent = statusText();
-          if (stick) toBottom();
         },
         onTextDelta(text) {
-          const stick = nearBottom();
           charCount += text.length;
           rawAnswer += text;
           if (!answerStarted) {
@@ -916,7 +943,6 @@
           // next delta (or finalize, which always flushes) catches it up.
           if (Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS) {
             content.innerHTML = renderMarkdown(rawAnswer);
-            if (stick) toBottom();
           }
         },
         onUsage(tokens) { if (tokens != null) latestTokens = tokens; },
@@ -981,13 +1007,12 @@
             message: text,
             session_id: sessionId,
             engine: settingValue("engine") || null,
-            // The Claude-specific model/effort dropdowns don't apply to
-            // DeepSeek (its model comes from deepseek_config.json instead,
-            // via the DeepSeek 模型 field), so they're left out of that
-            // request rather than sent as values the backend would have to
-            // know to ignore.
+            // The model dropdown is Claude-specific -- DeepSeek's own model
+            // comes from deepseek_config.json instead, via the DeepSeek 模型
+            // field -- but effort applies to both engines now.
             model: settingValue("engine") === "deepseek" ? null : (settingValue("model") || null),
-            effort: settingValue("engine") === "deepseek" ? null : (settingValue("effort") || null),
+            effort: settingValue("effort") || null,
+            thinking: settingValue("engine") === "deepseek" ? settingValue("deepseekThinking") : null,
           }),
         });
         if (!res.ok || !res.body) {
@@ -1078,6 +1103,11 @@
       composerEl.hidden = name !== "chat";
       if (name === "subs" && subtitleCues.length === 0) loadSubtitleCues();
       if (name === "vocab") loadVocabList();
+      // Own tab now (not a mode switched into from the vocab list), so
+      // entering it always starts fresh at the "开始抽查" prompt rather than
+      // trying to resume whatever card a previous visit left off on --
+      // same "just reload" philosophy as the vocab list above.
+      if (name === "quiz") loadQuizStart();
     }
     tabBtns.forEach((b) => b.addEventListener("click", () => switchPage(b.dataset.page)));
 
@@ -1781,6 +1811,171 @@
 
     // ---- vocab ----
 
+    // Matches app.py's MASTERED_STREAK -- a word this many consecutive
+    // "known" gradings in a row drops out of the quiz pool (but stays in
+    // the vocab book). Duplicated rather than fetched because it only ever
+    // needs to agree with the backend's own constant, never be configurable
+    // per-request.
+    const MASTERED_STREAK = 3;
+
+    // The full list as last fetched -- kept around (not just handed to
+    // renderVocabList and discarded) so the quiz can build its pool and
+    // mirror a grading's returned streak locally without a second request.
+    let vocabEntries = [];
+
+    let quizQueue = [];
+    let quizIndex = 0;
+    let quizKnown = 0;
+    let quizUnknown = 0;
+    let quizMissed = [];
+
+    function shuffled(arr) {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    // Only words with a captured meaning are quizzable at all -- there's
+    // nothing to self-test against otherwise -- and a word that's already
+    // hit MASTERED_STREAK stays out until its badge in the list is tapped
+    // to put it back in rotation (see renderVocabList).
+    function quizPool() {
+      return vocabEntries.filter((e) => e.answer && (e.streak || 0) < MASTERED_STREAK);
+    }
+
+    async function gradeEntry(entry, result) {
+      const res = await fetch(`${API}/api/vocab/${entry.id}/grade`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result }),
+      });
+      const data = await res.json();
+      // Mirrors the persisted value onto the in-memory record so the vocab
+      // list (mastered badge) and the next quiz's pool are correct without
+      // re-fetching the whole list.
+      if (data && data.ok) entry.streak = data.streak;
+      return data;
+    }
+
+    function startQuiz(pool) {
+      quizQueue = shuffled(pool);
+      quizIndex = 0;
+      quizKnown = 0;
+      quizUnknown = 0;
+      quizMissed = [];
+      renderQuizCard();
+    }
+
+    // Own tab's idle state -- what "抽查" shows before a round is started,
+    // and what "退出抽查" returns to. Doesn't re-fetch: vocabEntries is
+    // already current enough (loaded when this tab was entered, kept in
+    // sync locally by gradeEntry as gradings come in during the round).
+    function renderQuizStart() {
+      const pool = quizPool();
+      const emptyReason = vocabEntries.length === 0
+        ? "还没有生词。去生词本页存一些吧。"
+        : "没有可抽查的词——生词都已掌握，或者还没查过意思。";
+      vocabQuiz.innerHTML = pool.length > 0 ? `
+        <div class="quiz-start">
+          <div class="quiz-start-count">${pool.length} 个词可以抽查</div>
+          <button class="quiz-start-btn">${icon("repeat")} 开始抽查</button>
+        </div>
+      ` : `
+        <div class="quiz-start">
+          <div class="quiz-start-empty">${escapeHtml(emptyReason)}</div>
+        </div>
+      `;
+      const startBtn = vocabQuiz.querySelector(".quiz-start-btn");
+      if (startBtn) startBtn.addEventListener("click", () => startQuiz(pool));
+    }
+
+    async function loadQuizStart() {
+      vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">加载中…</div></div>`;
+      try {
+        vocabEntries = await (await fetch(`${API}/api/vocab`)).json();
+      } catch (e) {
+        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">加载生词本失败：${escapeHtml(e.message)}</div></div>`;
+        return;
+      }
+      renderQuizStart();
+    }
+
+    // The "退出抽查" click handler.
+    function exitQuiz() {
+      renderQuizStart();
+    }
+
+    function renderQuizCard() {
+      if (quizIndex >= quizQueue.length) { renderQuizSummary(); return; }
+      const entry = quizQueue[quizIndex];
+      vocabQuiz.innerHTML = `
+        <div class="quiz-topbar">
+          <div class="quiz-progress">${quizIndex + 1} / ${quizQueue.length}</div>
+          <button class="quiz-exit-btn" title="退出抽查" aria-label="退出抽查">${icon("close")}</button>
+        </div>
+        <div class="quiz-card">
+          <div class="quiz-word">${escapeHtml(entry.question)}</div>
+          <button class="quiz-reveal-btn">显示答案</button>
+        </div>
+      `;
+      vocabQuiz.querySelector(".quiz-exit-btn").addEventListener("click", exitQuiz);
+      vocabQuiz.querySelector(".quiz-reveal-btn").addEventListener("click", () => renderQuizCardRevealed(entry));
+    }
+
+    function renderQuizCardRevealed(entry) {
+      const quizCard = vocabQuiz.querySelector(".quiz-card");
+      quizCard.innerHTML = `
+        <div class="quiz-word">${escapeHtml(entry.question)}</div>
+        ${entry.subtitle_text ? `<div class="quiz-subtitle">"${escapeHtml(entry.subtitle_text)}"</div>` : ""}
+        <div class="quiz-answer">${renderMarkdown(entry.answer)}</div>
+        <div class="quiz-grade-row">
+          <button class="quiz-grade-btn quiz-grade-unknown">${icon("close")} 不认识</button>
+          <button class="quiz-grade-btn quiz-grade-known">${icon("check")} 认识</button>
+        </div>
+      `;
+      quizCard.querySelector(".quiz-grade-unknown").addEventListener("click", () => submitGrade(entry, false));
+      quizCard.querySelector(".quiz-grade-known").addEventListener("click", () => submitGrade(entry, true));
+    }
+
+    async function submitGrade(entry, known) {
+      vocabQuiz.querySelectorAll(".quiz-grade-btn").forEach((b) => { b.disabled = true; });
+      try {
+        await gradeEntry(entry, known ? "known" : "unknown");
+      } catch (e) {
+        // Best-effort: session counters below still advance so one network
+        // hiccup doesn't stall the whole quiz -- this grading just won't
+        // have persisted, same tradeoff as pushDeepSeekConfig elsewhere.
+      }
+      if (known) quizKnown++; else { quizUnknown++; quizMissed.push(entry); }
+      quizIndex++;
+      renderQuizCard();
+    }
+
+    function renderQuizSummary() {
+      vocabQuiz.innerHTML = `
+        <div class="quiz-topbar">
+          <div class="quiz-progress">完成</div>
+          <button class="quiz-exit-btn" title="退出抽查" aria-label="退出抽查">${icon("close")}</button>
+        </div>
+        <div class="quiz-summary">
+          <div class="quiz-summary-line quiz-summary-known">${icon("check")} 认识 ${quizKnown} 个</div>
+          <div class="quiz-summary-line quiz-summary-unknown">${icon("close")} 不认识 ${quizUnknown} 个</div>
+          <div class="quiz-summary-actions">
+            ${quizMissed.length > 0
+              ? `<button class="quiz-retry-missed-btn">只复习刚才不认识的（${quizMissed.length}）</button>` : ""}
+            <button class="quiz-exit-summary-btn">退出抽查</button>
+          </div>
+        </div>
+      `;
+      vocabQuiz.querySelector(".quiz-exit-btn").addEventListener("click", exitQuiz);
+      vocabQuiz.querySelector(".quiz-exit-summary-btn").addEventListener("click", exitQuiz);
+      const retryBtn = vocabQuiz.querySelector(".quiz-retry-missed-btn");
+      if (retryBtn) retryBtn.addEventListener("click", () => startQuiz(quizMissed));
+    }
+
     async function saveVocabEntry(payload) {
       const res = await fetch(`${API}/api/vocab`, {
         method: "POST",
@@ -1795,7 +1990,8 @@
       vocabEmpty.hidden = false;
       vocabEmpty.textContent = "正在加载…";
       try {
-        renderVocabList(await (await fetch(`${API}/api/vocab`)).json());
+        vocabEntries = await (await fetch(`${API}/api/vocab`)).json();
+        renderVocabList(vocabEntries);
       } catch (e) {
         vocabEmpty.hidden = false;
         vocabEmpty.textContent = `加载生词本失败：${e.message}`;
@@ -1815,11 +2011,25 @@
         const card = document.createElement("div");
         card.className = "vocab-card";
 
-        if (entry.video_title || entry.created_at) {
+        if (entry.video_title || entry.created_at || (entry.streak || 0) >= MASTERED_STREAK) {
           const meta = document.createElement("div");
           meta.className = "vocab-meta";
           const when = entry.created_at ? new Date(entry.created_at * 1000).toLocaleString() : "";
           meta.textContent = [entry.video_title, when].filter(Boolean).join(" · ");
+          if ((entry.streak || 0) >= MASTERED_STREAK) {
+            const badge = document.createElement("button");
+            badge.className = "vocab-mastered-badge";
+            badge.innerHTML = `${icon("check")} 已掌握`;
+            badge.title = "点一下重新放回抽查范围";
+            badge.addEventListener("click", async () => {
+              badge.disabled = true;
+              try {
+                await gradeEntry(entry, "unknown");
+                renderVocabList(vocabEntries);
+              } catch (e) { badge.disabled = false; }
+            });
+            meta.appendChild(badge);
+          }
           card.appendChild(meta);
         }
         if (entry.subtitle_text) {

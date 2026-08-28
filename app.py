@@ -172,11 +172,16 @@ async def no_cache_app_assets(request, call_next):
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
-    model: str | None = None
-    effort: str | None = None
-    # "claude" (default, unset) or "deepseek" -- model/effort above are
-    # Claude Code CLI-specific and ignored on the DeepSeek path, which reads
+    # Claude Code CLI-specific -- ignored on the DeepSeek path, which reads
     # its own model choice from deepseek_config.json instead.
+    model: str | None = None
+    # Shared by both engines (DeepSeek's own reasoning_effort vocabulary is
+    # narrower -- see deepseek_chat.REASONING_EFFORT_MAP).
+    effort: str | None = None
+    # DeepSeek-only: "on" (default)/"off" for its thinking mode. Claude's
+    # extended thinking has no equivalent off switch exposed by the CLI.
+    thinking: str | None = None
+    # "claude" (default, unset) or "deepseek".
     engine: str | None = None
 
 
@@ -263,6 +268,7 @@ def add_vocab(entry: VocabEntry):
         "subtitle_text": entry.subtitle_text,
         "question": entry.question,
         "answer": entry.answer,
+        "streak": 0,
     }
     entries.append(record)
     save_vocab(entries)
@@ -277,6 +283,33 @@ def delete_vocab(entry_id: str):
         raise HTTPException(404, "没找到这条记录")
     save_vocab(remaining)
     return {"ok": True}
+
+
+# Consecutive "known" self-gradings before a word drops out of the quiz pool
+# (see grade_vocab below) -- it stays in the vocab book either way, this only
+# affects whether the flashcard quiz still offers it.
+MASTERED_STREAK = 3
+
+
+class VocabGrade(BaseModel):
+    result: str  # "known" | "unknown"
+
+
+@app.post("/api/vocab/{entry_id}/grade")
+def grade_vocab(entry_id: str, body: VocabGrade):
+    if body.result not in ("known", "unknown"):
+        raise HTTPException(400, "result 必须是 known 或 unknown")
+    entries = load_vocab()
+    for e in entries:
+        if e.get("id") == entry_id:
+            # "unknown" doubles as the reset path: the panel also sends it
+            # when someone taps a mastered word's badge to pull it back into
+            # rotation, not just for a genuine wrong answer in the quiz --
+            # both cases want the same "back to zero, eligible again" effect.
+            e["streak"] = min(e.get("streak", 0) + 1, MASTERED_STREAK) if body.result == "known" else 0
+            save_vocab(entries)
+            return {"ok": True, "streak": e["streak"], "mastered": e["streak"] >= MASTERED_STREAK}
+    raise HTTPException(404, "没找到这条记录")
 
 
 @app.get("/api/define")
@@ -798,7 +831,8 @@ def chat(req: ChatRequest):
         # frontend doesn't know or care which backend answered.
         return StreamingResponse(
             deepseek_chat.stream_chat(TUTOR_SYSTEM_PROMPT, req.message,
-                                      session_id=req.session_id, model=req.model),
+                                      session_id=req.session_id, model=req.model,
+                                      effort=req.effort, thinking=req.thinking),
             media_type="application/x-ndjson",
         )
     # No context-stuffing on purpose: the agent has real tools and should
