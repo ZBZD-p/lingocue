@@ -155,18 +155,30 @@
   var FALLBACK_COOLDOWN_MS = 600000;
   var FALLBACK_ATTEMPTS_KEY = "lingocueCaptionFallbackAttempts";
 
-  function recentlyAttemptedFallback(videoId) {
+  // Keyed by title+id, not id alone: registerWhenReady above can register
+  // the *same* video twice under two different titles (the page's title
+  // element trailing the SPA navigation -- see its own comment), and each
+  // is a genuinely different backend cache entry (youtube.safe_base_name
+  // folds the title in too). Keying on id alone was confirmed for real to
+  // cost a video its subtitles: the first (stale-title) registration's
+  // fallback won the race, marked the video's id as attempted, and the
+  // second, *correctly*-titled registration -- the one the panel actually
+  // ends up reading from -- silently found itself on cooldown and never
+  // even tried.
+  function fallbackKey(videoId, title) { return videoId + "::" + title; }
+
+  function recentlyAttemptedFallback(key) {
     var map;
     try { map = JSON.parse(localStorage.getItem(FALLBACK_ATTEMPTS_KEY)) || {}; }
     catch (e) { map = {}; }
-    return typeof map[videoId] === "number" && Date.now() - map[videoId] < FALLBACK_COOLDOWN_MS;
+    return typeof map[key] === "number" && Date.now() - map[key] < FALLBACK_COOLDOWN_MS;
   }
 
-  function markFallbackAttempted(videoId) {
+  function markFallbackAttempted(key) {
     var map;
     try { map = JSON.parse(localStorage.getItem(FALLBACK_ATTEMPTS_KEY)) || {}; }
     catch (e) { map = {}; }
-    map[videoId] = Date.now();
+    map[key] = Date.now();
     // Trimmed on write rather than kept forever -- this is scratch state for
     // a rate limit, not a record anything ever needs to look back on.
     var cutoff = Date.now() - FALLBACK_COOLDOWN_MS;
@@ -183,11 +195,22 @@
   // with no caption track at all (the ordinary case a failure usually
   // means) shows that here too, and this quietly does nothing.
   function tryBrowserCaptionFallback(videoId, title) {
-    if (recentlyAttemptedFallback(videoId)) return;
-    markFallbackAttempted(videoId);
+    var key = fallbackKey(videoId, title);
+    if (recentlyAttemptedFallback(key)) return;
+    markFallbackAttempted(key);
 
-    var pr = window.ytInitialPlayerResponse;
-    var tracks = (pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
+    // window.ytInitialPlayerResponse is set once, at the very first page
+    // load, and never again -- confirmed for real by clicking through a
+    // chain of recommended videos and watching it keep reporting the first
+    // one's title and captions three videos later. The player element's own
+    // method is what actually tracks the current video across YouTube's SPA
+    // navigation; the videoId check below is an extra guard against reading
+    // it before it's caught up, on top of that.
+    var player = document.querySelector("#movie_player");
+    var pr = player && typeof player.getPlayerResponse === "function"
+      ? player.getPlayerResponse() : null;
+    if (!pr || (pr.videoDetails && pr.videoDetails.videoId !== videoId)) return;
+    var tracks = (pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
                   pr.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
     var target = null;
     for (var i = 0; i < tracks.length; i++) {
