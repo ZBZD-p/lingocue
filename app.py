@@ -73,6 +73,7 @@ def write_mcp_config() -> None:
 # the config has to exist either way before the first chat turn spawns claude.
 write_mcp_config()
 VOCAB_FILE = ROOT / "vocab.json"
+PHRASES_FILE = ROOT / "phrases.json"
 DEEPSEEK_CONFIG_FILE = ROOT / "deepseek_config.json"
 
 sys.path.insert(0, str(ROOT))
@@ -103,7 +104,8 @@ ALLOWED_TOOLS = (
     "mcp__video-subtitles__get_playback_status "
     "mcp__video-subtitles__get_subtitle_near_now "
     "mcp__video-subtitles__get_subtitle_range "
-    "mcp__video-subtitles__search_subtitles"
+    "mcp__video-subtitles__search_subtitles "
+    "mcp__video-subtitles__suggest_phrase"
 )
 
 TUTOR_AGENT_NAME = "lingocue"
@@ -125,7 +127,14 @@ TUTOR_SYSTEM_PROMPT = (
     "phrasal verbs, and cultural/register nuance clearly. Mix Chinese "
     "explanation with English examples so the learner builds real "
     "intuition, not just translation. Quote short lines only, never long "
-    "passages. Keep answers focused; don't pad with filler."
+    "passages. Keep answers focused; don't pad with filler. When a subtitle "
+    "line you're discussing has a genuinely useful multi-word phrase, "
+    "collocation, idiom, or fixed expression worth remembering as a whole "
+    "(not a single word -- that's a separate feature the user handles "
+    "themselves), call suggest_phrase to offer saving it; don't call it for "
+    "every phrase in a line, just the one(s) actually worth keeping, and "
+    "don't ask permission first -- the user sees it as a save prompt and "
+    "decides on their own."
 )
 AGENTS = {TUTOR_AGENT_NAME: {"description": "英语学习助手", "prompt": TUTOR_SYSTEM_PROMPT}}
 
@@ -196,6 +205,13 @@ class VocabEntry(BaseModel):
     subtitle_text: str | None = None
     question: str
     answer: str = ""
+
+
+class PhraseEntry(BaseModel):
+    video_title: str | None = None
+    subtitle_text: str | None = None
+    phrase: str
+    meaning: str = ""
 
 
 class PlaybackState(BaseModel):
@@ -310,6 +326,47 @@ def grade_vocab(entry_id: str, body: VocabGrade):
             save_vocab(entries)
             return {"ok": True, "streak": e["streak"], "mastered": e["streak"] >= MASTERED_STREAK}
     raise HTTPException(404, "没找到这条记录")
+
+
+def load_phrases() -> list[dict]:
+    if not PHRASES_FILE.exists():
+        return []
+    return json.loads(PHRASES_FILE.read_text(encoding="utf-8"))
+
+
+def save_phrases(entries: list[dict]) -> None:
+    PHRASES_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@app.get("/api/phrases")
+def get_phrases():
+    return list(reversed(load_phrases()))
+
+
+@app.post("/api/phrases")
+def add_phrase(entry: PhraseEntry):
+    entries = load_phrases()
+    record = {
+        "id": uuid.uuid4().hex[:12],
+        "created_at": time.time(),
+        "video_title": entry.video_title,
+        "subtitle_text": entry.subtitle_text,
+        "phrase": entry.phrase,
+        "meaning": entry.meaning,
+    }
+    entries.append(record)
+    save_phrases(entries)
+    return record
+
+
+@app.delete("/api/phrases/{entry_id}")
+def delete_phrase(entry_id: str):
+    entries = load_phrases()
+    remaining = [e for e in entries if e.get("id") != entry_id]
+    if len(remaining) == len(entries):
+        raise HTTPException(404, "没找到这条记录")
+    save_phrases(remaining)
+    return {"ok": True}
 
 
 @app.get("/api/define")
@@ -741,7 +798,15 @@ def ndjson(obj: dict) -> str:
 def stream_claude_events(cmd: list[str], prompt: str):
     """Run claude in stream-json mode and yield simplified NDJSON events:
     thinking_delta / text_delta while the response is generated, then a
-    final `done` (or `error`) event once the process exits."""
+    final `done` (or `error`) event once the process exits.
+
+    Tool calls (get_playback_status, search_subtitles, etc.) happen entirely
+    inside the subprocess/MCP layer and are never surfaced here -- with one
+    deliberate exception: suggest_phrase (see tutor_tools.py) is meant to be
+    seen by the user as a save prompt, not just silently answered back to the
+    model, so a tool_use content block by that name gets its own
+    phrase_suggestion event once its (streamed, same as text) arguments are
+    complete."""
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
@@ -754,6 +819,11 @@ def stream_claude_events(cmd: list[str], prompt: str):
     got_result = False
     result_is_error = False
     result_message = None
+    # A tool_use block's `input` arrives the same way text does -- streamed
+    # in fragments (input_json_delta) rather than one whole blob -- so this
+    # accumulates by content-block index until the block closes and its JSON
+    # can actually be parsed.
+    pending_tool_uses: dict[int, dict] = {}
 
     for line in proc.stdout:
         line = line.strip()
@@ -768,7 +838,11 @@ def stream_claude_events(cmd: list[str], prompt: str):
         if evt_type == "stream_event":
             inner = evt.get("event", {})
             inner_type = inner.get("type")
-            if inner_type == "content_block_delta":
+            if inner_type == "content_block_start":
+                block = inner.get("content_block", {})
+                if block.get("type") == "tool_use":
+                    pending_tool_uses[inner.get("index")] = {"name": block.get("name"), "json": ""}
+            elif inner_type == "content_block_delta":
                 delta = inner.get("delta", {})
                 if delta.get("type") == "thinking_delta":
                     yield ndjson({"type": "thinking_delta", "text": delta.get("thinking", "")})
@@ -776,6 +850,24 @@ def stream_claude_events(cmd: list[str], prompt: str):
                     text = delta.get("text", "")
                     full_reply += text
                     yield ndjson({"type": "text_delta", "text": text})
+                elif delta.get("type") == "input_json_delta":
+                    idx = inner.get("index")
+                    if idx in pending_tool_uses:
+                        pending_tool_uses[idx]["json"] += delta.get("partial_json", "")
+            elif inner_type == "content_block_stop":
+                pending = pending_tool_uses.pop(inner.get("index"), None)
+                if pending and pending["name"] == "suggest_phrase":
+                    try:
+                        args = json.loads(pending["json"])
+                    except json.JSONDecodeError:
+                        args = None
+                    if args:
+                        yield ndjson({
+                            "type": "phrase_suggestion",
+                            "phrase": args.get("phrase", ""),
+                            "meaning": args.get("meaning", ""),
+                            "subtitle_text": args.get("subtitle_text", ""),
+                        })
             elif inner_type == "message_delta":
                 usage = inner.get("usage", {})
                 if usage:

@@ -9,6 +9,7 @@ Tools:
     get_subtitle_near_now(window_seconds, lang)     -- subtitles around "now"
     get_subtitle_range(start_seconds, end_seconds)  -- an explicit window
     search_subtitles(query, lang)                   -- find a phrase anywhere
+    suggest_phrase(phrase, meaning, subtitle_text)  -- offer to save a phrase
 
 Runs as a separate subprocess spawned by the `claude` CLI per chat turn (see
 app.py's --mcp-config), which is why playback state goes through a file
@@ -71,6 +72,19 @@ def search_subtitles(query: str, lang: str = "en", max_results: int = 15) -> dic
     current playback window WITHOUT loading the whole transcript into
     context."""
     return tutor_tools.search_subtitles(query, lang, max_results)
+
+
+@mcp.tool()
+def suggest_phrase(phrase: str, meaning: str, subtitle_text: str = "") -> dict:
+    """Suggest a phrase from the subtitle you're currently discussing for the
+    user's phrase collection (短语收藏本) -- a separate feature from the
+    single-word vocab book, which the user saves into manually by hovering.
+    Call this only for a genuinely useful multi-word phrase, collocation,
+    idiom, or fixed expression worth remembering as a whole -- not a single
+    word, and not every phrase in the line, just the one(s) actually worth
+    keeping. The user sees this as a save prompt and decides whether to keep
+    it; you don't need to ask permission first or wait for a reply."""
+    return tutor_tools.suggest_phrase(phrase, meaning, subtitle_text)
 
 
 if __name__ == "__main__":

@@ -237,6 +237,21 @@ def stream_chat(system_prompt: str, user_message: str,
                 ],
             })
             for t in ordered:
+                # suggest_phrase is meant to be seen by the user as a save
+                # prompt, not just silently answered back to the model --
+                # every other tool call stays fully invisible to the
+                # frontend, same as before.
+                if t["name"] == "suggest_phrase":
+                    try:
+                        args = json.loads(t["arguments"]) if t["arguments"].strip() else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    yield ndjson({
+                        "type": "phrase_suggestion",
+                        "phrase": args.get("phrase", ""),
+                        "meaning": args.get("meaning", ""),
+                        "subtitle_text": args.get("subtitle_text", ""),
+                    })
                 result = _execute_tool(t["name"], t["arguments"])
                 messages.append({
                     "role": "tool",

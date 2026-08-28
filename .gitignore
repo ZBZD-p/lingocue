@@ -12,8 +12,9 @@ youtube_cookies.txt
 mcp_config.json
 
 # ---- 个人数据 ------------------------------------------------------------
-# 生词本和播放状态都是你自己的学习记录，playback_state.json 里还有硬盘真实路径。
+# 生词本、短语收藏本和播放状态都是你自己的学习记录，playback_state.json 里还有硬盘真实路径。
 vocab.json
+phrases.json
 playback_state.json
 
 # ---- 生成物 --------------------------------------------------------------

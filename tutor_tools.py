@@ -79,6 +79,18 @@ def get_subtitle_range(start_seconds: float, end_seconds: float, lang: str = "en
     }
 
 
+def suggest_phrase(phrase: str, meaning: str, subtitle_text: str = "") -> dict:
+    """Suggest a phrase from the subtitle you're currently discussing for the
+    user's phrase collection (短语收藏本) -- a separate feature from the
+    single-word vocab book, which the user saves into manually by hovering.
+    Call this only for a genuinely useful multi-word phrase, collocation,
+    idiom, or fixed expression worth remembering as a whole -- not a single
+    word, and not every phrase in the line, just the one(s) actually worth
+    keeping. The user sees this as a save prompt and decides whether to keep
+    it; you don't need to ask permission first or wait for a reply."""
+    return {"ok": True, "note": "Shown to the user as a save prompt; they'll decide whether to keep it."}
+
+
 def search_subtitles(query: str, lang: str = "en", max_results: int = 15) -> dict:
     """Search the ENTIRE currently-playing episode's subtitles for a word or
     phrase (case-insensitive substring match) and return matching lines with
@@ -139,6 +151,18 @@ TOOLS = {
                 "max_results": {"type": "integer", "description": "Cap on matches returned. Default 15."},
             },
             "required": ["query"],
+        },
+    ),
+    "suggest_phrase": (
+        suggest_phrase,
+        {
+            "type": "object",
+            "properties": {
+                "phrase": {"type": "string", "description": "The phrase, collocation, idiom, or fixed expression itself."},
+                "meaning": {"type": "string", "description": "A short Chinese gloss/explanation of the phrase."},
+                "subtitle_text": {"type": "string", "description": "The subtitle line the phrase appears in, if known."},
+            },
+            "required": ["phrase", "meaning"],
         },
     ),
 }

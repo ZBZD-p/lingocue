@@ -263,11 +263,12 @@
     <div class="shell">
       <div class="topbar">
         <div class="tabs">
-          <button class="tab-btn active" data-page="chat">${icon("chat")}<span class="tab-label">对话</span><span class="tab-dot"></span></button>
-          <button class="tab-btn" data-page="subs">${icon("subs")}<span class="tab-label">字幕</span><span class="tab-dot"></span></button>
-          <button class="tab-btn" data-page="vocab">${icon("vocab")}<span class="tab-label">生词本</span><span class="tab-dot"></span></button>
-          <button class="tab-btn" data-page="quiz">${icon("repeat")}<span class="tab-label">抽查</span><span class="tab-dot"></span></button>
-          <button class="tab-btn" data-page="settings">${icon("settings")}<span class="tab-label">设置</span><span class="tab-dot"></span></button>
+          <button class="tab-btn active" data-page="chat" title="对话">${icon("chat")}<span class="tab-label">对话</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="subs" title="字幕">${icon("subs")}<span class="tab-label">字幕</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="vocab" title="生词本">${icon("vocab")}<span class="tab-label">生词本</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="phrases" title="短语">${icon("star")}<span class="tab-label">短语</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="quiz" title="抽查">${icon("repeat")}<span class="tab-label">抽查</span><span class="tab-dot"></span></button>
+          <button class="tab-btn" data-page="settings" title="设置">${icon("settings")}<span class="tab-label">设置</span><span class="tab-dot"></span></button>
         </div>
         <button id="newChatBtn" class="new-chat-btn" title="开始新对话" aria-label="开始新对话">${icon("plus")}</button>
       </div>
@@ -291,6 +292,11 @@
         <div class="page" id="vocabPage">
           <div class="vocab-list" id="vocabList">
             <div class="vocab-empty" id="vocabEmpty">还没有生词。在字幕里把鼠标放到单词上，点"存生词"。</div>
+          </div>
+        </div>
+        <div class="page" id="phrasesPage">
+          <div class="vocab-list" id="phraseList">
+            <div class="vocab-empty" id="phraseEmpty">还没有收藏的短语。跟 AI 聊字幕的时候，它觉得有值得记的短语会主动推荐，你在对话里点"收藏"就行。</div>
           </div>
         </div>
         <div class="page" id="quizPage">
@@ -457,6 +463,8 @@
     const vocabList = $("vocabList");
     const vocabEmpty = $("vocabEmpty");
     const vocabQuiz = $("vocabQuiz");
+    const phraseList = $("phraseList");
+    const phraseEmpty = $("phraseEmpty");
     const wordPopup = $("wordPopup");
     const wordPopupDef = $("wordPopupDef");
     const tabBtns = root.querySelectorAll(".tab-btn");
@@ -464,6 +472,7 @@
       chat: $("chatPage"),
       subs: $("subsPage"),
       vocab: $("vocabPage"),
+      phrases: $("phrasesPage"),
       quiz: $("quizPage"),
       settings: $("settingsPage"),
     };
@@ -835,6 +844,12 @@
         sessionId = data.sessionId || null;
         chatEl.innerHTML = data.html || "";
         chatEl.scrollTop = chatEl.scrollHeight;
+        // Raw innerHTML restore doesn't bring event listeners back -- an
+        // already-resolved phrase card has no buttons left to rewire (see
+        // resolvePhraseSuggestionCard), but one the user never got to
+        // click before reloading still needs its accept/decline handlers.
+        chatEl.querySelectorAll(".phrase-suggestion-card:not(.phrase-suggestion-resolved)")
+          .forEach(wirePhraseSuggestionCard);
       } catch (e) { /* corrupt/old format -- start fresh */ }
     })();
 
@@ -866,6 +881,77 @@
       toBottom();
       saveHistory();
       return div;
+    }
+
+    /** A "save this phrase?" prompt the AI triggered via its suggest_phrase
+     *  tool call -- built once per suggestion, appended into the AI message
+     *  bubble it arrived in (see onPhraseSuggestion above). The phrase/
+     *  meaning/subtitle live as data-* attributes on the card itself, not
+     *  just in closures, because chat history is persisted as raw innerHTML
+     *  (see saveHistory/restoreHistory) -- a still-pending card surviving a
+     *  reload needs to be able to answer "what do I even save" from its own
+     *  markup, since nothing else remembers evt past this call. */
+    function buildPhraseSuggestionCard(evt) {
+      const card = document.createElement("div");
+      card.className = "phrase-suggestion-card";
+      card.dataset.phrase = evt.phrase || "";
+      card.dataset.meaning = evt.meaning || "";
+      card.dataset.subtitle = evt.subtitle_text || "";
+      card.innerHTML = `
+        <div class="phrase-suggestion-phrase">${escapeHtml(evt.phrase || "")}</div>
+        ${evt.meaning ? `<div class="phrase-suggestion-meaning">${escapeHtml(evt.meaning)}</div>` : ""}
+        ${evt.subtitle_text ? `<div class="phrase-suggestion-subtitle">"${escapeHtml(evt.subtitle_text)}"</div>` : ""}
+        <div class="phrase-suggestion-actions">
+          <button class="phrase-suggestion-decline">不用了</button>
+          <button class="phrase-suggestion-accept">${icon("star")} 收藏</button>
+        </div>
+      `;
+      wirePhraseSuggestionCard(card);
+      return card;
+    }
+
+    /** Attaches the accept/decline handlers to a still-pending card.
+     *  Called both right after building one (above) and, for whatever
+     *  wasn't resolved before the last reload, once over chat history after
+     *  restoreHistory() repopulates chatEl -- raw innerHTML restore doesn't
+     *  bring event listeners back on its own. Safe to call on an
+     *  already-resolved card (querySelector just finds nothing and no-ops). */
+    function wirePhraseSuggestionCard(card) {
+      const acceptBtn = card.querySelector(".phrase-suggestion-accept");
+      const declineBtn = card.querySelector(".phrase-suggestion-decline");
+      if (!acceptBtn || !declineBtn) return;
+      acceptBtn.addEventListener("click", async () => {
+        acceptBtn.disabled = true;
+        declineBtn.disabled = true;
+        try {
+          await fetch(`${API}/api/phrases`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              video_title: lastKnownVideoTitle,
+              subtitle_text: card.dataset.subtitle,
+              phrase: card.dataset.phrase,
+              meaning: card.dataset.meaning,
+            }),
+          });
+          resolvePhraseSuggestionCard(card, "已收藏");
+        } catch (e) {
+          acceptBtn.disabled = false;
+          declineBtn.disabled = false;
+        }
+      });
+      declineBtn.addEventListener("click", () => resolvePhraseSuggestionCard(card, "已忽略"));
+    }
+
+    /** Swaps the action buttons for a static resolved line -- baked into
+     *  whatever gets saved to history right after, so a resolved card comes
+     *  back from a reload with no buttons at all (nothing left to rewire,
+     *  see wirePhraseSuggestionCard's early-return). */
+    function resolvePhraseSuggestionCard(card, label) {
+      const actions = card.querySelector(".phrase-suggestion-actions");
+      if (actions) actions.outerHTML = `<div class="phrase-suggestion-resolved">${icon("check")} ${label}</div>`;
+      card.classList.add("phrase-suggestion-resolved");
+      saveHistory();
     }
 
     /**
@@ -944,6 +1030,16 @@
           if (Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS) {
             content.innerHTML = renderMarkdown(rawAnswer);
           }
+        },
+        onPhraseSuggestion(evt) {
+          // Appended straight to wrap, not content: content.innerHTML gets
+          // fully overwritten on every text delta above, which would wipe
+          // the card out the moment the next token arrives if it lived in
+          // there instead. No toBottom() either, same reasoning as the
+          // deltas -- a tool call happening mid-stream shouldn't yank the
+          // view down.
+          wrap.appendChild(buildPhraseSuggestionCard(evt));
+          saveHistory();
         },
         onUsage(tokens) { if (tokens != null) latestTokens = tokens; },
         finalize(evt) {
@@ -1032,6 +1128,7 @@
             case "thinking_delta": ai.onThinkingDelta(evt.text || ""); break;
             case "text_delta": ai.onTextDelta(evt.text || ""); break;
             case "usage": ai.onUsage(evt.output_tokens); break;
+            case "phrase_suggestion": ai.onPhraseSuggestion(evt); break;
             case "done": sessionId = evt.session_id || sessionId; ai.finalize(evt); break;
             case "error": streamError = evt.message || "未知错误"; break;
           }
@@ -1103,6 +1200,7 @@
       composerEl.hidden = name !== "chat";
       if (name === "subs" && subtitleCues.length === 0) loadSubtitleCues();
       if (name === "vocab") loadVocabList();
+      if (name === "phrases") loadPhraseList();
       // Own tab now (not a mode switched into from the vocab list), so
       // entering it always starts fresh at the "开始抽查" prompt rather than
       // trying to resume whatever card a previous visit left off on --
@@ -2080,6 +2178,82 @@
       }
       vocabEmpty.hidden = true;
       vocabList.appendChild(frag);
+    }
+
+    // ---- phrase collection ----
+    // Cards reuse the vocab list's own CSS classes (.vocab-card etc.) --
+    // same shape (phrase in the question slot, meaning in the answer slot),
+    // no reason to duplicate the styling. Simpler than the vocab list in one
+    // way: meaning is required by suggest_phrase's schema, so there's no
+    // empty-answer / "问一下" branch to handle here at all.
+
+    async function loadPhraseList() {
+      phraseEmpty.hidden = false;
+      phraseEmpty.textContent = "正在加载…";
+      try {
+        renderPhraseList(await (await fetch(`${API}/api/phrases`)).json());
+      } catch (e) {
+        phraseEmpty.hidden = false;
+        phraseEmpty.textContent = `加载短语收藏失败：${e.message}`;
+      }
+    }
+
+    function renderPhraseList(entries) {
+      phraseList.innerHTML = "";
+      if (!entries || entries.length === 0) {
+        phraseEmpty.hidden = false;
+        phraseEmpty.textContent =
+          "还没有收藏的短语。跟 AI 聊字幕的时候，它觉得有值得记的短语会主动推荐，你在对话里点\"收藏\"就行。";
+        phraseList.appendChild(phraseEmpty);
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const entry of entries) {
+        const card = document.createElement("div");
+        card.className = "vocab-card";
+
+        if (entry.video_title || entry.created_at) {
+          const meta = document.createElement("div");
+          meta.className = "vocab-meta";
+          const when = entry.created_at ? new Date(entry.created_at * 1000).toLocaleString() : "";
+          meta.textContent = [entry.video_title, when].filter(Boolean).join(" · ");
+          card.appendChild(meta);
+        }
+        if (entry.subtitle_text) {
+          const sub = document.createElement("div");
+          sub.className = "vocab-subtitle";
+          sub.textContent = `"${entry.subtitle_text}"`;
+          card.appendChild(sub);
+        }
+
+        const q = document.createElement("div");
+        q.className = "vocab-question";
+        q.textContent = entry.phrase;
+        card.appendChild(q);
+
+        const a = document.createElement("div");
+        a.className = "vocab-answer";
+        a.innerHTML = renderMarkdown(entry.meaning);
+        card.appendChild(a);
+
+        const del = document.createElement("button");
+        del.className = "vocab-delete-btn";
+        del.innerHTML = icon("trash");
+        del.title = "删除这条";
+        del.setAttribute("aria-label", "删除这条");
+        del.addEventListener("click", async () => {
+          del.disabled = true;
+          try {
+            await fetch(`${API}/api/phrases/${entry.id}`, { method: "DELETE" });
+            card.remove();
+            if (!phraseList.querySelector(".vocab-card")) renderPhraseList([]);
+          } catch (e) { del.disabled = false; }
+        });
+        card.appendChild(del);
+        frag.appendChild(card);
+      }
+      phraseEmpty.hidden = true;
+      phraseList.appendChild(frag);
     }
 
     // ---- Jellyfin playback tracking ----

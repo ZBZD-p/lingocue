@@ -501,6 +501,28 @@ button:focus-visible {
 .retry-btn { margin-top: 8px; color: var(--danger); }
 .retry-btn:hover { background: var(--danger-soft); }
 
+/* The AI's suggest_phrase tool call, rendered as a save prompt inside its
+   own message bubble -- same left-border-indent language as .error-note
+   above (the only other non-plain-text thing that lives in a .msg.ai),
+   just accent-toned instead of danger-toned. */
+.phrase-suggestion-card {
+  margin-top: 12px;
+  padding: 10px 0 10px 14px;
+  border-left: 2px solid var(--accent);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.phrase-suggestion-phrase { font-family: var(--font-heading); font-size: 17px; color: var(--ink); }
+.phrase-suggestion-meaning { margin-top: 4px; color: var(--muted-2); }
+.phrase-suggestion-subtitle { margin-top: 4px; color: var(--muted-3); font-size: 12.5px; }
+.phrase-suggestion-actions { display: flex; gap: 8px; margin-top: 10px; }
+.phrase-suggestion-actions button { padding: 0 12px; height: 32px; font-size: 12.5px; }
+.phrase-suggestion-accept { background: var(--accent); color: var(--accent-ink); }
+.phrase-suggestion-accept:hover { filter: brightness(1.08); background: var(--accent); }
+.phrase-suggestion-decline { border: 1px solid var(--line-strong); color: var(--muted-2); }
+.phrase-suggestion-decline:hover { border-color: var(--muted); color: var(--ink); }
+.phrase-suggestion-resolved { margin-top: 10px; display: flex; align-items: center; gap: 6px; color: var(--accent); font-size: 12.5px; }
+
 .composer { padding: 12px 22px 18px; }
 .composer-inner {
   display: flex;
