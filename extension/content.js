@@ -94,6 +94,7 @@
   })();
 
   function registerVideo(id, title) {
+    console.log("[lingocue] registering", { id: id, title: title, tab_id: TAB_ID, url: location.href });
     fetch(window.__englishTutorApiBase + "/api/youtube/watch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -112,6 +113,7 @@
           console.error("[lingocue] /api/youtube/watch rejected this video:", result.data);
           return;
         }
+        console.log("[lingocue] registered ok, path =", result.data.path);
         window.__lingocueCurrentSource = result.data.path;
         // tutor-panel.js listens for this and reloads its cue list; it's the
         // only signal it gets that the video changed under it.
@@ -123,6 +125,7 @@
   function registerWhenReady(id, attemptsLeft) {
     var title = titleFromPage();
     if (isPlaceholderTitle(title) && attemptsLeft > 0) {
+      console.log("[lingocue] title still placeholder, retrying:", title, "attemptsLeft =", attemptsLeft);
       setTimeout(function () { registerWhenReady(id, attemptsLeft - 1); }, 300);
       return;
     }
@@ -138,6 +141,7 @@
       if (id !== window.__lingocueLastVideoId) return; // already on to another video
       var laterTitle = titleFromPage();
       if (laterTitle !== title && !isPlaceholderTitle(laterTitle)) {
+        console.log("[lingocue] title corrected after the fact:", title, "->", laterTitle);
         registerVideo(id, laterTitle);
       }
     }, 1500);
@@ -153,6 +157,7 @@
   // else would ever re-check.
   function checkForVideoChange() {
     var id = videoIdFromUrl();
+    console.log("[lingocue] checkForVideoChange:", { urlId: id, lastKnownId: window.__lingocueLastVideoId });
     if (!id || id === window.__lingocueLastVideoId) return;
     window.__lingocueLastVideoId = id;
     window.__lingocueCurrentSource = null; // cleared until the backend confirms it
