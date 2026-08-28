@@ -42,6 +42,29 @@ CSV_URL = "https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.cs
 # bulk of the file.
 FREQ_CUTOFF = 50_000
 
+# BNC/COCA -- the corpora bnc/frq rank against -- predate internet culture
+# (BNC was compiled in the '90s, COCA not much fresher), so a word like
+# "vlog" or "emoji" scores rank 0 in both: not "ranked outside the cutoff",
+# genuinely absent from either corpus. Raising FREQ_CUTOFF can't rescue
+# these -- `0 < rank <= FREQ_CUTOFF` requires a nonzero rank in the first
+# place. Checked directly against ECDICT's own CSV: every word below already
+# has a real row with a real translation, just no corpus frequency to let it
+# through -- this list exists purely to bypass that check for words known to
+# actually be common today. (Not every plausible entry made it in this way --
+# a few, like "vlogger"/"livestream"/"unfollow", aren't in ECDICT's source
+# data at all, so no bypass here can produce them; those still fall through
+# to the "问一下" AI fallback.)
+ALWAYS_INCLUDE = {
+    # Internet / social media
+    "vlog", "blog", "blogger", "meme", "memes", "selfie", "hashtag", "emoji",
+    "wifi", "podcast", "streamer", "influencer", "hackathon", "cosplay",
+    "trending", "diy", "faq", "gif", "jpeg", "mp3", "mp4", "url",
+    # Chat/text abbreviations
+    "lol", "omg", "fyi", "asap", "btw", "brb", "imo", "imho", "tbh", "smh",
+    "yolo", "fomo", "lmao", "rofl", "wtf", "idk", "tbd", "rsvp", "eta",
+    "ngl", "irl",
+}
+
 
 def download(url: str, dest: Path) -> None:
     print(f"下载 {url}")
@@ -75,6 +98,8 @@ def parse_rank(value: str) -> int:
 
 
 def is_common(row: dict) -> bool:
+    if (row.get("word") or "").strip().lower() in ALWAYS_INCLUDE:
+        return True
     bnc, frq = parse_rank(row.get("bnc")), parse_rank(row.get("frq"))
     # Rank 0 means "absent from that corpus", so an entry qualifies if either
     # list places it inside the cutoff.
