@@ -99,20 +99,10 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: id, title: title, url: location.href, tab_id: TAB_ID }),
     })
-      // A non-2xx response (app.py's HTTPException(400, ...) on a failed
-      // ensure_current()) still parses as valid JSON -- just shaped
-      // {detail: "..."} instead of {ok: true, path: ...} -- so res.json()
-      // itself never throws and .catch() below never sees it either. Without
-      // capturing res.ok here, that whole failure mode was silent: no
-      // console output, nothing user-visible, the video just never updates
-      // and there's no trail explaining why.
-      .then(function (res) { return res.json().then(function (data) { return { httpOk: res.ok, data: data }; }); })
-      .then(function (result) {
-        if (!result.httpOk || !result.data || !result.data.ok) {
-          console.error("[lingocue] /api/youtube/watch rejected this video:", result.data);
-          return;
-        }
-        window.__lingocueCurrentSource = result.data.path;
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok) return;
+        window.__lingocueCurrentSource = data.path;
         // tutor-panel.js listens for this and reloads its cue list; it's the
         // only signal it gets that the video changed under it.
         window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
