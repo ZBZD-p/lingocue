@@ -856,6 +856,30 @@ def safe_base_name(title: str, video_id: str) -> str:
     return f"{title} [{video_id}]"
 
 
+def _find_by_id(video_id: str) -> Path | None:
+    """This video's existing cache entry, if any, regardless of what title
+    it happens to be filed under.
+
+    Title isn't a stable identity signal the way the id is: it comes from
+    reading youtube.com's own title element, and under fast back-to-back
+    navigation that element can update to describe the *next* video before
+    the URL/pushState for it has actually committed -- confirmed for real,
+    not theoretical (see extension/content.js's registerWhenReady). Looking
+    a video up by id alone, rather than by the exact (title, id) pair one
+    particular call happened to observe, is what keeps two registrations of
+    the same video -- one with a racing, momentarily-wrong title -- from
+    ever producing two separate cache entries that then fight over which one
+    "current" points at.
+    """
+    if not CACHE_DIR.exists():
+        return None
+    suffix = f" [{video_id}].strm"
+    for f in CACHE_DIR.iterdir():
+        if f.is_file() and f.name.endswith(suffix):
+            return f.with_name(f.name[: -len(".strm")])
+    return None
+
+
 def _siblings(base: Path, suffix: str = "") -> list[Path]:
     """Files named `<base>.<something><suffix>`, found by string prefix.
 
@@ -1114,7 +1138,11 @@ def _register(video_id: str, title: str, duration: float, url: str) -> dict:
     Callers poll subtitle_status() (or just /api/subtitles) for the rest.
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    base = CACHE_DIR / safe_base_name(title, video_id)
+    # _find_by_id first: a racing title (see its docstring) must not spawn a
+    # second entry for a video that already has one under its earlier,
+    # possibly differently-titled name -- reuse that same base instead of
+    # deriving a fresh one from whatever title this particular call saw.
+    base = _find_by_id(video_id) or CACHE_DIR / safe_base_name(title, video_id)
 
     # Clear this video's existing subtitle files first. Without it, adding a
     # video a second time finds the *previous* run's .srt sitting there, takes
@@ -1168,7 +1196,7 @@ def ensure_current(video_id: str, title: str, url: str) -> dict:
     as long as it stays "current" -- exactly the kind of traffic that risks
     provoking the rate limiting it's often failing from in the first place.
     """
-    base = CACHE_DIR / safe_base_name(title, video_id)
+    base = _find_by_id(video_id) or CACHE_DIR / safe_base_name(title, video_id)
     if _english_subtitle(base):
         return {"id": video_id, "path": str(base.with_name(f"{base.name}.strm"))}
     placeholder = base.with_name(f"{base.name}.strm")
