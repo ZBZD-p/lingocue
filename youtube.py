@@ -1104,6 +1104,143 @@ def _fetch_subtitles(base: Path, url: str) -> None:
         _set_stage(base, "!" + (str(e) or repr(e))[-300:])
 
 
+# ---- browser-side caption fallback, for member-only/other auth-gated videos
+#
+# _caption_tracks above is an unauthenticated request and has no session --
+# fine for a public video, but a members-only one refuses it outright, same
+# as anyone browsing incognito. The one thing that *does* have the user's
+# real login is their own browser tab, so extension/content.js captures a
+# caption request YouTube's own player already made (which carries a
+# short-lived Proof-of-Origin token this process has no way to mint) and
+# uploads the raw payload here instead of us trying to fetch it ourselves.
+
+
+def cues_from_json3(events: list[dict]) -> tuple[list[tuple[int, int, str]], list[tuple[int, int, str]]]:
+    """(raw line cues, word_stream) from a YouTube json3 caption payload's
+    `events` (`&fmt=json3` -- what the player itself requests, unlike the vtt
+    clean_auto_captions above works from).
+
+    Each event is one display line's segs, and unlike vtt's rolling
+    captions, nothing here repeats: segs arrive already non-overlapping, and
+    on an auto-generated track each one is usually a single word carrying a
+    real `tOffsetMs` into the event. A seg with no text at all (an empty
+    "utf8", YouTube's own line-break marker between blocks) just closes
+    whatever line is open.
+
+    A seg holding more than one word -- the normal case on a human-written
+    track, which has no per-word alignment -- has its words evenly spaced
+    across that seg's own span instead, the same last-resort words_from_cues
+    already uses elsewhere in this file.
+
+    Cues come back unsegmented (one per source display line, same as a raw
+    vtt block) -- resegment_sentences is the caller's job, same split
+    clean_auto_captions already has from _fetch_auto_captions/
+    _write_manual_english: only the generated case wants sentence-cutting
+    and a persisted word_stream, a human track is already well-formed.
+    """
+    word_stream: list[list] = []  # [start_ms, end_ms|None, word]
+    cue_spans: list[tuple[int, int, str]] = []  # (first_word_index, end_ms, text)
+    line_words: list[str] = []
+    line_start_idx: int | None = None
+    doc_end_ms = 0
+
+    def close_line(end_ms: int):
+        nonlocal line_start_idx
+        if line_words:
+            cue_spans.append((line_start_idx, end_ms, " ".join(line_words)))
+            line_words.clear()
+        line_start_idx = None
+
+    for event in events:
+        segs = event.get("segs")
+        if not segs:
+            # A whole-video window/style declaration (no "segs" key at all)
+            # rather than a caption line -- its dDurationMs spans the entire
+            # video, so folding it into doc_end_ms would hand the last real
+            # word an end time an hour past when anything was actually said.
+            continue
+        start = event.get("tStartMs", 0)
+        end = start + event.get("dDurationMs", 0)
+        doc_end_ms = max(doc_end_ms, end)
+        texts = [(s.get("tOffsetMs", 0), s.get("utf8", "")) for s in segs]
+        if not any(t.strip() for _, t in texts):
+            close_line(start)
+            continue
+        for i, (offset, text) in enumerate(texts):
+            words = text.split()
+            if not words:
+                continue
+            seg_start = start + offset
+            next_offset = texts[i + 1][0] if i + 1 < len(texts) else (end - start)
+            span = max(1, (start + next_offset) - seg_start)
+            for k, w in enumerate(words):
+                if line_start_idx is None:
+                    line_start_idx = len(word_stream)
+                word_stream.append([seg_start + span * k // len(words), None, w])
+                line_words.append(w)
+    close_line(doc_end_ms)
+
+    for i in range(len(word_stream) - 1):
+        word_stream[i][1] = word_stream[i + 1][0]
+    if word_stream:
+        word_stream[-1][1] = doc_end_ms
+
+    filled = [(s, e, w) for s, e, w in word_stream]
+    cues = [(filled[i][0], end, text) for i, end, text in cue_spans]
+    return cues, filled
+
+
+def save_uploaded_subtitles(video_id: str, title: str, kind: str, json3_text: str) -> tuple[bool, str]:
+    """Accepts a caption payload the browser fetched with the user's own
+    session (see the module docstring above and extension/content.js).
+    `kind` is "manual" or "auto", same vocabulary subtitle_kind already uses.
+
+    A no-op, not an overwrite, if this video already has a subtitle -- from
+    the normal path succeeding in the meantime, or an earlier upload for the
+    same video. content.js only ever attempts this after seeing the normal
+    path report "error", but nothing here trusts that ordering; the file
+    check is the actual guard.
+    """
+    base = CACHE_DIR / safe_base_name(title, video_id)
+    if not base.with_name(f"{base.name}.strm").exists():
+        return False, "视频还没注册"
+    if _english_subtitle(base):
+        return True, "已经有字幕了"
+
+    try:
+        events = json.loads(json3_text).get("events") or []
+    except (json.JSONDecodeError, AttributeError):
+        return False, "字幕数据格式不对"
+
+    cues, word_stream = cues_from_json3(events)
+    is_generated = kind == "auto"
+    if is_generated:
+        cues = resegment_sentences(cues, word_stream=word_stream)
+    if not cues:
+        _set_stage(base, "!这个视频没有可用的英文字幕（既没有人工字幕，也没有英文原声的自动字幕）。")
+        return False, "没有解析出字幕内容"
+
+    srt = base.with_name(f"{base.name}.en.srt")
+    write_srt(cues, srt)
+    if is_generated:
+        save_word_stream(srt, word_stream)
+
+    marker = base.with_name(f"{base.name}.tutor.json")
+    meta = {}
+    if marker.exists():
+        try:
+            meta = json.loads(marker.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    meta["subtitle_kind"] = kind
+    marker.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    _set_stage(base, None)
+    if is_generated:
+        request_polish(base)
+    return True, "已保存"
+
+
 def _register(video_id: str, title: str, duration: float, url: str) -> dict:
     """Registers a video and starts fetching its subtitles in the
     background, given an id/title the caller already knows (e.g. read

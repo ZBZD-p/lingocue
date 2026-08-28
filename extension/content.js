@@ -111,8 +111,153 @@
         // tutor-panel.js listens for this and reloads its cue list; it's the
         // only signal it gets that the video changed under it.
         window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
+        // The backend's own fetch has no login of its own, so it comes up
+        // empty for anything gated behind one -- members-only being the
+        // main case. Only this tab, actually signed in, can do any better;
+        // watchSubtitleFailure below finds out whether it needs to try.
+        watchSubtitleFailure(id, title, 40);
       })
       .catch(function (e) { console.error("[lingocue] failed to register video", e); });
+  }
+
+  // Polls the same status the panel's subtitle tab does, purely to notice a
+  // failure -- success needs nothing from this script, and "still fetching"
+  // just means keep waiting (subtitle fetch normally takes ~12s per
+  // youtube.py). Stops on its own once this video is no longer the current
+  // one (a quick re-navigation) or attempts run out (~60s).
+  function watchSubtitleFailure(videoId, title, attemptsLeft) {
+    if (attemptsLeft <= 0 || videoId !== window.__lingocueLastVideoId) return;
+    fetch(window.__englishTutorApiBase + "/api/subtitles?tab_id=" + encodeURIComponent(TAB_ID))
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (videoId !== window.__lingocueLastVideoId) return;
+        if (data && data.available) return; // succeeded the normal way
+        if (data && data.status === "error") {
+          tryBrowserCaptionFallback(videoId, title);
+          return;
+        }
+        setTimeout(function () { watchSubtitleFailure(videoId, title, attemptsLeft - 1); }, 1500);
+      })
+      .catch(function () {
+        setTimeout(function () { watchSubtitleFailure(videoId, title, attemptsLeft - 1); }, 1500);
+      });
+  }
+
+  // Same cooldown value and reasoning as youtube.py's RETRY_COOLDOWN_S (that
+  // one guards the backend's own plain request; this guards this one) --
+  // long enough that idle re-navigation stops re-triggering it, short
+  // enough that a one-off glitch (the CC button not mounted yet, a request
+  // that never showed up in time) isn't stuck retrying-never until then.
+  // localStorage rather than a module-level variable: this whole script
+  // re-runs from scratch on every navigation, so nothing in its own closures
+  // survives to remember an earlier attempt the way youtube.py's
+  // _fetch_failed_at dict can.
+  var FALLBACK_COOLDOWN_MS = 600000;
+  var FALLBACK_ATTEMPTS_KEY = "lingocueCaptionFallbackAttempts";
+
+  function recentlyAttemptedFallback(videoId) {
+    var map;
+    try { map = JSON.parse(localStorage.getItem(FALLBACK_ATTEMPTS_KEY)) || {}; }
+    catch (e) { map = {}; }
+    return typeof map[videoId] === "number" && Date.now() - map[videoId] < FALLBACK_COOLDOWN_MS;
+  }
+
+  function markFallbackAttempted(videoId) {
+    var map;
+    try { map = JSON.parse(localStorage.getItem(FALLBACK_ATTEMPTS_KEY)) || {}; }
+    catch (e) { map = {}; }
+    map[videoId] = Date.now();
+    // Trimmed on write rather than kept forever -- this is scratch state for
+    // a rate limit, not a record anything ever needs to look back on.
+    var cutoff = Date.now() - FALLBACK_COOLDOWN_MS;
+    for (var k in map) { if (map[k] < cutoff) delete map[k]; }
+    try { localStorage.setItem(FALLBACK_ATTEMPTS_KEY, JSON.stringify(map)); } catch (e) { /* full/disabled storage -- best effort only */ }
+  }
+
+  // The fallback itself: reuse a caption request the player already made --
+  // it carries a Proof-of-Origin token this tab's own JS can't mint, tied to
+  // this video and this login, which is exactly what the backend's plain
+  // request above lacks. See youtube.py's save_uploaded_subtitles docstring
+  // for the full picture, including why this is safe to just always try
+  // rather than needing to first detect "is this members-only": a video
+  // with no caption track at all (the ordinary case a failure usually
+  // means) shows that here too, and this quietly does nothing.
+  function tryBrowserCaptionFallback(videoId, title) {
+    if (recentlyAttemptedFallback(videoId)) return;
+    markFallbackAttempted(videoId);
+
+    var pr = window.ytInitialPlayerResponse;
+    var tracks = (pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
+                  pr.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
+    var target = null;
+    for (var i = 0; i < tracks.length; i++) {
+      if (tracks[i].languageCode === "en" && tracks[i].kind !== "asr") { target = tracks[i]; break; }
+    }
+    var isGenerated = false;
+    if (!target) {
+      for (var j = 0; j < tracks.length; j++) {
+        if (tracks[j].languageCode === "en" && tracks[j].kind === "asr") { target = tracks[j]; isGenerated = true; break; }
+      }
+    }
+    if (!target) return; // this tab has no English track either -- nothing to fetch
+
+    // Toggling captions off (if already on) then back on reliably fires a
+    // fresh timedtext request -- confirmed for real, an already-on button
+    // that's clicked once doesn't necessarily re-request anything.
+    var btn = document.querySelector(".ytp-subtitles-button");
+    if (!btn) return;
+    if (btn.getAttribute("aria-pressed") === "true") btn.click();
+    btn.click();
+
+    waitForTimedtextRequest(videoId, 10, function (rawUrl) {
+      if (!rawUrl) return;
+      var u;
+      try { u = new URL(rawUrl); } catch (e) { return; }
+      // The signature covers v/ei/caps/... (see sparams in the URL itself)
+      // but not lang/kind -- confirmed for real by swapping them on an
+      // already-issued URL and still getting a valid response back -- so
+      // whatever track the player happened to request first can be
+      // redirected at the one actually wanted here.
+      u.searchParams.set("lang", target.languageCode);
+      if (isGenerated) u.searchParams.set("kind", "asr");
+      else u.searchParams.delete("kind");
+
+      fetch(u.toString(), { credentials: "include" })
+        .then(function (res) { return res.text(); })
+        .then(function (text) {
+          if (!text) return null;
+          return fetch(window.__englishTutorApiBase + "/api/youtube/subtitles-upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: videoId, title: title,
+              kind: isGenerated ? "auto" : "manual",
+              json3: text,
+            }),
+          }).then(function (res) { return res.json(); });
+        })
+        .then(function (data) {
+          if (data && data.ok) window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
+        })
+        .catch(function (e) { console.error("[lingocue] browser caption fallback failed", e); });
+    });
+  }
+
+  // performance's resource-timing entries persist across this script's own
+  // re-injection (they're the tab's, not this closure's), so a request
+  // fired by the click above shows up here shortly after -- polled rather
+  // than awaited since there's no event for "a resource entry appeared".
+  function waitForTimedtextRequest(videoId, attemptsLeft, cb) {
+    var entries = performance.getEntriesByType("resource");
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].name.indexOf("/api/timedtext") !== -1 &&
+          entries[i].name.indexOf("v=" + videoId) !== -1) {
+        cb(entries[i].name);
+        return;
+      }
+    }
+    if (attemptsLeft <= 0) { cb(null); return; }
+    setTimeout(function () { waitForTimedtextRequest(videoId, attemptsLeft - 1, cb); }, 500);
   }
 
   function registerWhenReady(attemptsLeft) {

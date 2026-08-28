@@ -241,6 +241,15 @@ class YouTubeWatch(BaseModel):
     tab_id: str
 
 
+class YouTubeCaptionUpload(BaseModel):
+    # id/title, not tab_id: this identifies a *video* (matching how youtube.
+    # safe_base_name derives the cache filename), not a browser tab.
+    id: str
+    title: str
+    kind: str  # "manual" | "auto" -- see youtube.save_uploaded_subtitles
+    json3: str
+
+
 def load_vocab() -> list[dict]:
     if not VOCAB_FILE.exists():
         return []
@@ -269,6 +278,15 @@ def youtube_watch(body: YouTubeWatch):
     path = Path(info["path"])
     playback.write(body.tab_id, str(path), 0, 0, "paused")
     return {"ok": True, "path": str(path), "video_id": body.id}
+
+
+@app.post("/api/youtube/subtitles-upload")
+def youtube_subtitles_upload(body: YouTubeCaptionUpload):
+    """Fallback for a video the extension's content script had to fetch
+    captions for itself -- see youtube.save_uploaded_subtitles's docstring.
+    """
+    ok, detail = youtube.save_uploaded_subtitles(body.id, body.title, body.kind, body.json3)
+    return {"ok": ok, "detail": detail}
 
 
 @app.get("/api/vocab")
