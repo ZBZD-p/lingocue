@@ -620,10 +620,11 @@ button:focus-visible {
   background: none;
   cursor: pointer;
   color: var(--ctx-near);
-  /* Set by the 字幕字号 setting as a custom property on <html>. Left unset it
-     falls through to the per-breakpoint default below, which is why the size
-     lives in the fallback rather than in a separate rule. */
+  /* Set by the 字幕字号 setting as a custom property on <html> (populateSelect
+     applies its default tier at boot, so this only matters before that JS
+     runs). Same story for 字幕粗细 below. */
   font-size: var(--english-tutor-sub-size, 16px);
+  font-weight: var(--english-tutor-sub-weight, 400);
   line-height: 1.5;
   /* Flex on every card, not just the current one. Stacking is identical to
      the block default at gap 0, and it buys the one thing that matters:

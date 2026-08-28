@@ -96,12 +96,24 @@
     { value: "max", label: "最高" },
   ];
 
+  // `default: true` marks the tier populateSelect falls back to when nothing
+  // is saved yet -- see its use below, distinct from array order so the
+  // dropdown can still list small-to-large while defaulting to the top.
   const SUB_SIZE_OPTIONS = [
-    { value: "", label: "默认" },
-    { value: "14px", label: "小" },
-    { value: "17px", label: "中" },
-    { value: "20px", label: "大" },
-    { value: "24px", label: "特大" },
+    { value: "16px", label: "小" },
+    { value: "20px", label: "中" },
+    { value: "24px", label: "大" },
+    { value: "28px", label: "更大" },
+    { value: "32px", label: "最大", default: true },
+  ];
+
+  // Figtree (see panel.css's @font-face) is a variable font whose weight
+  // axis only spans 400-700 -- values outside that range just clamp to the
+  // nearest end, so there's no point offering them here.
+  const SUB_WEIGHT_OPTIONS = [
+    { value: "400", label: "常规" },
+    { value: "600", label: "半粗", default: true },
+    { value: "700", label: "加粗" },
   ];
 
   const SECONDARY_LANG_OPTIONS = [
@@ -196,9 +208,16 @@
     {
       key: "subSize",
       label: "字幕字号",
-      hint: "只影响字幕卡片，不改对话区。选「默认」时手机和电脑各自用自己的大小。",
+      hint: "只影响字幕卡片，不改对话区。",
       options: SUB_SIZE_OPTIONS,
       storageKey: "english-tutor-sub-size",
+    },
+    {
+      key: "subWeight",
+      label: "字幕粗细",
+      hint: "只影响字幕卡片，不改对话区。",
+      options: SUB_WEIGHT_OPTIONS,
+      storageKey: "english-tutor-sub-weight",
     },
     {
       key: "secondaryLang",
@@ -642,8 +661,9 @@
       Object.defineProperty(dropdownEl, "value", { get: () => currentValue });
 
       const saved = localStorage.getItem(storageKey);
+      const fallback = (options.find((o) => o.default) || options[0]).value;
       const initial = saved != null && options.some((o) => o.value === saved)
-        ? saved : options[0].value;
+        ? saved : fallback;
       select(initial, false);
     }
 
@@ -655,6 +675,14 @@
       const style = document.documentElement.style;
       if (value) style.setProperty("--english-tutor-sub-size", value);
       else style.removeProperty("--english-tutor-sub-size");
+    }
+
+    /** Same custom-property approach as applySubSize, and for the same
+     *  reason: it has to cross the shadow-root boundary via <html>. */
+    function applySubWeight(value) {
+      const style = document.documentElement.style;
+      if (value) style.setProperty("--english-tutor-sub-weight", value);
+      else style.removeProperty("--english-tutor-sub-weight");
     }
 
     /** Turning the second language on or off changes what the backend has to
@@ -729,6 +757,7 @@
 
     const SETTING_HANDLERS = {
       subSize: applySubSize,
+      subWeight: applySubWeight,
       secondaryLang: reloadForSecondary,
       wordHighlight: reloadForWordHighlight,
       deepseekKey: pushDeepSeekConfig,
