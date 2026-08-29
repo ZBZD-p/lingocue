@@ -25,11 +25,11 @@ import re
 import urllib.error
 import urllib.request
 import uuid
-from pathlib import Path
 
+import app_config
 import tutor_tools
 
-CONFIG_FILE = Path(__file__).resolve().parent / "deepseek_config.json"
+CONFIG_FILE = app_config.DEEPSEEK_CONFIG_FILE
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 

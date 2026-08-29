@@ -1,33 +1,27 @@
+# ---- 生成物 + 个人数据 ---------------------------------------------------
+# 这个程序自己写出来的东西全在 data/ 里（见 app_config.py 的 data_dir）：
+#   dictionary.db     build_dict.py 从 ECDICT 现下现建的 9MB SQLite
+#   difficulty.db     indexer.py 扫本机字幕缓存生成，换台机器结果就不同
+#   vocab.json        生词本，你自己的学习记录
+#   phrases.json      短语收藏本
+#   playback_state.json  播放状态，里面有硬盘真实路径
+#   mcp_config.json   启动时按本机路径重新生成，提交了也没用
+#   youtube/          YouTube 字幕缓存的默认位置（config.json 可以改到别处）
+# 一条规则盖掉整个目录，以后再多几个生成物也不用回来改这里。
+data/
+
+# 上面这些文件的手工备份（vocab.json.bak 之类）。同样是个人数据，而且
+# 精确匹配文件名的规则匹配不到带后缀的副本，会一直挂在 git status 里。
+*.bak
+
 # ---- 密钥 / 私人配置 ----------------------------------------------------
-# 每个都有对应的 *.example.json 说明字段结构。带真实密钥的绝不能提交。
+# 这三个不在 data/ 里：它们是人手写的，各自旁边有对应的 *.example.json 模板，
+# README 教的就是"复制模板去掉后缀"。带真实密钥的绝不能提交。
 config.json
 jellyfin_config.json
 deepseek_config.json
 
-# 扩展的 cookie 同步自动写的（见 app.py 的 /api/youtube/cookies），是你
-# youtube.com 的登录态，跟密码一个级别，绝对不能提交。
-youtube_cookies.txt
-
-# 启动时由 app.py 按本机路径重新生成（write_mcp_config），提交了也没用。
-mcp_config.json
-
-# ---- 个人数据 ------------------------------------------------------------
-# 生词本、短语收藏本和播放状态都是你自己的学习记录，playback_state.json 里还有硬盘真实路径。
-vocab.json
-phrases.json
-playback_state.json
-
-# ---- 生成物 --------------------------------------------------------------
-# 6.7MB 的 SQLite，由 build_dict.py 从 ECDICT 现下现建，不进仓库。
-dictionary.db
-ecdict.csv
-
-# 由 indexer.py 扫本机 YouTube 字幕缓存生成，换台机器缓存不同，结果也不同。
-difficulty.db
-
-# YouTube 字幕缓存的默认位置（config.json 可以改到别处）。
-youtube/
-
+# ---- 其它 ----------------------------------------------------------------
 # UI 设计探索稿（Claude Design 画布导出），几个 3MB 的渲染 HTML，不进仓库。
 design/
 

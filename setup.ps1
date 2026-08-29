@@ -88,7 +88,7 @@ if ($ffmpegCmd) {
 
 # ---- 本地词典 ---------------------------------------------------------------
 Write-Step '生成本地词典 (悬停查词用)'
-$dictPath = Join-Path $ProjectRoot 'dictionary.db'
+$dictPath = Join-Path $ProjectRoot 'data\dictionary.db'
 if (Test-Path $dictPath) {
     Write-Skip '已存在，跳过'
 } else {

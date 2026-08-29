@@ -15,9 +15,10 @@ about thread affinity.
 
 import re
 import sqlite3
-from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "dictionary.db"
+import app_config
+
+DB_PATH = app_config.DICT_DB
 
 # Trailing 's / n't etc. are split off rather than looked up: "don't" is
 # stored as "do not" territory, and subtitle text is full of contractions.

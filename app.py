@@ -37,7 +37,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parent
-MCP_CONFIG_FILE = ROOT / "mcp_config.json"
+# Ahead of every local import below, not just the block further down: uvicorn
+# can be pointed at app:app from any working directory, and app_config is
+# needed here at module level.
+sys.path.insert(0, str(ROOT))
+
+import app_config  # noqa: E402
+
+MCP_CONFIG_FILE = app_config.MCP_CONFIG_FILE
 
 # Windows' registry-backed mimetypes lookup often has no entry for these,
 # which leaves StaticFiles falling back to application/octet-stream for
@@ -73,11 +80,10 @@ def write_mcp_config() -> None:
 # At import, not in __main__: uvicorn can be pointed at app:app directly, and
 # the config has to exist either way before the first chat turn spawns claude.
 write_mcp_config()
-VOCAB_FILE = ROOT / "vocab.json"
-PHRASES_FILE = ROOT / "phrases.json"
-DEEPSEEK_CONFIG_FILE = ROOT / "deepseek_config.json"
+VOCAB_FILE = app_config.VOCAB_FILE
+PHRASES_FILE = app_config.PHRASES_FILE
+DEEPSEEK_CONFIG_FILE = app_config.DEEPSEEK_CONFIG_FILE
 
-sys.path.insert(0, str(ROOT))
 import deepseek_chat  # noqa: E402
 import dictionary  # noqa: E402
 import indexer  # noqa: E402

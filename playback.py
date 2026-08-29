@@ -27,7 +27,9 @@ import json
 import time
 from pathlib import Path
 
-STATE_FILE = Path(__file__).resolve().parent / "playback_state.json"
+import app_config
+
+STATE_FILE = app_config.PLAYBACK_STATE_FILE
 
 # Playback reports arrive every couple of seconds while a video is open. If
 # they stop for this long the tab was closed or navigated away, and serving

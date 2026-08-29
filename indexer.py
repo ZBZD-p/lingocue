@@ -24,9 +24,8 @@ import difficulty_bands
 import dictionary
 import subs_now
 
-ROOT = Path(__file__).resolve().parent
-DICT_DB = ROOT / "dictionary.db"
-DIFFICULTY_DB = ROOT / "difficulty.db"
+DICT_DB = app_config.DICT_DB
+DIFFICULTY_DB = app_config.DIFFICULTY_DB
 
 # A sentence is whatever sits between one of these and the next -- cues are
 # usually already one sentence each (youtube.py resegments auto captions),

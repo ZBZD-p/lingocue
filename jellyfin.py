@@ -17,9 +17,10 @@ third-party HTTP client.
 import json
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
-CONFIG_FILE = Path(__file__).resolve().parent / "jellyfin_config.json"
+import app_config
+
+CONFIG_FILE = app_config.JELLYFIN_CONFIG_FILE
 
 _config = None
 

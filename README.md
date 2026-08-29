@@ -168,11 +168,26 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 | 文件 | 干什么的 |
 |------|---------|
-| `config.json` | 文件路径类配置。`youtube_cache_dir` 是 YouTube 字幕存哪（默认项目下的 `youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录 |
+| `config.json` | 文件路径类配置。`data_dir` 是下面那些数据存哪（默认项目下的 `data/`），`youtube_cache_dir` 是 YouTube 字幕存哪（默认 `data/youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录 |
 | `jellyfin_config.json` | Jellyfin 地址和 API key（在 Jellyfin 控制台 → API 密钥里生成） |
 | `deepseek_config.json` | DeepSeek 的 key 和模型。也可以直接在设置页里填，会自动写到这里 |
 
-`mcp_config.json` 不用管，`app.py` 启动时会按本机路径自动生成。
+这三个是**你手写的**，所以放在项目根目录、跟各自的 `.example` 模板挨着。
+
+## `data/`
+
+程序自己写出来的东西全在这里，整个目录都不进仓库：
+
+| 文件 | 哪来的 |
+|------|--------|
+| `dictionary.db` | `build_dict.py` 从 ECDICT 现下现建，约 9MB |
+| `difficulty.db` | `indexer.py` 扫字幕缓存生成的视频/频道难度画像，以及你的词汇量估计 |
+| `vocab.json` / `phrases.json` | 生词本、短语收藏本 |
+| `playback_state.json` | 播放状态 |
+| `mcp_config.json` | 每次启动按本机路径重新生成，不用管 |
+| `youtube/` | YouTube 字幕缓存的默认位置（`config.json` 可以改到别处） |
+
+**这个目录可以整个备份走**——项目目录删掉重新 clone 也不会丢生词本。想放到别处（比如 `%LOCALAPPDATA%`）就在 `config.json` 里设 `data_dir`。
 
 ---
 

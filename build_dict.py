@@ -30,11 +30,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import app_config
 import difficulty_bands
 
-ROOT = Path(__file__).resolve().parent
-CSV_PATH = ROOT / "ecdict.csv"
-DB_PATH = ROOT / "dictionary.db"
+CSV_PATH = app_config.DATA_DIR / "ecdict.csv"
+DB_PATH = app_config.DICT_DB
 CSV_URL = "https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.csv"
 
 # Rank cutoff in the BNC and COCA frequency lists. 50k is far past the point

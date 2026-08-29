@@ -24,11 +24,11 @@ import math
 import re
 import sqlite3
 import time
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-DIFFICULTY_DB = ROOT / "difficulty.db"
-VOCAB_FILE = ROOT / "vocab.json"
+import app_config
+
+DIFFICULTY_DB = app_config.DIFFICULTY_DB
+VOCAB_FILE = app_config.VOCAB_FILE
 
 # Mirrors app.py's MASTERED_STREAK. Duplicated rather than imported: app.py
 # has FastAPI route registration and startup side effects (write_mcp_config)
