@@ -21,6 +21,21 @@ config.json
 jellyfin_config.json
 deepseek_config.json
 
+# ---- 启动器的产物 --------------------------------------------------------
+# build_launcher.py 打出来的 exe 和 PyInstaller 的中间产物。二进制不进仓库，
+# 谁要谁自己跑一次 build_launcher.py。
+LingoCue.exe
+dist/
+build/
+
+# 启动器下载来的私有 Python（launcher.bootstrap_runtime）和 ffmpeg。
+# 都是几十上百 MB 的第三方发行版，装出来的，不是写出来的。
+runtime/
+ffmpeg/
+python-embed.zip
+get-pip.py
+ffmpeg-download.zip
+
 # ---- 其它 ----------------------------------------------------------------
 # UI 设计探索稿（Claude Design 画布导出），几个 3MB 的渲染 HTML，不进仓库。
 design/
