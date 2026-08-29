@@ -206,6 +206,14 @@
       storageKey: "english-tutor-effort",
     },
     {
+      key: "customPrompt",
+      label: "自定义提示词",
+      hint: "追加在默认设定后面，不会替换掉工具调用相关的说明。留空则不变。下一条消息开始生效。",
+      type: "textarea",
+      placeholder: "比如：多用生活化的例句；语法解释尽量简短，除非我追问。",
+      storageKey: "english-tutor-custom-prompt",
+    },
+    {
       key: "subSize",
       label: "字幕字号",
       hint: "只影响字幕卡片，不改对话区。",
@@ -270,6 +278,7 @@
     close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
     spinner: '<circle cx="12" cy="12" r="9" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9"/>',
     speaker: '<path d="M3 9v6h4l5 5V4L7 9H3z"/><path d="M16 8a5 5 0 0 1 0 8"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>',
+    jump: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/>',
   };
   function icon(name, size) {
     return `<svg class="icon" width="${size || 16}" height="${size || 16}" viewBox="0 0 24 24" ` +
@@ -334,7 +343,7 @@
       <div class="composer" id="composer">
         <div class="composer-inner">
           <textarea id="input" rows="2" placeholder="问点什么，比如：刚才那句里 'brace yourself' 是什么意思？"></textarea>
-          <button id="sendBtn">${icon("send")} 发送</button>
+          <button id="sendBtn" title="发送" aria-label="发送">${icon("send")}</button>
         </div>
       </div>
       <div class="word-popup" id="wordPopup">
@@ -547,6 +556,20 @@
     // still works normally. mousewheel is the legacy alias some of
     // Jellyfin's older handlers still listen on.
     for (const evt of ["wheel", "mousewheel", "DOMMouseScroll"]) {
+      host.addEventListener(evt, (e) => e.stopPropagation());
+    }
+
+    // Same reasoning, for keyboard: both Jellyfin and YouTube bind global
+    // hotkeys at the document level (space = play/pause, arrows = seek, ...)
+    // and neither one can tell a keystroke landed in one of this panel's own
+    // text fields -- shadow DOM retargets `event.target` on the page's own
+    // listener to this custom element itself, not the actual <input>/
+    // <textarea> inside, so the host page's usual "ignore it, they're
+    // typing" check never sees an editable element and fires anyway.
+    // Confirmed for real on YouTube: hitting space anywhere in the panel
+    // toggled video playback. Stopping propagation at the host, once, covers
+    // every field in the panel instead of needing this wired per-input.
+    for (const evt of ["keydown", "keyup", "keypress"]) {
       host.addEventListener(evt, (e) => e.stopPropagation());
     }
 
@@ -796,10 +819,15 @@
         if (handler) handler(value, true);
       }
       inputEl.addEventListener("blur", commit);
-      inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { commit(); inputEl.blur(); } });
-      // No custom `.value` needed: <input> already has a native one, which
-      // is exactly what settingValue(key) -> control.value already reads
-      // for the dropdown case too -- same interface, no extra plumbing.
+      // Enter commits and blurs for a single-line <input>; a <textarea>
+      // needs Enter to just type a newline, so only wire this for the former.
+      if (setting.type !== "textarea") {
+        inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { commit(); inputEl.blur(); } });
+      }
+      // No custom `.value` needed: <input>/<textarea> already have a native
+      // one, which is exactly what settingValue(key) -> control.value
+      // already reads for the dropdown case too -- same interface, no extra
+      // plumbing.
     }
 
     for (const setting of SETTINGS) {
@@ -812,11 +840,11 @@
       row.appendChild(label);
 
       let control;
-      if (setting.type === "text") {
-        control = document.createElement("input");
-        control.type = setting.inputType || "text";
+      if (setting.type === "text" || setting.type === "textarea") {
+        control = document.createElement(setting.type === "textarea" ? "textarea" : "input");
+        if (setting.type === "text") control.type = setting.inputType || "text";
         control.placeholder = setting.placeholder || "";
-        control.className = "setting-text-input";
+        control.className = setting.type === "textarea" ? "setting-textarea" : "setting-text-input";
         row.appendChild(control);
         settingsList.appendChild(row);
         populateText(control, setting);
@@ -926,6 +954,9 @@
       card.dataset.phrase = evt.phrase || "";
       card.dataset.meaning = evt.meaning || "";
       card.dataset.subtitle = evt.subtitle_text || "";
+      const { video_url, timestamp_seconds } = youtubeJumpTarget();
+      card.dataset.videoUrl = video_url || "";
+      card.dataset.timestampSeconds = timestamp_seconds == null ? "" : String(timestamp_seconds);
       card.innerHTML = `
         <div class="phrase-suggestion-phrase">${escapeHtml(evt.phrase || "")}</div>
         ${evt.meaning ? `<div class="phrase-suggestion-meaning">${escapeHtml(evt.meaning)}</div>` : ""}
@@ -961,6 +992,8 @@
               subtitle_text: card.dataset.subtitle,
               phrase: card.dataset.phrase,
               meaning: card.dataset.meaning,
+              video_url: card.dataset.videoUrl || null,
+              timestamp_seconds: card.dataset.timestampSeconds ? Number(card.dataset.timestampSeconds) : null,
             }),
           });
           resolvePhraseSuggestionCard(card, "已收藏");
@@ -1138,6 +1171,7 @@
             model: settingValue("engine") === "deepseek" ? null : (settingValue("model") || null),
             effort: settingValue("effort") || null,
             thinking: settingValue("engine") === "deepseek" ? settingValue("deepseekThinking") : null,
+            custom_prompt: settingValue("customPrompt") || null,
           }),
         });
         if (!res.ok || !res.body) {
@@ -1209,11 +1243,12 @@
     }
 
     sendBtn.addEventListener("click", sendMessage);
+    // Propagation out of the panel is already stopped for every field at the
+    // host level (see its own comment); this just handles the composer's
+    // own Enter-to-send behavior.
     inputEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-      e.stopPropagation();  // Jellyfin binds global media hotkeys (space, arrows)
     });
-    inputEl.addEventListener("keyup", (e) => e.stopPropagation());
     newChatBtn.addEventListener("click", () => {
       sessionId = null;
       chatEl.innerHTML = "";
@@ -1674,12 +1709,15 @@
           const def = defCache.get(word);
           const answer = def && def.found ? def.translation : "";
           const tags = def && def.found ? def.tags : [];
+          const { video_url, timestamp_seconds } = youtubeJumpTarget();
           await saveVocabEntry({
             video_title: lastKnownVideoTitle,
             subtitle_text: sentence,
             question: word,
             answer,
             tags,
+            video_url,
+            timestamp_seconds,
           });
           saveBtn.innerHTML = `${icon("check")} 已存`;
         } catch (e) {
@@ -2269,6 +2307,41 @@
       }
     }
 
+    function buildSubtitleLine(entry) {
+      const sub = document.createElement("div");
+      sub.className = "vocab-subtitle";
+      sub.textContent = `"${entry.subtitle_text}"`;
+      return sub;
+    }
+
+    /** Jump-to-video button for a card that has one (YouTube only -- see
+     *  youtubeJumpTarget; older entries and anything saved on Jellyfin just
+     *  don't have video_url, so this returns null and callers skip it).
+     *  Plain `href`, no target="_blank": this panel is injected right into
+     *  the YouTube tab itself, so the useful thing is jumping the same tab
+     *  to that moment, not opening a second one next to it. */
+    function buildJumpBtn(entry) {
+      if (!entry.video_url) return null;
+      const jump = document.createElement("a");
+      jump.className = "vocab-jump-btn";
+      jump.href = entry.video_url;
+      jump.innerHTML = icon("jump");
+      jump.title = "跳转到收藏时的视频位置";
+      jump.setAttribute("aria-label", "跳转到收藏时的视频位置");
+      jump.addEventListener("click", (e) => {
+        // Already sitting on the same video? Seek in place instead of
+        // reloading the exact page it's already on -- a navigation would
+        // just tear down and re-fetch everything to end up right back here.
+        const p = player();
+        if (p && p.kind === "youtube" && entry.timestamp_seconds != null &&
+            youtubeVideoId(entry.video_url) === youtubeVideoId(location.href)) {
+          e.preventDefault();
+          p.seekMs(entry.timestamp_seconds * 1000);
+        }
+      });
+      return jump;
+    }
+
     function renderVocabList(entries) {
       vocabList.innerHTML = "";
       if (!entries || entries.length === 0) {
@@ -2290,11 +2363,10 @@
         const dueIn = (entry.streak || 0) > 0 && (entry.streak || 0) < MASTERED_STREAK
           ? fmtDueIn(entry.next_review_at || 0) : null;
 
-        if (entry.video_title || entry.created_at || (entry.streak || 0) >= MASTERED_STREAK || dueIn) {
+        if (entry.created_at || (entry.streak || 0) >= MASTERED_STREAK || dueIn) {
           const meta = document.createElement("div");
           meta.className = "vocab-meta";
-          const when = entry.created_at ? new Date(entry.created_at * 1000).toLocaleString() : "";
-          meta.textContent = [entry.video_title, when].filter(Boolean).join(" · ");
+          meta.textContent = entry.created_at ? new Date(entry.created_at * 1000).toLocaleString() : "";
           if ((entry.streak || 0) >= MASTERED_STREAK) {
             const badge = document.createElement("button");
             badge.className = "vocab-mastered-badge";
@@ -2317,10 +2389,7 @@
           card.appendChild(meta);
         }
         if (entry.subtitle_text) {
-          const sub = document.createElement("div");
-          sub.className = "vocab-subtitle";
-          sub.textContent = `"${entry.subtitle_text}"`;
-          card.appendChild(sub);
+          card.appendChild(buildSubtitleLine(entry));
         }
 
         const qRow = document.createElement("div");
@@ -2336,6 +2405,8 @@
         speak.setAttribute("aria-label", "朗读");
         speak.addEventListener("click", () => speakWord(entry.question));
         qRow.appendChild(speak);
+        const jumpBtn = buildJumpBtn(entry);
+        if (jumpBtn) qRow.appendChild(jumpBtn);
         card.appendChild(qRow);
 
         // Same exam-syllabus tags the quiz's scope filter reads (see
@@ -2427,24 +2498,25 @@
         const card = document.createElement("div");
         card.className = "vocab-card";
 
-        if (entry.video_title || entry.created_at) {
+        if (entry.created_at) {
           const meta = document.createElement("div");
           meta.className = "vocab-meta";
-          const when = entry.created_at ? new Date(entry.created_at * 1000).toLocaleString() : "";
-          meta.textContent = [entry.video_title, when].filter(Boolean).join(" · ");
+          meta.textContent = new Date(entry.created_at * 1000).toLocaleString();
           card.appendChild(meta);
         }
         if (entry.subtitle_text) {
-          const sub = document.createElement("div");
-          sub.className = "vocab-subtitle";
-          sub.textContent = `"${entry.subtitle_text}"`;
-          card.appendChild(sub);
+          card.appendChild(buildSubtitleLine(entry));
         }
 
-        const q = document.createElement("div");
+        const qRow = document.createElement("div");
+        qRow.className = "vocab-question-row";
+        const q = document.createElement("span");
         q.className = "vocab-question";
         q.textContent = entry.phrase;
-        card.appendChild(q);
+        qRow.appendChild(q);
+        const jumpBtn = buildJumpBtn(entry);
+        if (jumpBtn) qRow.appendChild(jumpBtn);
+        card.appendChild(qRow);
 
         const a = document.createElement("div");
         a.className = "vocab-answer";
@@ -2554,6 +2626,39 @@
      *  every episode change. */
     function player() {
       return window.__englishTutorYouTube ? youtubePlayer() : html5Player();
+    }
+
+    /** {video_url, timestamp_seconds} for wherever playback is right now,
+     *  YouTube only -- both null on Jellyfin/local video, which has no
+     *  external address to hand back to. `location.href` is the actual
+     *  youtube.com watch URL here (this script runs injected into that
+     *  page itself when it's the YouTube extension), so this just folds
+     *  the current position into a `t=` param the same way YouTube's own
+     *  share-at-timestamp links do. Read at save time, not click time, so
+     *  a phrase card resolved a while after the AI suggested it still
+     *  points at the moment it was actually about, not wherever playback
+     *  has drifted to since. */
+    function youtubeJumpTarget() {
+      const p = player();
+      if (!p || p.kind !== "youtube") return { video_url: null, timestamp_seconds: null };
+      const seconds = Math.max(0, Math.floor(p.currentTimeMs() / 1000));
+      let url;
+      try {
+        url = new URL(location.href);
+        url.searchParams.set("t", `${seconds}s`);
+      } catch (e) {
+        return { video_url: null, timestamp_seconds: seconds };
+      }
+      return { video_url: url.toString(), timestamp_seconds: seconds };
+    }
+
+    /** The `v=` param out of a YouTube watch URL, or null if it isn't one --
+     *  used to tell whether a saved jump target is the video already open
+     *  (see buildJumpBtn), so a click there can just seek instead of
+     *  reloading the exact page it's already sitting on. */
+    function youtubeVideoId(url) {
+      try { return new URL(url).searchParams.get("v"); }
+      catch (e) { return null; }
     }
 
     async function reportPlaybackState() {

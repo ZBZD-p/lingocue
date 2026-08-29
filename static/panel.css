@@ -317,7 +317,7 @@ button:focus-visible {
 .setting-hint { font-size: 12.5px; color: var(--muted-2); line-height: 1.65; }
 /* The dropdown is width-constrained inside the topbar by flex; on the
    settings page it should fill the row instead. */
-.setting-row .dropdown, .setting-row .setting-text-input { flex: none; width: 100%; }
+.setting-row .dropdown, .setting-row .setting-text-input, .setting-row .setting-textarea { flex: none; width: 100%; }
 
 .setting-text-input {
   font-size: 15px;
@@ -332,6 +332,25 @@ button:focus-visible {
 }
 .setting-text-input::placeholder { color: var(--muted-3); }
 .setting-text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.setting-textarea {
+  font-size: 14px;
+  font-family: var(--font-body);
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  min-height: 72px;
+  resize: vertical;
+  line-height: 1.6;
+}
+.setting-textarea::placeholder { color: var(--muted-3); }
+.setting-textarea:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -875,15 +894,27 @@ button:focus-visible {
 .vocab-subtitle { font-size: 13.5px; color: var(--muted-2); margin-bottom: 8px; line-height: 1.6; }
 .vocab-question { font-family: var(--font-heading); font-size: 22px; line-height: 1.2; color: var(--ink); padding-right: 60px; }
 .vocab-question.vocab-word { color: var(--ink); }
-/* Only the vocab list wraps .vocab-question in this row (the phrase list
-   doesn't have a speak button, so it keeps the bare rule above as-is);
-   moving the delete-button clearance onto the row lets the word text and
-   the speak button share the remaining width instead of the button
-   fighting the word's own padding. */
-.vocab-question-row { display: flex; align-items: center; gap: 8px; padding-right: 60px; }
+/* Both the vocab and phrase lists wrap .vocab-question in this row now (see
+   buildJumpBtn) -- moving the delete-button clearance onto the row lets the
+   word/phrase text and its icons (speak, jump) share the remaining width
+   instead of fighting the text's own padding. Widened past the original
+   60px once the jump button joined the speak button here -- two icons
+   confirmed for real to reach into the old, tighter clearance for a long
+   enough word. */
+.vocab-question-row { display: flex; align-items: center; gap: 8px; padding-right: 76px; }
 .vocab-question-row .vocab-question { padding-right: 0; }
-.vocab-speak-btn { flex-shrink: 0; width: 26px; height: 26px; padding: 0; color: var(--muted-3); }
-.vocab-speak-btn:hover { color: var(--accent); background: var(--accent-soft); }
+.vocab-speak-btn, .vocab-jump-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted-3);
+  text-decoration: none;
+}
+.vocab-speak-btn:hover, .vocab-jump-btn:hover { color: var(--accent); background: var(--accent-soft); }
 /* Read-only labels, not the quiz's clickable scope pills -- smaller and
    quieter so they don't compete with the word itself for attention. */
 .vocab-tags-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
@@ -1122,7 +1153,7 @@ button:focus-visible {
   .vocab-question { font-size: 24px; }
   .vocab-answer { font-size: 15px; }
   .vocab-delete-btn { width: 32px; height: 32px; }
-  .vocab-speak-btn { width: 32px; height: 32px; }
+  .vocab-speak-btn, .vocab-jump-btn { width: 32px; height: 32px; }
 
   .quiz-start-btn { height: 50px; font-size: 15px; }
   .quiz-scope-pill, .quiz-batch-pill { padding: 7px 15px; font-size: 13.5px; }

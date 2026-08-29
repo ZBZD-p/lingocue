@@ -192,6 +192,10 @@ class ChatRequest(BaseModel):
     thinking: str | None = None
     # "claude" (default, unset) or "deepseek".
     engine: str | None = None
+    # User-authored addition to TUTOR_SYSTEM_PROMPT, from the settings page.
+    # Appended, not substituted -- the tool-use instructions there aren't
+    # something a free-text field should be able to silently drop.
+    custom_prompt: str | None = None
 
 
 class DeepSeekConfig(BaseModel):
@@ -209,6 +213,13 @@ class VocabEntry(BaseModel):
     # whatever the hover popup's dictionary lookup already returned -- see
     # dictionary.define(). Empty for a word on no such list.
     tags: list[str] = []
+    # YouTube only (see tutor-panel.js's youtubeJumpTarget) -- a Jellyfin
+    # local file has no external address to jump back to, so both are None
+    # there. video_url already has the timestamp folded into its own `t=`
+    # param; timestamp_seconds is kept alongside it only because a raw
+    # number is more useful to have on hand than re-parsing the URL.
+    video_url: str | None = None
+    timestamp_seconds: float | None = None
 
 
 class PhraseEntry(BaseModel):
@@ -216,6 +227,8 @@ class PhraseEntry(BaseModel):
     subtitle_text: str | None = None
     phrase: str
     meaning: str = ""
+    video_url: str | None = None
+    timestamp_seconds: float | None = None
 
 
 class PlaybackState(BaseModel):
@@ -307,6 +320,8 @@ def add_vocab(entry: VocabEntry):
         "question": entry.question,
         "answer": entry.answer,
         "tags": entry.tags,
+        "video_url": entry.video_url,
+        "timestamp_seconds": entry.timestamp_seconds,
         "streak": 0,
         # 0 means "due now" -- a freshly-saved word is immediately quizzable,
         # same as before this field existed.
@@ -391,6 +406,8 @@ def add_phrase(entry: PhraseEntry):
         "subtitle_text": entry.subtitle_text,
         "phrase": entry.phrase,
         "meaning": entry.meaning,
+        "video_url": entry.video_url,
+        "timestamp_seconds": entry.timestamp_seconds,
     }
     entries.append(record)
     save_phrases(entries)
@@ -793,7 +810,12 @@ def get_subtitles(lang: str = "en", secondary: str | None = None, words: int = 0
 
 # ---- Chat ----------------------------------------------------------------
 
-def build_claude_command(req: ChatRequest) -> list[str]:
+def _system_prompt(req: ChatRequest) -> str:
+    extra = (req.custom_prompt or "").strip()
+    return f"{TUTOR_SYSTEM_PROMPT}\n\n{extra}" if extra else TUTOR_SYSTEM_PROMPT
+
+
+def build_claude_command(req: ChatRequest, system_prompt: str) -> list[str]:
     # The prompt is NOT passed here -- it goes over stdin (see chat()).
     # claude on Windows resolves to claude.CMD, and cmd.exe's argument
     # handling mangles/truncates a single argv value that contains embedded
@@ -816,7 +838,8 @@ def build_claude_command(req: ChatRequest) -> list[str]:
         "--disable-slash-commands",
         "--mcp-config", str(MCP_CONFIG_FILE),
     ]
-    cmd += ["--agents", json.dumps(AGENTS, ensure_ascii=False)]
+    agents = {TUTOR_AGENT_NAME: {"description": AGENTS[TUTOR_AGENT_NAME]["description"], "prompt": system_prompt}}
+    cmd += ["--agents", json.dumps(agents, ensure_ascii=False)]
     cmd += ["--agent", TUTOR_AGENT_NAME]
     # Passed explicitly rather than left unset -- leaving them out would hand
     # the choice to claude's own CLI default, which this project doesn't
@@ -972,13 +995,14 @@ def stream_claude_events(cmd: list[str], prompt: str):
 
 @app.post("/api/chat")
 def chat(req: ChatRequest):
+    system_prompt = _system_prompt(req)
     if req.engine == "deepseek":
         # A raw HTTP call, not a claude subprocess: no ~13s CLI-startup
         # overhead, no per-turn mcp_server.py spawn. Same tool functions
         # either way (tutor_tools.py), same NDJSON event shape out, so the
         # frontend doesn't know or care which backend answered.
         return StreamingResponse(
-            deepseek_chat.stream_chat(TUTOR_SYSTEM_PROMPT, req.message,
+            deepseek_chat.stream_chat(system_prompt, req.message,
                                       session_id=req.session_id, model=req.model,
                                       effort=req.effort, thinking=req.thinking),
             media_type="application/x-ndjson",
@@ -987,7 +1011,7 @@ def chat(req: ChatRequest):
     # call them for whatever it actually needs, instead of every message
     # paying for the whole episode's subtitles whether relevant or not.
     return StreamingResponse(
-        stream_claude_events(build_claude_command(req), req.message),
+        stream_claude_events(build_claude_command(req, system_prompt), req.message),
         media_type="application/x-ndjson",
     )
 
