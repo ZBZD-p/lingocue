@@ -864,6 +864,12 @@ def _siblings(base: Path, suffix: str = "") -> list[Path]:
     nothing at all.
     """
     prefix = base.name + "."
+    if not base.parent.is_dir():
+        # "The cache directory doesn't exist yet" and "nothing cached for
+        # this video" are the same answer to every caller here, and the
+        # first is the normal state of a fresh install right up until the
+        # first video is registered.
+        return []
     return sorted(
         f for f in base.parent.iterdir()
         if f.name.startswith(prefix) and f.name.endswith(suffix)

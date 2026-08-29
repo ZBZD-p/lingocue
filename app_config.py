@@ -86,7 +86,20 @@ def youtube_cache_dir() -> Path:
     at the media library in config.json if you'd rather keep them together.
     """
     configured = config().get("youtube_cache_dir")
-    return Path(configured) if configured else data_dir() / "youtube"
+    path = Path(configured) if configured else data_dir() / "youtube"
+    # Created here, like data_dir does, rather than at the point something
+    # first writes into it. youtube.py's lookup path *reads* the directory
+    # (scanning for an already-cached subtitle) before anything ever writes
+    # to it, and on a machine where no video has been registered yet that
+    # read raised FileNotFoundError -- surfacing as a 400 from
+    # /api/youtube/watch and a panel stuck on "还没有播放记录". Invisible to
+    # anyone whose directory was created by some earlier run; every fresh
+    # install hit it on the very first video.
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"[app_config] 建不了字幕缓存目录 {path}：{e}")
+    return path
 
 
 # ---- Generated / personal data (all inside data_dir) ---------------------
