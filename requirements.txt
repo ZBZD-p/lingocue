@@ -14,12 +14,22 @@ requests
 # 只用 DeepSeek 引擎的话用不到，但装上不影响。
 mcp>=2.0.0
 
-# 可选：YouTube 自动字幕完全没标点时，youtube.py 用本地 ct-punc 模型
-# 校对断句（见 polish_auto_captions_in_background）。会带上 torch，体积不小。
-# Windows 上建议先手动装好对应平台的 torch + torchaudio（CPU 版：
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu），
-# 有 GPU 就装匹配的 CUDA 版，再装 funasr。torchaudio 单独列出来是因为
-# funasr 实测不会自动把它拉下来，但 import funasr 时又硬需要，缺了会直接报
-# ModuleNotFoundError。首次真正用到 ct-punc 时还会从 ModelScope 现下模型
-# （约 290M 参数），要联得上网。
-funasr
+# ---- 以下是可选的，故意注释掉，不要取消注释 ----------------------------
+# YouTube 自动字幕完全没标点时，youtube.py 用本地 ct-punc 模型校对断句
+# （见 polish_auto_captions_in_background）。
+#
+# 这一段以前 funasr 是没注释的，等于每个人 pip install -r 都会装上它——而它
+# 会拖来 transformers / numba / scikit-learn / librosa / scipy 整棵树，实测让
+# 一份干净环境从 62MB 涨到 748MB，还没算 torch。setup.ps1 的 -WithPunctuation
+# 开关和 README 里「按需要的」那张表都说它是可选的，只有这个文件不是，所以
+# 是这里错了。
+#
+# 要用的话装法（顺序有讲究）：
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   pip install funasr
+# torchaudio 要单独列是因为 funasr 实测不会自动把它拉下来，但 import funasr
+# 时又硬需要，缺了直接 ModuleNotFoundError。有 GPU 就换成匹配的 CUDA 版。
+# 首次真正用到 ct-punc 时还会从 ModelScope 现下模型（约 290M 参数），要联网。
+# 启动器的「环境」页里点「标点优化 → 安装」就是按上面这两条跑的。
+#
+# funasr
