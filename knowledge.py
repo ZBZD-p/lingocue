@@ -83,7 +83,51 @@ def open_db() -> sqlite3.Connection:
             id         INTEGER PRIMARY KEY CHECK (id = 1),
             vocab_size INTEGER NOT NULL
         );
+        -- The next two belong to indexer.py, which is the only thing that
+        -- writes them, but they are created here with the rest of the file's
+        -- schema rather than there. Splitting the two halves across two
+        -- modules meant whichever one ran first created the file with only
+        -- its own tables in it, and app.py -- which opens through this
+        -- function and reads all four -- died with "no such table:
+        -- video_profile" on any machine where the offline indexer had never
+        -- been run. Everyone with an established install had run it at some
+        -- point; a fresh one hits this on the first difficulty badge.
+        CREATE TABLE IF NOT EXISTS video_profile (
+            video_id      TEXT PRIMARY KEY,
+            title         TEXT,
+            duration_sec  INTEGER,
+            total_tokens  INTEGER,
+            band_dist     TEXT,
+            rare_words    TEXT,
+            speech_rate   REAL,
+            proper_ratio  REAL,
+            indexed_at    INTEGER,
+            source        TEXT,
+            channel_id    TEXT
+        );
+        -- Aggregated from video_profile (see indexer.recompute_channel_profiles),
+        -- not written to directly: a channel-wide estimate for videos this
+        -- user hasn't watched yet, so a badge can show something on an
+        -- unwatched video from a channel they've already seen a few of.
+        -- n_videos < 3 is deliberately not filtered out here -- that
+        -- threshold is a "trust this enough to show" call for whoever's
+        -- serving the badge, not a reason to not have the row.
+        CREATE TABLE IF NOT EXISTS channel_profile (
+            channel_id   TEXT PRIMARY KEY,
+            n_videos     INTEGER,
+            band_dist    TEXT,
+            speech_rate  REAL,
+            updated_at   INTEGER
+        );
     """)
+    # channel_id was added to video_profile after that table already existed
+    # on some machines, so a database created before then is missing it while
+    # the CREATE above already includes it. ALTER errors when the column is
+    # present, which is the normal case now.
+    try:
+        db.execute("ALTER TABLE video_profile ADD COLUMN channel_id TEXT")
+    except sqlite3.OperationalError:
+        pass
     db.execute("INSERT OR IGNORE INTO user_profile (id, vocab_size) VALUES (1, ?)",
                (DEFAULT_VOCAB_SIZE,))
     db.commit()

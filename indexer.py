@@ -22,6 +22,7 @@ from pathlib import Path
 import app_config
 import difficulty_bands
 import dictionary
+import knowledge
 import subs_now
 
 DICT_DB = app_config.DICT_DB
@@ -192,44 +193,10 @@ def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | N
 
 
 def _open_difficulty_db() -> sqlite3.Connection:
-    db = sqlite3.connect(DIFFICULTY_DB)
-    db.executescript("""
-        CREATE TABLE IF NOT EXISTS video_profile (
-            video_id      TEXT PRIMARY KEY,
-            title         TEXT,
-            duration_sec  INTEGER,
-            total_tokens  INTEGER,
-            band_dist     TEXT,
-            rare_words    TEXT,
-            speech_rate   REAL,
-            proper_ratio  REAL,
-            indexed_at    INTEGER,
-            source        TEXT
-        );
-        -- Aggregated from video_profile (see recompute_channel_profiles), not
-        -- written to directly: a channel-wide estimate for videos this user
-        -- hasn't watched yet, so a badge can show something on an unwatched
-        -- video from a channel they've already seen a few of. n_videos < 3
-        -- is deliberately not filtered out here -- that threshold is a
-        -- "trust this enough to show" call for whoever's serving the badge,
-        -- not a reason to not have the row.
-        CREATE TABLE IF NOT EXISTS channel_profile (
-            channel_id   TEXT PRIMARY KEY,
-            n_videos     INTEGER,
-            band_dist    TEXT,
-            speech_rate  REAL,
-            updated_at   INTEGER
-        );
-    """)
-    # channel_id was added to video_profile after this table already existed
-    # on some machines -- ALTER TABLE errors if the column is already there,
-    # so this only ever needs to succeed once per database file.
-    try:
-        db.execute("ALTER TABLE video_profile ADD COLUMN channel_id TEXT")
-        db.commit()
-    except sqlite3.OperationalError:
-        pass
-    return db
+    """The schema lives in knowledge.open_db, which creates all four of this
+    file's tables. This module used to declare its own two, which meant the
+    database ended up with only whichever half had run first."""
+    return knowledge.open_db()
 
 
 def _video_id_from_marker(marker: Path) -> tuple[str, str, str] | None:
