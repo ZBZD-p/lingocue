@@ -98,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 python build_dict.py
 ```
 
-这会下载 [ECDICT](https://github.com/skywind3000/ECDICT) 的词表并压成一个约 7MB 的 SQLite 文件。原始 CSV 有 63MB / 77 万词，脚本只保留词频前 5 万的部分——剩下的绝大多数是专有名词和生僻词，字幕里根本不会出现。
+这会下载 [ECDICT](https://github.com/skywind3000/ECDICT) 的词表并压成一个约 9MB 的 SQLite 文件（5.8 万词条 + 4 万条词形映射）。原始 CSV 有 63MB / 77 万词，脚本只保留词频前 5 万名左右的部分——剩下的绝大多数是专有名词和生僻词，字幕里根本不会出现。
 
 **启动：**
 
