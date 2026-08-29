@@ -112,6 +112,17 @@ DEEPSEEK_CONFIG_FILE = ROOT / "deepseek_config.json"
 JELLYFIN_CONFIG_FILE = ROOT / "jellyfin_config.json"
 
 
+def port() -> int:
+    """Port the backend listens on. Configurable because the launcher offers
+    it as a setting, and because 8420 is an arbitrary pick that can collide
+    with whatever else a machine happens to be running."""
+    try:
+        return int(config().get("port") or 8420)
+    except (TypeError, ValueError):
+        print("[app_config] config.json 里的 port 不是合法数字，本次启动退回 8420")
+        return 8420
+
+
 def ffmpeg_dirs() -> list[Path]:
     """Extra directories to search for ffmpeg/ffprobe when they aren't on
     PATH. Empty by default -- PATH is where they're supposed to be, and this

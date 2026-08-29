@@ -1379,4 +1379,4 @@ if __name__ == "__main__":
     # answered on loopback would break the moment the page was opened from
     # any other device. Nothing here is exposed beyond the LAN unless the
     # machine's firewall/router is configured to forward the port.
-    uvicorn.run(app, host="0.0.0.0", port=8420)
+    uvicorn.run(app, host="0.0.0.0", port=app_config.port())
