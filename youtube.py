@@ -500,8 +500,18 @@ _ct_punc_lock = threading.Lock()
 
 def _ct_punc_model():
     """Resolved lazily and cached: most videos already have punctuated
-    subtitles and never need this, so most sessions should never pay for the
-    load (and possible first-run model download).
+    subtitles and never need this, so most sessions should never pay for
+    the load.
+
+    Requires the model to already be on disk, not just funasr to be
+    importable: constructing AutoModel is what triggers a fresh download
+    when it isn't, and funasr offers no download-only entry point. Without
+    this check, whoever's funasr happened to be installed without the
+    launcher having fetched the model yet (an old install, manual pip
+    testing) would trigger that 1.2GB download themselves, silently, the
+    first time they opened a video with unpunctuated captions -- the
+    launcher's install button is the only place that download is supposed
+    to be able to start.
 
     Double-checked locking: two videos hitting unpunctuated auto-captions
     close together shouldn't each trigger their own concurrent load of the
@@ -512,12 +522,15 @@ def _ct_punc_model():
         return _ct_punc_model_cache
     with _ct_punc_lock:
         if _ct_punc_model_cache == "not_loaded":
-            try:
-                os.environ["MODELSCOPE_CACHE"] = str(app_config.model_cache_dir())
-                from funasr import AutoModel
-                _ct_punc_model_cache = AutoModel(model="ct-punc")
-            except Exception:
+            if not app_config.punct_model_downloaded():
                 _ct_punc_model_cache = None
+            else:
+                try:
+                    os.environ["MODELSCOPE_CACHE"] = str(app_config.model_cache_dir())
+                    from funasr import AutoModel
+                    _ct_punc_model_cache = AutoModel(model="ct-punc")
+                except Exception:
+                    _ct_punc_model_cache = None
     return _ct_punc_model_cache
 
 

@@ -151,6 +151,29 @@ def model_cache_dir() -> Path:
     return path
 
 
+def punct_model_downloaded() -> bool:
+    """Whether the ct-punc checkpoint has actually been fetched already.
+
+    Distinct from funasr being importable: pip installing funasr does not
+    fetch it, constructing the model is what does, and there is no
+    download-only entry point -- so whoever constructs it first pays for
+    that download, wherever they happen to be in the app when it happens.
+    Gating on this (see youtube._ct_punc_model) keeps the download itself
+    opt-in through the launcher's install button even when funasr is
+    already present for some other reason (an old install, manual testing),
+    instead of one more thing silently fetching 1.2GB the first time
+    someone opens a video with unpunctuated captions.
+    """
+    models = model_cache_dir() / "models"
+    if not models.is_dir():
+        return False
+    for d in models.glob("*punc_ct-transformer*"):
+        size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        if size > 100e6:      # a partial/aborted download is not "present"
+            return True
+    return False
+
+
 def ffmpeg_dirs() -> list[Path]:
     """Extra directories to search for ffmpeg/ffprobe when they aren't on
     PATH. Empty by default -- PATH is where they're supposed to be, and this

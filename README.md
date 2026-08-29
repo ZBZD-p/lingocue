@@ -205,7 +205,7 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 **AI 不是被灌字幕的。** 它有工具可以自己查当前播放位置、查最近这一段字幕、按时间段查、全集搜关键词。这样每次提问不用为整集字幕付费，它也能自己决定要不要往前翻。
 
-**YouTube 自动字幕完全没标点时**，会在后台用本地的 [FunASR](https://github.com/modelscope/FunASR) `ct-punc` 模型悄悄补一遍标点再重新切句，不阻塞字幕先出来。这是个逐词分类模型，不是生成式改写，所以不会漏词/加词/改写内容——失败了就原样保留没改，不会比不加标点更糟。装了 `funasr` 才会用到，见下面「装之前需要什么」。
+**YouTube 自动字幕完全没标点时**，会在后台用本地的 [FunASR](https://github.com/modelscope/FunASR) `ct-punc` 模型悄悄补一遍标点再重新切句，不阻塞字幕先出来。这是个逐词分类模型，不是生成式改写，所以不会漏词/加词/改写内容——失败了就原样保留没改，不会比不加标点更糟。装了 `funasr` 并且模型已经下载好才会用到——两者都在启动器「环境」页的「安装标点优化」按钮里一起完成，见下面「装之前需要什么」。
 
 **本地词典还带着考试大纲标签**（四六级、中考高考、考研、雅思托福、GRE），来自 [ECDICT](https://github.com/skywind3000/ECDICT) 原始数据——`build_dict.py` 之前只拿这个标签决定要不要收进词典，标签本身没存下来，现在存进去了，用来给生词本抽查按范围筛选。查词时如果这个词是另一个词的语法变形（比如 `engaging` 对应 `engage`），会把词根的标签并进来：ECDICT 是按每个拼写形式各自的语料库词频独立标注的，同一词根的不同变形经常标签对不齐，光看这个词自己的标签会漏掉不少。
 
@@ -226,7 +226,7 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 - 词典数据来自 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT）—— 不随仓库分发，`build_dict.py` 运行时下载
 - [marked](https://github.com/markedjs/marked)（MIT）—— `static/marked.min.js`，渲染 AI 回复里的 Markdown
-- [FunASR](https://github.com/modelscope/FunASR)（MIT）的 `ct-punc` 模型 —— 不随仓库分发，首次用到时从 ModelScope 现下
+- [FunASR](https://github.com/modelscope/FunASR)（MIT）的 `ct-punc` 模型 —— 不随仓库分发，从 ModelScope 下载；只有在启动器「环境」页点了「安装标点优化」之后才会下，不会在看视频时自动触发下载
 
 ## 协议
 
