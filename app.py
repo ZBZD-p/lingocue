@@ -336,12 +336,26 @@ def _find_cache_base(video_id: str) -> Path | None:
     from a title. The frontend's only candidate title (playback.py's
     "title", which is actually a *filename* -- see get_playback_status)
     doesn't round-trip through safe_base_name, so rebuilding the path from
-    it silently missed every real cache hit."""
+    it silently missed every real cache hit.
+
+    More than one marker can match: the same video registered twice under
+    two different titles (content.js's title-correction race, or an old
+    registration from before that was fixed) leaves two cache entries for
+    one video_id, and only one of them necessarily has real subtitles.
+    Confirmed for real: a member-only video registered once under a stale
+    unrelated title (no subtitles ever fetched under it) and once under its
+    real title (subtitles fetched fine) -- picking whichever glob happened
+    to return first, as this used to, silently landed on the empty one and
+    reported "unindexed" even though the video was fully usable under its
+    other name. A base with an .en.srt sibling always wins over one without.
+    """
     suffix = f"[{video_id}].tutor.json"
-    for marker in youtube.CACHE_DIR.glob("*.tutor.json"):
-        if marker.name.endswith(suffix):
-            return marker.with_name(marker.name[: -len(".tutor.json")])
-    return None
+    candidates = [m for m in youtube.CACHE_DIR.glob("*.tutor.json") if m.name.endswith(suffix)]
+    bases = [m.with_name(m.name[: -len(".tutor.json")]) for m in candidates]
+    for base in bases:
+        if base.with_name(f"{base.name}.en.srt").exists():
+            return base
+    return bases[0] if bases else None
 
 
 def _index_on_demand(db, video_id: str):
