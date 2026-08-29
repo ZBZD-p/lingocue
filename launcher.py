@@ -42,7 +42,7 @@ import webbrowser
 import winreg
 import zipfile
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 from tkinter import font as tkfont
 
 def _project_root() -> Path:
@@ -172,6 +172,79 @@ def needs_refresh(root: Path) -> bool:
     """Whether the exe carries a newer build than what is unpacked."""
     bundled = _stamp(payload_dir())
     return bool(bundled) and bundled != _stamp(root)
+
+
+def clear_install_record() -> None:
+    """Forget where the install was, and drop the autostart entry with it.
+
+    Leaving a Run entry pointing at a folder that no longer exists would
+    make Windows try to launch a missing program on every login.
+    """
+    for key, value in ((APP_KEY, "InstallDir"), (RUN_KEY, RUN_VALUE)):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0,
+                                winreg.KEY_SET_VALUE) as k:
+                winreg.DeleteValue(k, value)
+        except OSError:
+            pass
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, APP_KEY)
+    except OSError:
+        pass
+
+
+def uninstall(root: Path, data: Path, keep_data: bool, log) -> bool:
+    """Remove an install, optionally sparing the user's own files.
+
+    The data directory is handled separately rather than as a subtree of
+    root, because config.json can point it somewhere else entirely -- in
+    which case deleting root would miss it, and "keep my data" would be
+    silently wrong in the other direction too.
+    """
+    running_exe = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None
+    data = data.resolve()
+    keep = data if keep_data else None
+
+    def onerror(func, path, exc):
+        log(f"  删不掉 {path}（{exc[1]}）")
+
+    deleted = 0
+    for item in sorted(root.iterdir()) if root.is_dir() else []:
+        target = item.resolve()
+        if keep and (target == keep or keep.is_relative_to(target)):
+            log(f"  保留 {item.name}")
+            continue
+        # The exe can sit inside the folder it installed to, and Windows
+        # will not let a running program delete itself.
+        if running_exe and (target == running_exe or running_exe.is_relative_to(target)):
+            log(f"  跳过 {item.name}（这个程序自己正在运行）")
+            continue
+        try:
+            if item.is_dir():
+                shutil.rmtree(item, onerror=onerror)
+            else:
+                item.unlink()
+            deleted += 1
+        except OSError as e:
+            log(f"  删不掉 {item.name}（{e}）")
+
+    if not keep_data and data.exists() and not data.is_relative_to(root.resolve()):
+        try:
+            shutil.rmtree(data, onerror=onerror)
+            log(f"  已删除数据目录 {data}")
+        except OSError as e:
+            log(f"  删不掉 {data}（{e}）")
+
+    clear_install_record()
+    log(f"  已清除注册表记录（安装位置、开机自启）")
+
+    try:
+        if root.is_dir() and not any(root.iterdir()):
+            root.rmdir()
+    except OSError:
+        pass
+    log(f"卸载完成，处理了 {deleted} 项。")
+    return True
 
 
 def set_root(path: Path) -> None:
@@ -1081,6 +1154,68 @@ class App:
                width=100).pack(side=tk.LEFT)
         self.save_hint = label(actions, "", size=9, color=MUTED, bg=SURFACE)
         self.save_hint.pack(side=tk.LEFT, padx=(px(12), 0))
+
+        tk.Frame(box, bg=LINE, height=1).pack(fill=tk.X, padx=px(16), pady=(px(6), 0))
+        where = tk.Frame(box, bg=SURFACE)
+        where.pack(fill=tk.X, padx=px(16), pady=(px(16), px(18)))
+        label(where, "安装位置", bold=True, bg=SURFACE).pack(anchor="w")
+        label(where, str(ROOT), size=9, color=MUTED, bg=SURFACE).pack(anchor="w")
+        label(where, "Chrome 加载扩展时要选这个目录下的 extension 文件夹",
+              size=8, color=DIM, bg=SURFACE).pack(anchor="w", pady=(0, px(8)))
+        wrow = tk.Frame(where, bg=SURFACE)
+        wrow.pack(fill=tk.X)
+        Button(wrow, "打开文件夹", command=self.open_folder, width=110).pack(side=tk.LEFT)
+        Button(wrow, "打开扩展文件夹", command=self.open_extension,
+               width=130).pack(side=tk.LEFT, padx=(px(8), 0))
+        # Only offered for a real install. Running from a git clone, "卸载"
+        # would mean deleting the working copy, which is not what anyone
+        # pressing this button in a checkout could possibly want.
+        if getattr(sys, "frozen", False) and install_dir() is not None:
+            Button(wrow, "卸载", command=self.do_uninstall, variant="danger",
+                   width=90).pack(side=tk.RIGHT)
+
+    def open_folder(self):
+        os.startfile(ROOT)
+
+    def open_extension(self):
+        target = ROOT / "extension"
+        os.startfile(target if target.is_dir() else ROOT)
+
+    def do_uninstall(self):
+        data = data_dir()
+        msg = (f"将删除：\n{ROOT}\n\n"
+               "包括程序文件、内置的 Python 运行时和依赖。\n\n确定继续吗？")
+        if not messagebox.askyesno("卸载 LingoCue", msg,
+                                   icon="warning", default="no",
+                                   parent=self.root):
+            return
+        # Asked separately and defaulted to keeping: the vocabulary notebook
+        # is the one thing here that took real time to accumulate and cannot
+        # be regenerated by reinstalling.
+        keep = messagebox.askyesno(
+            "保留学习数据？",
+            f"要保留生词本、短语本、词汇量测试结果和字幕缓存吗？\n\n"
+            f"它们在：\n{data}\n\n"
+            "选「是」= 保留（重装后还在）\n选「否」= 一并删除",
+            default="yes", parent=self.root)
+
+        self.show("状态")
+        self.write("── 卸载 ──")
+        if self.proc and self.proc.poll() is None:
+            self.stop()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+        uninstall(ROOT, data, keep, self.write)
+        if keep:
+            self.write(f"学习数据保留在 {data}")
+        self.write("可以关掉这个窗口了。")
+        if keep:
+            done = f"已卸载。学习数据保留在：\n{data}"
+        else:
+            done = "已卸载，全部文件都删掉了。"
+        messagebox.showinfo("卸载完成", done, parent=self.root)
 
     def save_settings(self):
         updates = {}
