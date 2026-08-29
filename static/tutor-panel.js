@@ -527,7 +527,7 @@
     let sessionId = null;
     let currentPage = "chat";
     let lastKnownVideoTitle = null;
-    let lastDifficultyVideoId = null;
+    let lastDifficultyKey = null;
 
     const toggleBtn = root.querySelector(".toggle");
 
@@ -3015,9 +3015,20 @@
     // surfaces.
     const DIFFICULTY_LABEL_CLASS = { "轻松": "lc-ok", "刚好": "lc-ok", "有挑战": "lc-mid", "偏难": "lc-bad", "超难": "lc-bad" };
 
-    /** New-words-per-minute badge for the video currently open -- YouTube
-     *  only, same as the jump-to-moment feature: Jellyfin's local files have
-     *  no video_id the backend's difficulty index is keyed on.
+    /** New-words-per-minute badge for the video currently open. YouTube
+     *  identifies itself with a video_id straight out of the URL; Jellyfin
+     *  and other local playback have no such id client-side (the <video>
+     *  element's src is an opaque blob: URL), so those go through
+     *  /api/difficulty-local instead, which resolves identity from tab_id
+     *  server-side the same way /api/subtitles and /api/context already do.
+     *  Grid-page badges (grid-badges.js) stay YouTube-only regardless --
+     *  there's no equivalent library-grid injection into Jellyfin's UI.
+     *
+     *  Change detection for the local case piggybacks on lastKnownVideoTitle
+     *  (updated by the /api/context poll this runs alongside) rather than
+     *  a video_id, since there isn't one to compare -- one extra ~4s tick of
+     *  lag before the badge blanks on a switch, which is the same order of
+     *  staleness this already tolerates for "just switched, not indexed yet".
      *
      *  A freshly-opened video's subtitles usually aren't cached yet (the
      *  backend's fetch takes ~12s), so the very first check after switching
@@ -3028,14 +3039,15 @@
      *  up on the first miss. */
     async function updateDifficultyBadge() {
       const p = player();
-      const videoId = p && p.kind === "youtube" ? youtubeVideoId(location.href) : null;
-      if (!videoId) {
+      const isYouTube = p && p.kind === "youtube";
+      const key = isYouTube ? youtubeVideoId(location.href) : (p ? lastKnownVideoTitle : null);
+      if (!key) {
         difficultyBadge.hidden = true;
-        lastDifficultyVideoId = null;
+        lastDifficultyKey = null;
         return;
       }
-      if (videoId !== lastDifficultyVideoId) {
-        lastDifficultyVideoId = videoId;
+      if (key !== lastDifficultyKey) {
+        lastDifficultyKey = key;
         difficultyBadge.hidden = true;  // nothing confirmed for this video yet
       } else if (!difficultyBadge.hidden) {
         return;  // already showing a confirmed result for this exact video
@@ -3043,12 +3055,15 @@
       if (difficultyFetchInFlight) return;
       difficultyFetchInFlight = true;
       try {
-        const res = await fetch(`${API}/api/difficulty/${encodeURIComponent(videoId)}`);
+        const url = isYouTube
+          ? `${API}/api/difficulty/${encodeURIComponent(key)}`
+          : `${API}/api/difficulty-local?tab_id=${TAB_ID}`;
+        const res = await fetch(url);
         const data = await res.json();
         // Stale (moved on before this resolved) or not ready yet (subtitles
         // still fetching) -- either way, leave hidden and let the next 4s
         // tick try again rather than treating this as a final no.
-        if (videoId !== lastDifficultyVideoId || data.status !== "ok") return;
+        if (key !== lastDifficultyKey || data.status !== "ok") return;
         difficultyBadge.hidden = false;
         difficultyBadge.className = `difficulty-badge ${DIFFICULTY_LABEL_CLASS[data.label] || ""}`;
         difficultyBadge.textContent = `${data.label} · ${data.density_per_min}/分钟`;

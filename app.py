@@ -19,6 +19,7 @@ http://127.0.0.1:8420 also serves the same panel standalone, for using the
 chat/vocab pages without a video open.
 """
 
+import hashlib
 import json
 import mimetypes
 import re
@@ -399,6 +400,101 @@ def _index_on_demand(db, video_id: str):
     )
     db.commit()
     return profile["total_tokens"], profile["band_dist"], profile["speech_rate"]
+
+
+def _local_video_id(video: Path) -> str:
+    """Stable key for a Jellyfin/local file, which has no video_id of its
+    own the way a YouTube video does. Derived from the resolved path rather
+    than Jellyfin's item id: playback.current_video already identifies
+    local videos by path everywhere else in this file (subtitles, context,
+    chat), and reusing that means this doesn't need its own round trip to
+    Jellyfin's API just to name a cache row. A renamed/moved file simply
+    gets re-indexed once under a new key -- cheap, and not worth avoiding.
+    """
+    digest = hashlib.sha1(str(video.resolve()).encode("utf-8")).hexdigest()[:16]
+    return f"local:{digest}"
+
+
+def _index_local_on_demand(db, video: Path, video_id: str):
+    """Same idea as _index_on_demand, for a local file instead of a cached
+    YouTube video: run it through the same extraction pipeline
+    /api/subtitles already uses (sidecar file or embedded track), then the
+    same scoring indexer.py uses for everything else.
+
+    Never triggers extraction itself -- start_extraction_if_needed does
+    that lazily and this only proceeds once it reports "ready" -- so a
+    difficulty check never blocks on demuxing a multi-GB container; it just
+    reports unindexed for now and the next poll (the panel already retries
+    every few seconds) picks it up once extraction finishes.
+    """
+    if start_extraction_if_needed(video, "en") != "ready":
+        return None
+    try:
+        subtitle_path = subs_now.find_existing_subtitle(video, "en", video.parent)
+        cues = subs_now.parse_cues(subtitle_path)
+    except Exception:
+        return None
+    profile = indexer.profile_video(cues, _lex())
+    if profile is None:
+        return None
+    db.execute(
+        """INSERT OR REPLACE INTO video_profile
+           (video_id, title, duration_sec, total_tokens, band_dist, rare_words,
+            speech_rate, proper_ratio, indexed_at, source, channel_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (video_id, video.name, profile["duration_sec"], profile["total_tokens"],
+         json.dumps(profile["band_dist"]), json.dumps(profile["rare_words"]),
+         profile["speech_rate"], profile["proper_ratio"], int(time.time()), "local", None),
+    )
+    db.commit()
+    return profile["total_tokens"], profile["band_dist"], profile["speech_rate"]
+
+
+@app.get("/api/difficulty-local")
+def get_difficulty_local(tab_id: str | None = None):
+    """Same as /api/difficulty/{video_id}, for Jellyfin/local files.
+
+    A separate endpoint rather than reusing /api/difficulty/{video_id}: that
+    one is keyed by a video_id the *client* already knows (pulled straight
+    out the YouTube URL), but a local file's identity lives on the server
+    side of playback.current_video, the same as it does for /api/subtitles
+    and /api/context -- so this takes tab_id and looks the video up itself
+    instead of asking the caller to name it.
+    """
+    try:
+        video = playback.current_video(tab_id)
+    except Exception:
+        return {"status": "unindexed"}
+    if youtube.is_cached_path(video):
+        # A YouTube video reached through this endpoint by mistake -- the
+        # other one is what it should be calling instead.
+        return {"status": "unindexed"}
+
+    video_id = _local_video_id(video)
+    db = knowledge.open_db()
+    try:
+        row = db.execute(
+            "SELECT total_tokens, band_dist, speech_rate FROM video_profile WHERE video_id = ?",
+            (video_id,),
+        ).fetchone()
+        if row is None:
+            live = _index_local_on_demand(db, video, video_id)
+            row = live and (live[0], json.dumps(live[1]), live[2])
+        if row is None:
+            return {"status": "unindexed"}
+        _total_tokens, band_dist_json, speech_rate = row
+        band_dist = json.loads(band_dist_json)
+        v = knowledge.vocab_size(db)
+    finally:
+        db.close()
+
+    density = scoring.unknown_per_min(band_dist, speech_rate, v)
+    return {
+        "status": "ok",
+        "density_per_min": round(density, 1),
+        "label": scoring.label_for(density),
+        "vocab_size": v,
+    }
 
 
 # p_known below this is worth flagging -- matches knowledge.prior_p_known's
