@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/dd743a49-2c15-4c71-824c-329899140c09
 |------|-------------|
 | [Jellyfin](https://jellyfin.org/) | 想看自己媒体库里的片子时 |
 | [Claude Code CLI](https://claude.com/claude-code) 或 DeepSeek API key | 对话功能二选一，见下面「对话引擎」 |
-| [funasr](https://github.com/modelscope/FunASR)（连 `torch`/`torchaudio`） | 想让完全没标点的 YouTube 自动字幕自动补标点时，见 `requirements.txt` 里的装法说明——**这一项单独就要装约 5.7GB**（依赖 + 模型），是这个项目里迄今为止最占地方的一块，其余全部加起来大约 300MB |
+| [funasr](https://github.com/modelscope/FunASR)（连 `torch`/`torchaudio`） | 想让完全没标点的 YouTube 自动字幕自动补标点时，见 `requirements.txt` 里的装法说明——**这一项单独就要下载约 1.4GB、占用约 2.4GB**（torch 534MB + funasr 的依赖 626MB + ct-punc 模型 1.2GB），是这个项目里迄今为止最占地方的一块——作为对比，其余必需依赖加起来只有 19MB |
 
 ---
 
@@ -86,7 +86,7 @@ cd lingocue
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-这一步会自动装好 Python 依赖、ffmpeg（直接下载解压进项目里，不用配 PATH），再生成本地词典。想要标点优化功能（约再加 5.7GB）的话加个参数：`.\setup.ps1 -WithPunctuation`。重复跑是安全的，已经装好的东西会自动跳过。
+这一步会自动装好 Python 依赖、ffmpeg（直接下载解压进项目里，不用配 PATH），再生成本地词典。想要标点优化功能（约再加 2.4GB）的话加个参数：`.\setup.ps1 -WithPunctuation`。重复跑是安全的，已经装好的东西会自动跳过。
 
 脚本自动不了的只剩两步：装 [Chrome 扩展](#2-看-youtube)（浏览器出于安全考虑不允许脚本代劳），以及对话引擎二选一（装 [Claude Code CLI](https://claude.com/claude-code) 并登录，或者在设置页填 DeepSeek API key）。
 

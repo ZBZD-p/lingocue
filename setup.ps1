@@ -11,7 +11,7 @@
 #
 # -WithPunctuation additionally installs funasr + torch/torchaudio, for the
 # optional feature that restores punctuation on YouTube auto-captions that
-# have none. Opt-in because that one feature alone is about 5.7GB once the
+# have none. Opt-in because that one feature alone is about 2.4GB once the
 # model downloads -- see the size breakdown this script's README section
 # links back to.
 #
@@ -57,9 +57,16 @@ if ($WithPunctuation) {
     Write-Step '安装标点优化功能 (torch + torchaudio + funasr，体积较大，耐心等一下)'
     python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
     python -m pip install funasr --quiet
-    Write-Ok '完成（ct-punc 模型约 1.2GB，第一次真正遇到没标点的自动字幕时才会自动下载）'
+    # Fetched now rather than left to happen by itself. Constructing the
+    # model is what downloads it, and funasr offers no download-only entry
+    # point -- so without this, 1.2GB starts downloading silently the first
+    # time someone opens a video with unpunctuated captions, with no
+    # progress shown and no explanation if it fails.
+    Write-Host '    正在下载 ct-punc 模型（约 1.2GB，这一步没有逐行进度，耐心等几分钟）...'
+    python -c "from funasr import AutoModel; AutoModel(model='ct-punc')"
+    Write-Ok '完成（依赖 + 模型都已就位）'
 } else {
-    Write-Skip '跳过标点优化功能（默认不装，完整装上大约再加 5.7GB）。想要的话加 -WithPunctuation 参数重跑这个脚本。'
+    Write-Skip '跳过标点优化功能（默认不装，完整装上约再加 2.4GB）。想要的话加 -WithPunctuation 参数重跑这个脚本。'
 }
 
 # ---- ffmpeg ---------------------------------------------------------------

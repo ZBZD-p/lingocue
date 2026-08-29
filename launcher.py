@@ -45,6 +45,30 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 from tkinter import font as tkfont
 
+def _punct_row(e, action):
+    """The 标点优化 row. Split out because it has three states, not two:
+    the packages and the 1.2GB model are downloaded by separate steps and
+    either can be present without the other. Reporting it as done once the
+    packages land -- which is what a single boolean did -- told people the
+    feature was ready while the part that actually does the work was still
+    missing.
+    """
+    pkgs, model_mb = e["punct_pkgs"], e["punct_model_mb"]
+    done = pkgs and model_mb > 0
+    if done:
+        detail = f"funasr + torch，模型 {model_mb/1000:.1f}GB 已就位"
+        note = "已可用"
+    elif pkgs:
+        detail = "依赖装好了，但 1.2GB 的模型还没下"
+        note = "现在这个状态下，第一次遇到没标点的字幕会临时去下模型（没有进度提示）"
+    else:
+        detail = "缺：" + "、".join(e["punct_missing"])
+        note = ("YouTube 自动字幕完全没标点时才用得上。一次装完约下载 1.4GB、"
+                "占用 2.4GB（torch 534MB + funasr 依赖 626MB + 模型 1.2GB）")
+    return ("标点优化", detail, done, False, note,
+            None if done else ("安装", action))
+
+
 def _project_root() -> Path:
     """Where app.py lives -- which is NOT where __file__ points once frozen.
 
@@ -451,6 +475,31 @@ def ffmpeg_present() -> str | None:
     return None
 
 
+# Where ModelScope caches what it downloads. Matched by glob rather than by
+# the exact directory name (iic--punc_ct-transformer_cn-en-common-vocab471067-large)
+# because that name is funasr's choice of model, not ours, and a funasr
+# upgrade that points "ct-punc" at a different checkpoint would otherwise
+# make an installed model look missing forever.
+def punct_model_size() -> int:
+    """Bytes of the downloaded punctuation model, 0 if it isn't there.
+
+    Checked separately from the funasr/torch packages because installing
+    those does NOT fetch it: funasr downloads the checkpoint the first time
+    a model is actually constructed. Left to happen on its own, that is a
+    1.2GB download starting silently while someone waits for subtitles, with
+    no progress anywhere and no explanation if it fails.
+    """
+    base = Path(os.environ.get("MODELSCOPE_CACHE") or (Path.home() / ".cache" / "modelscope"))
+    models = base / "models"
+    if not models.is_dir():
+        return 0
+    for d in models.glob("*punc_ct-transformer*"):
+        size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        if size > 100e6:      # a partial/aborted download is not "present"
+            return size
+    return 0
+
+
 def probe() -> dict:
     """Everything the 环境 view shows, gathered in one pass."""
     python = find_python()
@@ -481,8 +530,9 @@ def probe() -> dict:
         "core_ok": all(mods.get(m) for m in CORE_MODULES),
         "core_missing": [m for m in CORE_MODULES if not mods.get(m)],
         "mcp": bool(mods.get("mcp")),
-        "punct_ok": all(mods.get(m) for m in PUNCT_MODULES),
+        "punct_pkgs": all(mods.get(m) for m in PUNCT_MODULES),
         "punct_missing": [m for m in PUNCT_MODULES if not mods.get(m)],
+        "punct_model_mb": punct_model_size() / 1e6,
         "ffmpeg": ffmpeg_present(),
         "dict_db": dict_db if dict_db.exists() else None,
         "dict_size_mb": round(dict_db.stat().st_size / 1e6, 1) if dict_db.exists() else 0,
@@ -1072,10 +1122,7 @@ class App:
             ("ffmpeg", e["ffmpeg"] or "没找到", bool(e["ffmpeg"]), False,
              "只有看本地媒体库才需要；只用 YouTube 可以不装（约 100MB）",
              ("下载", self.install_ffmpeg) if not e["ffmpeg"] else None),
-            ("标点优化", "funasr + torch" if e["punct_ok"] else
-             "缺：" + "、".join(e["punct_missing"]), e["punct_ok"], False,
-             "YouTube 自动字幕完全没标点时才用得上，装满约 5.7GB",
-             ("安装", self.install_punct) if not e["punct_ok"] else None),
+            _punct_row(e, self.install_punct),
             ("Jellyfin", "已配置" if e["jellyfin"] else "没配置", e["jellyfin"], False,
              "只有看本地媒体库才需要", None),
         ]
@@ -1310,13 +1357,24 @@ class App:
             return
         self._run_task("安装核心依赖", [[py, "-m", "pip", "install", "-r", "requirements.txt"]])
 
+    # Constructing the model is what makes funasr fetch it; there is no
+    # "download only" entry point. Done here, as the last step of the same
+    # button, so the whole 1.4GB happens once, deliberately, with the log
+    # visible -- rather than starting itself later while someone waits for
+    # subtitles to appear.
+    _FETCH_MODEL = ("from funasr import AutoModel; AutoModel(model='ct-punc'); "
+                    "print('模型就绪')")
+
     def install_punct(self):
         py = find_python()
         if not py:
             return
-        self._run_task("安装标点优化（体积很大，耐心等）", [
+        self.write("这一步要下约 1.4GB（依赖 240MB + 模型 1.2GB），装完占 2.4GB。")
+        self.write("模型那段下载没有逐行进度，看起来会像卡住，耐心等几分钟。")
+        self._run_task("安装标点优化", [
             [py, "-m", "pip", "install", "torch", "torchaudio", "--index-url", TORCH_INDEX],
             [py, "-m", "pip", "install", "funasr"],
+            [py, "-c", self._FETCH_MODEL],
         ])
 
     def build_dict(self):
