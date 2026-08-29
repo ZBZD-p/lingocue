@@ -132,6 +132,15 @@
     { value: "off", label: "关" },
   ];
 
+  // Off by default -- unlike wordHighlight above, this depends on a
+  // vocabulary-size estimate that starts at a guessed bootstrap value (see
+  // knowledge.DEFAULT_VOCAB_SIZE) until the user actually takes the test,
+  // so it's opt-in rather than shipping on for everyone.
+  const VOCAB_HIGHLIGHT_OPTIONS = [
+    { value: "off", label: "关" },
+    { value: "on", label: "开" },
+  ];
+
   // DeepSeek-only -- Claude's extended thinking has no "off" state exposed
   // through the CLI's --effort flag, so this doesn't belong on the shared
   // 思考程度 dropdown (see its showWhen).
@@ -241,6 +250,14 @@
         "只有 YouTube 自动字幕带逐词时间，人工字幕和本地视频没有这个数据，会自动跳过。",
       options: WORD_HIGHLIGHT_OPTIONS,
       storageKey: "english-tutor-word-highlight",
+    },
+    {
+      key: "vocabHighlight",
+      label: "生词高亮",
+      hint: "按你的词汇量测试结果（没测过就按默认水平），把字幕里大概率不认识的词标出来。" +
+        "人名地名这类专有名词不算在内。",
+      options: VOCAB_HIGHLIGHT_OPTIONS,
+      storageKey: "english-tutor-vocab-highlight",
     },
     {
       key: "theme",
@@ -727,6 +744,7 @@
     }
 
     const wordHighlightOn = () => settingValue("wordHighlight") !== "off";
+    const vocabHighlightOn = () => settingValue("vocabHighlight") === "on";
 
     /** Same refetch reasoning as reloadForSecondary above -- the per-word
      *  timings ride along in the cue payload and are only asked for when
@@ -741,6 +759,30 @@
       currentCueIndex = -1;
       stopExtractPolling();
       if (currentPage === "subs") loadSubtitleCues();
+    }
+
+    // No reload needed -- the cue text already loaded didn't change, only
+    // whether it's decorated. Turning it on fetches once against what's
+    // already showing; turning it off just strips the classes back out.
+    //
+    // isUserChange must gate this, same as the `engine` handler below --
+    // populateSelect calls every handler once synchronously during the
+    // settings-render loop to restore a saved value (persist=false), which
+    // runs *before* settingValue is declared further down in init().
+    // Confirmed for real: with this setting saved "on" from a previous
+    // session, that restore call reached refreshVocabHighlight ->
+    // vocabHighlightOn -> settingValue while it was still in its temporal
+    // dead zone, threw, and since nothing past that point in init() ever
+    // ran, no tab button ever got its click listener attached -- the whole
+    // panel looked frozen, not just this feature.
+    function toggleVocabHighlight(value, isUserChange) {
+      if (!isUserChange) return;
+      if (value === "on") {
+        refreshVocabHighlight();
+      } else {
+        cueUnknownWords = [];
+        applyVocabHighlight();
+      }
     }
 
     // Settings whose effect is immediate rather than read-on-demand.
@@ -786,6 +828,7 @@
       subWeight: applySubWeight,
       secondaryLang: reloadForSecondary,
       wordHighlight: reloadForWordHighlight,
+      vocabHighlight: toggleVocabHighlight,
       deepseekKey: pushDeepSeekConfig,
       deepseekModel: pushDeepSeekConfig,
       theme: (value) => host.setAttribute("theme", value || "dark"),
@@ -1280,6 +1323,10 @@
 
     let subtitleCues = [];
     let subtitleIsPartial = false;
+    // Parallel to subtitleCues -- cueUnknownWords[i] is a Set of the
+    // lowercased words in subtitleCues[i].text flagged likely-unknown, or
+    // undefined until /api/vocab-highlight has answered for this render.
+    let cueUnknownWords = [];
     let currentCueIndex = -1;
     let lastUserScrollAt = 0;
     let extractPollTimer = null;
@@ -1362,6 +1409,7 @@
         if (!userBusy) {
           renderSubtitleCards();
           subsEmpty.hidden = true;
+          refreshVocabHighlight();  // fire-and-forget -- see its own comment
         }
 
         if (subtitleIsPartial || secondaryPending) {
@@ -1573,6 +1621,42 @@
         span.addEventListener("mouseleave", scheduleHideWordPopup);
         container.appendChild(span);
       }
+    }
+
+    // ---- vocab-highlight ("生词高亮") -------------------------------------
+    //
+    // Applied as a second pass over already-rendered .sub-word spans, not
+    // baked into appendWordSpans itself: the subtitle cards need to appear
+    // immediately when a video opens, and this is one extra network round
+    // trip per video (batched -- the whole video's cues in one request, not
+    // one per line) that shouldn't hold that up. The highlight fades in a
+    // beat after the text itself, same tradeoff subtitleIsPartial's
+    // progressive rendering already makes elsewhere on this page.
+
+    async function refreshVocabHighlight() {
+      if (!vocabHighlightOn() || subtitleCues.length === 0) return;
+      try {
+        const res = await fetch(`${API}/api/vocab-highlight`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cues: subtitleCues.map((c) => c.text) }),
+        });
+        const data = await res.json();
+        cueUnknownWords = data.result.map((words) => new Set(words));
+      } catch (e) {
+        return;  // best-effort -- cards just stay unhighlighted
+      }
+      applyVocabHighlight();
+    }
+
+    function applyVocabHighlight() {
+      subsScroll.querySelectorAll(".sub-card").forEach((card) => {
+        const unknown = cueUnknownWords[Number(card.dataset.index)];
+        card.querySelectorAll(".sub-word").forEach((span) => {
+          const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
+          span.classList.toggle("sub-word-unknown", !!(unknown && unknown.has(norm)));
+        });
+      });
     }
 
     let hideWordPopupTimer = null;

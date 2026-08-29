@@ -730,6 +730,11 @@ button:focus-visible {
 .sub-word { border-radius: 4px; padding: 0 1px; }
 .sub-word:hover { background: var(--accent-soft-strong); cursor: pointer; }
 
+/* "生词高亮" -- a dotted underline rather than a background fill, so it
+   doesn't fight the word-by-word spoken/unspoken dimming below or the hover
+   background above; both still read clearly with this stacked underneath. */
+.sub-word-unknown { text-decoration: underline dotted var(--accent); text-underline-offset: 3px; }
+
 /* Word-by-word highlight: the line fills in as it's spoken, so you can see
    at a glance how far along the reading is. The dimming sits on the
    container and only the lit words are brightened, rather than the reverse

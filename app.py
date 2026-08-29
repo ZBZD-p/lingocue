@@ -21,6 +21,7 @@ chat/vocab pages without a video open.
 
 import json
 import mimetypes
+import re
 import shutil
 import subprocess
 import sys
@@ -378,6 +379,70 @@ def _index_on_demand(db, video_id: str):
     )
     db.commit()
     return profile["total_tokens"], profile["band_dist"], profile["speech_rate"]
+
+
+# p_known below this is worth flagging -- matches knowledge.prior_p_known's
+# own "rank == V" midpoint, i.e. words at or past the edge of what the
+# vocab-size estimate says the user knows.
+VOCAB_HIGHLIGHT_THRESHOLD = 0.5
+
+# Strips leading/trailing punctuation the same way tutor-panel.js's
+# appendWordSpans does (token.replace(/^[^\w']+|[^\w']+$/g, "")) -- this
+# endpoint has to tokenize identically to the client, not just "close
+# enough", since the client matches spans back by exact (lowercased) word
+# string, not by position.
+_HIGHLIGHT_TRIM_RE = re.compile(r"^[^\w']+|[^\w']+$")
+
+
+class VocabHighlightRequest(BaseModel):
+    cues: list[str]  # raw cue text, same strings the subtitle cards render
+
+
+@app.post("/api/vocab-highlight")
+def vocab_highlight(body: VocabHighlightRequest):
+    """Which words in each cue are likely unknown to the user right now --
+    for the subtitle page's optional "生词高亮" setting. One batch call for
+    the whole video's cues (tutor-panel.js does this once when subtitles
+    load), not one per line: cheap either way (pure local lookups), but no
+    reason to make 200 requests when one covers it.
+    """
+    lex = _lex()
+    db = knowledge.open_db()
+    try:
+        known = knowledge.known_map(db)
+        v = knowledge.vocab_size(db)
+    finally:
+        db.close()
+
+    result = []
+    for cue_text in body.cues:
+        unknown = []
+        for i, raw in enumerate(cue_text.split()):
+            token = _HIGHLIGHT_TRIM_RE.sub("", raw)
+            # \w includes digits, so "12" or "1920s" survive the trim above
+            # -- confirmed for real that both were getting flagged "unknown"
+            # (no word_rank entry, so straight to the rarest-band fallback)
+            # as if they were obscure vocabulary. Requiring pure letters (+
+            # apostrophe) excludes any token with a digit mixed in, not just
+            # bare numbers.
+            if not token or not re.fullmatch(r"[A-Za-z']+", token):
+                continue
+            lower = token.lower()
+            if (token[:1].isupper() and i > 0 and lower not in indexer.NOT_PROPER
+                    and not lex.is_known(lower)):
+                continue  # likely a proper noun -- see indexer.py's proper-noun stripping
+            norm = indexer.NEGATIVE_CONTRACTIONS.get(lower) or indexer.dictionary.CLITIC_RE.sub("", lower)
+            if not norm:
+                continue
+            lemma = lex.lemma_of(norm)
+            p = known.get(lemma)
+            if p is None:
+                rank, _band = lex.rank_band(lemma)
+                p = knowledge.prior_p_known(rank, v)
+            if p < VOCAB_HIGHLIGHT_THRESHOLD:
+                unknown.append(lower)
+        result.append(unknown)
+    return {"result": result}
 
 
 @app.get("/api/difficulty/{video_id}")
