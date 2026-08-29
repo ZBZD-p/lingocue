@@ -145,11 +145,28 @@ def inflections(exchange: str) -> list[str]:
     return forms
 
 
-def build(keep_csv: bool) -> None:
-    if not CSV_PATH.exists():
-        download(CSV_URL, CSV_PATH)
+def build(keep_csv: bool, csv_path: Path | None = None) -> None:
+    source = csv_path or CSV_PATH
+    if source.exists():
+        print(f"已存在 {source}，跳过下载")
     else:
-        print(f"已存在 {CSV_PATH.name}，跳过下载")
+        try:
+            download(CSV_URL, source)
+        except OSError as e:
+            # A bare traceback here is useless: the machines that can't reach
+            # raw.githubusercontent.com are the ones least able to interpret
+            # one, and the fix (drop the file in yourself) isn't guessable
+            # from a socket error. Reported from a VM with no route to
+            # GitHub, where the timeout was the only thing on screen.
+            source.unlink(missing_ok=True)   # urlretrieve may leave a stub
+            print(f"\n下载失败：{e}")
+            print("\n连不上 GitHub 的话，可以自己把词表拿到这台机器上，两种办法：")
+            print(f"  1. 从别的机器下载 {CSV_URL}")
+            print(f"     然后放到这里，再重新跑一次：")
+            print(f"     {source}")
+            print(f"  2. 已经有文件了就直接指过去：")
+            print(f"     python build_dict.py --csv <ecdict.csv 的路径>")
+            raise SystemExit(1)
 
     if DB_PATH.exists():
         DB_PATH.unlink()
@@ -183,7 +200,7 @@ def build(keep_csv: bool) -> None:
     total = kept = form_count = ranked = 0
     entries, forms, ranks = [], [], []
 
-    with CSV_PATH.open(encoding="utf-8", newline="") as f:
+    with source.open(encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
             total += 1
 
@@ -235,12 +252,21 @@ def build(keep_csv: bool) -> None:
     print(f"读入 {total} 条，保留 {kept} 条，词形映射 {form_count} 条，词频排名 {ranked} 条")
     print(f"生成 {DB_PATH.name}：{size_mb:.1f} MB")
 
-    if not keep_csv:
-        os.remove(CSV_PATH)
-        print(f"已删除源文件 {CSV_PATH.name}")
+    # Only ever deletes a copy this script downloaded. A file the user
+    # supplied with --csv is theirs -- on a machine that had to fetch it by
+    # hand in the first place, silently removing it means doing that all
+    # over again on the next rebuild.
+    if not keep_csv and csv_path is None:
+        os.remove(source)
+        print(f"已删除源文件 {source.name}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep-csv", action="store_true", help="保留下载的 CSV 源文件")
-    build(parser.parse_args().keep_csv)
+    parser.add_argument("--csv", type=Path, metavar="路径",
+                        help="用本机已有的 ecdict.csv，不下载（连不上 GitHub 时用）")
+    args = parser.parse_args()
+    if args.csv and not args.csv.exists():
+        raise SystemExit(f"找不到 {args.csv}")
+    build(args.keep_csv, args.csv)

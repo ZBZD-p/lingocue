@@ -42,6 +42,7 @@ import webbrowser
 import winreg
 import zipfile
 from pathlib import Path
+from tkinter import filedialog
 from tkinter import font as tkfont
 
 def _project_root() -> Path:
@@ -748,8 +749,10 @@ class App:
              ("安装", self.install_core) if not e["core_ok"] else None),
             ("本地词典", f"data/dictionary.db（{e['dict_size_mb']}MB）" if e["dict_db"]
              else "还没生成", bool(e["dict_db"]), True,
-             "悬停查词、难度评分都要它" if not e["dict_db"] else "已生成",
-             ("生成", self.build_dict) if not e["dict_db"] else None),
+             "悬停查词、难度评分都要它。词表从 GitHub 下载，"
+             "连不上就用「选文件」指向已有的 ecdict.csv" if not e["dict_db"] else "已生成",
+             [("生成", self.build_dict), ("选文件", self.pick_dict_csv)]
+             if not e["dict_db"] else None),
             ("对话引擎", "Claude Code CLI" if e["claude"] else
              ("DeepSeek（已配 key）" if e["deepseek_key"] else "两个都没配"),
              bool(e["claude"] or e["deepseek_key"]), False,
@@ -781,9 +784,14 @@ class App:
                 label(head, "  可选", size=8, color=DIM, bg=SURFACE).pack(side=tk.LEFT)
             label(texts, detail, size=9, color=INK if ok else MUTED, bg=SURFACE).pack(anchor="w")
             label(texts, note, size=8, color=DIM, bg=SURFACE).pack(anchor="w")
-            if action:
-                b = Button(row, action[0], command=action[1], width=72)
-                b.pack(side=tk.RIGHT, padx=(px(10), 0))
+            # A row may offer more than one way out (the dictionary can be
+            # downloaded or built from a file you already have), so `action`
+            # is either one (label, command) pair or a list of them.
+            actions = [] if not action else (
+                [action] if isinstance(action[0], str) else list(action))
+            for label_text, command in reversed(actions):
+                b = Button(row, label_text, command=command, width=76)
+                b.pack(side=tk.RIGHT, padx=(px(8), 0))
                 b.set_enabled(not self.busy)
         tk.Frame(self.env_box, bg=SURFACE, height=px(14)).pack()
 
@@ -945,6 +953,26 @@ class App:
             return
         self._run_task("生成本地词典（要下 63MB 的 ECDICT 词表）",
                        [[py, "build_dict.py"]])
+
+    def pick_dict_csv(self):
+        """Build the dictionary from a CSV the user already has.
+
+        The download goes straight to raw.githubusercontent.com, which is
+        simply unreachable from some networks -- reported from a VM where it
+        timed out at the TCP level while pip (pointed at a domestic mirror)
+        worked fine. Nothing in the launcher can fix that route, but it can
+        stop the file being impossible to supply by hand.
+        """
+        path = filedialog.askopenfilename(
+            title="选择 ecdict.csv",
+            filetypes=[("ECDICT 词表", "ecdict.csv"), ("CSV", "*.csv"), ("所有文件", "*.*")])
+        if not path:
+            return
+        py = find_python()
+        if not py:
+            return
+        self._run_task(f"从本地词表生成词典（{Path(path).name}）",
+                       [[py, "build_dict.py", "--csv", path]])
 
     def install_required(self):
         py = find_python()
