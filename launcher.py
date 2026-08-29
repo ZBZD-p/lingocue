@@ -32,6 +32,7 @@ import os
 import queue
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -186,7 +187,26 @@ def find_python() -> str | None:
         return str(bundled)
     if not getattr(sys, "frozen", False):
         return sys.executable
-    return shutil.which("python") or shutil.which("py")
+    for name in ("python", "py"):
+        hit = shutil.which(name)
+        if hit and not _is_store_stub(hit):
+            return hit
+    return None
+
+
+def _is_store_stub(path: str) -> bool:
+    """Whether this is Microsoft's app-execution-alias placeholder rather
+    than a real interpreter.
+
+    Windows ships C:\\...\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe
+    on every installation, including ones with no Python at all. It is a
+    zero-byte reparse point whose only behaviour is to print "Python was not
+    found but can be installed from the Microsoft Store" and exit 9009.
+    shutil.which() finds it and reports success, so without this check the
+    launcher hands that path to pip and the user watches a 9009 scroll past
+    -- seen exactly that way on a clean VM.
+    """
+    return "\\windowsapps\\" in path.lower()
 
 
 def read_config() -> dict:
@@ -272,6 +292,33 @@ def probe() -> dict:
     }
 
 
+def ssl_context() -> ssl.SSLContext:
+    """A TLS context that works on a machine that has never been online.
+
+    Python's ssl module trusts whatever is currently in the Windows root
+    store and nothing else. Windows fills that store lazily over time
+    through automatic root updates, and unlike browsers, Python does not
+    chase down a missing issuer via AIA. So on a freshly installed Windows
+    -- which is precisely who this launcher is for -- the store is nearly
+    empty and every HTTPS download dies with "unable to get local issuer
+    certificate". Confirmed exactly that way on a clean VM, while the same
+    binary worked on a machine whose store had accumulated 84 roots.
+
+    certifi ships Mozilla's root bundle as a file, so carrying it removes
+    the dependency on the machine's own store entirely. It is bundled into
+    the frozen build (see build_launcher.py). Falling back to the default
+    context if it somehow isn't there is better than failing outright --
+    but verification is never disabled: this downloads an interpreter that
+    then executes, and an unverified download of that is not worth any
+    amount of convenience.
+    """
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def download_to(url: str, dest: Path, label: str, log) -> None:
     """Fetch a file, reporting progress through `log` about every 5%.
 
@@ -280,7 +327,7 @@ def download_to(url: str, dest: Path, label: str, log) -> None:
     fresh install is indistinguishable from one that has hung.
     """
     log(f"下载 {label}...")
-    with urllib.request.urlopen(url) as r, open(dest, "wb") as f:
+    with urllib.request.urlopen(url, context=ssl_context()) as r, open(dest, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
         got, step = 0, max(int(total * 0.05), 1)
         nxt = step

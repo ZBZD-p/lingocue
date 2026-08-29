@@ -49,6 +49,13 @@ def main() -> int:
         print("没装 pyinstaller。先跑：pip install pyinstaller")
         return 1
 
+    try:
+        import certifi  # noqa: F401
+    except ImportError:
+        print("没装 certifi。先跑：pip install certifi")
+        print("（启动器靠它自带一份根证书；见 launcher.ssl_context 的说明）")
+        return 1
+
     argv = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
@@ -58,6 +65,13 @@ def main() -> int:
         "--distpath", str(DIST),
         "--workpath", str(BUILD),
         "--specpath", str(BUILD),
+        # Explicit, not left to the dependency scanner: launcher.ssl_context
+        # imports certifi inside a try/except, and every HTTPS download the
+        # launcher makes on a fresh Windows depends on the bundle coming
+        # along. A silent miss here only shows up on a machine whose own
+        # certificate store is empty -- i.e. never on the build machine.
+        "--hidden-import", "certifi",
+        "--collect-data", "certifi",
     ]
     for mod in EXCLUDES:
         argv += ["--exclude-module", mod]
