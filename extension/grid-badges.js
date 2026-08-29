@@ -43,7 +43,7 @@
     return null;
   }
 
-  var LABEL_CLASS = { "轻松": "lc-ok", "刚好": "lc-ok", "有挑战": "lc-mid", "偏难": "lc-bad" };
+  var LABEL_CLASS = { "轻松": "lc-ok", "刚好": "lc-ok", "有挑战": "lc-mid", "偏难": "lc-bad", "超难": "lc-bad" };
 
   function paintBadge(card, anchorEl, data) {
     if (data.status !== "ok") return;  // nothing worth showing -- leave the card alone

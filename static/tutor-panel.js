@@ -3013,7 +3013,7 @@
     // Same three colors/thresholds as extension/grid-badges.js's card
     // badges (see .lc-ok/.lc-mid/.lc-bad in panel.css) -- one system, two
     // surfaces.
-    const DIFFICULTY_LABEL_CLASS = { "轻松": "lc-ok", "刚好": "lc-ok", "有挑战": "lc-mid", "偏难": "lc-bad" };
+    const DIFFICULTY_LABEL_CLASS = { "轻松": "lc-ok", "刚好": "lc-ok", "有挑战": "lc-mid", "偏难": "lc-bad", "超难": "lc-bad" };
 
     /** New-words-per-minute badge for the video currently open -- YouTube
      *  only, same as the jump-to-moment feature: Jellyfin's local files have

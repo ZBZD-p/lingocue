@@ -445,6 +445,8 @@ def vocab_highlight(body: VocabHighlightRequest):
             if (token[:1].isupper() and i > 0 and lower not in indexer.NOT_PROPER
                     and not lex.is_known(lower)):
                 continue  # likely a proper noun -- see indexer.py's proper-noun stripping
+            if lower in indexer.FILLER_WORDS:
+                continue  # "um"/"uh" -- see indexer.FILLER_WORDS
             norm = indexer.NEGATIVE_CONTRACTIONS.get(lower) or indexer.dictionary.CLITIC_RE.sub("", lower)
             if not norm:
                 continue

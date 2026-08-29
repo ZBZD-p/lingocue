@@ -45,11 +45,11 @@ def unknown_per_min(band_dist: list[float], speech_rate: float, vocab_size: int)
 
 
 # (upper bound exclusive, label) -- first bucket the density falls under.
-_LABELS = [(4.0, "轻松"), (10.0, "刚好"), (18.0, "有挑战")]
+_LABELS = [(4.0, "轻松"), (10.0, "刚好"), (18.0, "有挑战"), (25.0, "偏难")]
 
 
 def label_for(density_per_min: float) -> str:
     for cutoff, name in _LABELS:
         if density_per_min < cutoff:
             return name
-    return "偏难"
+    return "超难"

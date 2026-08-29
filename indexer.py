@@ -40,6 +40,14 @@ WORD_RE = re.compile(r"[A-Za-z']+")
 # extremely common word that's always a single capital letter.
 NOT_PROPER = {"i"}
 
+# Verbal disfluency, not vocabulary -- confirmed for real these carry real
+# but misleadingly rare-looking word_rank entries (ECDICT has them, but a
+# transcribed "um" is nowhere near as common in written corpora as it is in
+# actual speech), so a viewer got told "um"/"uh" were words worth learning.
+# Excluded outright rather than scored: there's no meaning to look up, so
+# "likely unknown" isn't a meaningful question to ask about them at all.
+FILLER_WORDS = {"um", "umm", "uh", "uhh", "uhm", "erm", "hmm"}
+
 # "n't" contractions absorb an extra "n" that dictionary.CLITIC_RE's plain
 # suffix strip doesn't account for -- stripping just "'t" turns "don't" into
 # "don" (not a word) rather than "do". Irregular enough (the "n" belongs to
@@ -157,6 +165,8 @@ def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | N
     for lower, is_cap, is_initial in tokens:
         if is_cap and not is_initial and lower not in NOT_PROPER and not lex.is_known(lower):
             proper_count += 1
+            continue
+        if lower in FILLER_WORDS:
             continue
         lemma = lex.lemma_of(lower)
         _rank, band = lex.rank_band(lemma)
