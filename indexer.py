@@ -151,6 +151,31 @@ class LemmaRanks:
         return word_lower in self.known_words or word_lower in self.forms
 
 
+def _spoken_seconds(cues: list[tuple[int, int, str]]) -> float:
+    """Total time actually covered by a cue, merging overlaps so a doubled
+    or multi-speaker cue isn't counted twice.
+
+    Deliberately not "last cue's end minus first cue's start": that span
+    includes every gap between cues too, so a long dialogue-free stretch (an
+    action sequence, a scenic long take) in the middle of an otherwise
+    fast-talking video drags the whole video's average speech rate down --
+    diluted by minutes nobody was saying anything, even though the dialogue
+    that *is* there is exactly as dense/fast as it sounds. Summing only the
+    time cues actually span answers "how fast do people talk when they're
+    talking", independent of how much of the runtime is silence.
+    """
+    intervals = sorted((c[0], c[1]) for c in cues if c[1] > c[0])
+    if not intervals:
+        return 0.0
+    merged = [list(intervals[0])]
+    for start, end in intervals[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return sum(end - start for start, end in merged) / 1000
+
+
 def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | None:
     text = " ".join(c[2] for c in cues)
     tokens = _tokenize(text)
@@ -178,9 +203,7 @@ def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | N
     if counted == 0:
         return None
 
-    start_ms = min(c[0] for c in cues)
-    end_ms = max(c[1] for c in cues)
-    duration_sec = max(1.0, (end_ms - start_ms) / 1000)
+    duration_sec = max(1.0, _spoken_seconds(cues))
 
     return {
         "total_tokens": counted,
