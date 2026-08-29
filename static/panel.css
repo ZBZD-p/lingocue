@@ -290,6 +290,20 @@ button:focus-visible {
 }
 .new-chat-btn:hover { background: var(--surface-2); }
 
+/* Current video's estimated new-words-per-minute (see /api/difficulty).
+   Text carries the meaning (轻松/刚好/有挑战/偏难), so one neutral pill
+   style is enough -- no separate traffic-light palette to introduce. */
+.difficulty-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  cursor: default;
+}
+
 /* ---- settings page ----
    One generic row shape, rendered from the SETTINGS declaration in
    tutor-panel.js, so a new setting needs no new CSS. */

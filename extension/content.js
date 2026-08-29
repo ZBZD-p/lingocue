@@ -71,6 +71,24 @@
     return t || "YouTube video";
   }
 
+  // The authoritative title for `videoId`, or null if the player hasn't
+  // caught up to it yet -- same source and same videoId guard as
+  // pagePort.captionTracks below. Confirmed for real to settle correctly
+  // well before document.title does: after a related-video click,
+  // document.title sat on the *previous* video's title for 13+ seconds
+  // (not a brief flicker -- long enough that the old single-recheck-at-1.5s
+  // correction below had already given up), while this was already correct
+  // within a couple of seconds. Used to confirm/correct titleFromPage()'s
+  // guess rather than replace it outright, since the player response isn't
+  // available yet at the very first read right after navigating.
+  function playerTitleFor(videoId) {
+    var player = document.querySelector("#movie_player");
+    var pr = player && typeof player.getPlayerResponse === "function"
+      ? player.getPlayerResponse() : null;
+    if (!pr || !pr.videoDetails || pr.videoDetails.videoId !== videoId) return null;
+    return pr.videoDetails.title || null;
+  }
+
   // The tab title trails the SPA navigation by a beat, so the very first
   // read can be wrong in two different ways -- both confirmed for real, not
   // just theoretical: (a) the generic "(12) YouTube" placeholder, if
@@ -401,6 +419,30 @@
   if (!id || session.isClaimed(id)) return;
   session.claim(id);
 
+  // The title read just now looked plausible but could still be the
+  // previous video's leftover (case (b) above) -- a plain retry loop can't
+  // tell the difference by looking at the string alone. So instead of
+  // trusting it, this polls playerTitleFor(videoId) -- guarded by videoId,
+  // so it can't hand back a wrong video's title the way document.title's
+  // silent staleness can -- and re-registers under the corrected title the
+  // moment it disagrees. Stops as soon as it either confirms the title used
+  // was right or the player itself confirms it (even if unchanged), rather
+  // than a single check-once-and-give-up: confirmed for real that
+  // document.title can still be wrong 13+ seconds after navigating, far
+  // past what one recheck covers. enterVideo again (not a bare
+  // registerVideo) so a correction gets its own fresh token, superseding
+  // the first registration the same way a real re-navigation would.
+  function confirmTitle(token, videoId, usedTitle, attemptsLeft) {
+    if (!token.isCurrent()) return; // already on to another video
+    var authoritative = playerTitleFor(videoId);
+    if (authoritative) {
+      if (authoritative !== usedTitle) orchestrator.enterVideo(videoId, authoritative);
+      return; // confirmed either way -- nothing left to poll for
+    }
+    if (attemptsLeft <= 0) return; // player never caught up in time; best effort ends here
+    setTimeout(function () { confirmTitle(token, videoId, usedTitle, attemptsLeft - 1); }, 500);
+  }
+
   function registerWhenReady(attemptsLeft) {
     var title = titleFromPage();
     if (isPlaceholderTitle(title) && attemptsLeft > 0) {
@@ -408,22 +450,7 @@
       return;
     }
     var token = orchestrator.enterVideo(id, title);
-    // The title read just now looked plausible but could still be the
-    // previous video's leftover (case (b) above). A plain retry loop can't
-    // tell the difference by looking at the string alone, so instead this
-    // re-reads the title a beat later and, if it actually changed (and
-    // isn't itself a placeholder), registers again under the corrected one
-    // -- self-correcting rather than trying to guess up front whether the
-    // first read was trustworthy. enterVideo again (not a bare
-    // registerVideo) so the corrected registration gets its own fresh
-    // token, superseding the first the same way a real re-navigation would.
-    setTimeout(function () {
-      if (!token.isCurrent()) return; // already on to another video
-      var laterTitle = titleFromPage();
-      if (laterTitle !== title && !isPlaceholderTitle(laterTitle)) {
-        orchestrator.enterVideo(id, laterTitle);
-      }
-    }, 1500);
+    confirmTitle(token, id, title, 16); // ~8s of polling at 500ms apart
   }
   registerWhenReady(5); // ~1.5s of retries at 300ms apart if it starts out blank
 })();

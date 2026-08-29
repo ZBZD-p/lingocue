@@ -298,6 +298,7 @@
           <button class="tab-btn" data-page="quiz" title="抽查">${icon("repeat")}<span class="tab-label">抽查</span><span class="tab-dot"></span></button>
           <button class="tab-btn" data-page="settings" title="设置">${icon("settings")}<span class="tab-label">设置</span><span class="tab-dot"></span></button>
         </div>
+        <div class="difficulty-badge" id="difficultyBadge" hidden></div>
         <button id="newChatBtn" class="new-chat-btn" title="开始新对话" aria-label="开始新对话">${icon("plus")}</button>
       </div>
       <div class="body">
@@ -495,6 +496,7 @@
     const phraseEmpty = $("phraseEmpty");
     const wordPopup = $("wordPopup");
     const wordPopupDef = $("wordPopupDef");
+    const difficultyBadge = $("difficultyBadge");
     const tabBtns = root.querySelectorAll(".tab-btn");
     const pages = {
       chat: $("chatPage"),
@@ -508,6 +510,7 @@
     let sessionId = null;
     let currentPage = "chat";
     let lastKnownVideoTitle = null;
+    let lastDifficultyVideoId = null;
 
     const toggleBtn = root.querySelector(".toggle");
 
@@ -2750,6 +2753,13 @@
     setInterval(reportPlaybackState, 2000);
 
     async function refreshContext() {
+      // Independent of whether /api/context below has anything to say: the
+      // badge only needs the video id straight out of the URL, not the
+      // playback-state pipeline's own "is anything reporting in yet" state
+      // -- gating it on that meant a video switch where reportPlaybackState
+      // hadn't caught up yet (still very possible right after a switch)
+      // silently skipped the badge for that whole poll tick too.
+      updateDifficultyBadge();
       try {
         const data = await (await fetch(`${API}/api/context?tab_id=${TAB_ID}`)).json();
         if (!data.available) {
@@ -2766,6 +2776,52 @@
           `▶ ${p.title} — ${fmt(p.position_ms)}/${fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
       } catch (e) {
         contextBar.textContent = "读取播放状态失败（后端 app.py 没启动？）";
+      }
+    }
+
+    let difficultyFetchInFlight = false;
+
+    /** New-words-per-minute badge for the video currently open -- YouTube
+     *  only, same as the jump-to-moment feature: Jellyfin's local files have
+     *  no video_id the backend's difficulty index is keyed on.
+     *
+     *  A freshly-opened video's subtitles usually aren't cached yet (the
+     *  backend's fetch takes ~12s), so the very first check after switching
+     *  routinely comes back "unindexed" -- confirmed for real. That must not
+     *  be treated as a final answer: this only stops retrying once a check
+     *  actually succeeds (hidden becomes false) or the video changes again,
+     *  polling again on every 4s context tick in between rather than giving
+     *  up on the first miss. */
+    async function updateDifficultyBadge() {
+      const p = player();
+      const videoId = p && p.kind === "youtube" ? youtubeVideoId(location.href) : null;
+      if (!videoId) {
+        difficultyBadge.hidden = true;
+        lastDifficultyVideoId = null;
+        return;
+      }
+      if (videoId !== lastDifficultyVideoId) {
+        lastDifficultyVideoId = videoId;
+        difficultyBadge.hidden = true;  // nothing confirmed for this video yet
+      } else if (!difficultyBadge.hidden) {
+        return;  // already showing a confirmed result for this exact video
+      }
+      if (difficultyFetchInFlight) return;
+      difficultyFetchInFlight = true;
+      try {
+        const res = await fetch(`${API}/api/difficulty/${encodeURIComponent(videoId)}`);
+        const data = await res.json();
+        // Stale (moved on before this resolved) or not ready yet (subtitles
+        // still fetching) -- either way, leave hidden and let the next 4s
+        // tick try again rather than treating this as a final no.
+        if (videoId !== lastDifficultyVideoId || data.status !== "ok") return;
+        difficultyBadge.hidden = false;
+        difficultyBadge.textContent = `${data.label} · ${data.density_per_min}/分钟`;
+        difficultyBadge.title = `按你当前词汇量估计（约 ${data.vocab_size} 词），这条视频每分钟大约有多少生词`;
+      } catch (e) {
+        // Network hiccup -- next tick retries.
+      } finally {
+        difficultyFetchInFlight = false;
       }
     }
 

@@ -30,6 +30,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import difficulty_bands
+
 ROOT = Path(__file__).resolve().parent
 CSV_PATH = ROOT / "ecdict.csv"
 DB_PATH = ROOT / "dictionary.db"
@@ -97,6 +99,14 @@ def parse_rank(value: str) -> int:
         return 0
 
 
+def unified_rank(frq: int, bnc: int) -> int:
+    """Lower (= more common) of the two corpus ranks. 0 means absent from
+    both -- filtered out before min() so an unranked corpus can't masquerade
+    as "extremely common" against a real rank from the other one."""
+    cands = [r for r in (frq, bnc) if r > 0]
+    return min(cands) if cands else 0
+
+
 def is_common(row: dict) -> bool:
     if (row.get("word") or "").strip().lower() in ALWAYS_INCLUDE:
         return True
@@ -158,14 +168,29 @@ def build(keep_csv: bool) -> None:
             form  TEXT PRIMARY KEY,
             lemma TEXT NOT NULL
         );
+        -- Word-frequency rank for the difficulty engine (indexer.py), kept
+        -- independently of `entries`: a word can be too obscure for a hover
+        -- tooltip (is_common() drops it) but still worth ranking as "very
+        -- rare" when scoring how hard a video is.
+        CREATE TABLE word_rank (
+            lemma TEXT PRIMARY KEY,
+            rank  INTEGER NOT NULL,
+            band  INTEGER NOT NULL
+        );
     """)
 
-    total = kept = form_count = 0
-    entries, forms = [], []
+    total = kept = form_count = ranked = 0
+    entries, forms, ranks = [], [], []
 
     with CSV_PATH.open(encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
             total += 1
+
+            word_lower = (row.get("word") or "").strip().lower()
+            rank = unified_rank(parse_rank(row.get("frq")), parse_rank(row.get("bnc")))
+            if word_lower and rank > 0:
+                ranks.append((word_lower, rank, difficulty_bands.band_of(rank)))
+
             if not is_common(row):
                 continue
             word = (row.get("word") or "").strip()
@@ -190,15 +215,22 @@ def build(keep_csv: bool) -> None:
                 form_count += len(forms)
                 entries, forms = [], []
 
+            if len(ranks) >= 20_000:
+                db.executemany("INSERT OR REPLACE INTO word_rank VALUES (?,?,?)", ranks)
+                ranked += len(ranks)
+                ranks = []
+
     db.executemany("INSERT OR REPLACE INTO entries VALUES (?,?,?,?)", entries)
     db.executemany("INSERT OR IGNORE INTO forms VALUES (?,?)", forms)
     form_count += len(forms)
+    db.executemany("INSERT OR REPLACE INTO word_rank VALUES (?,?,?)", ranks)
+    ranked += len(ranks)
     db.commit()
     db.execute("VACUUM")
     db.close()
 
     size_mb = DB_PATH.stat().st_size / 1048576
-    print(f"读入 {total} 条，保留 {kept} 条，词形映射 {form_count} 条")
+    print(f"读入 {total} 条，保留 {kept} 条，词形映射 {form_count} 条，词频排名 {ranked} 条")
     print(f"生成 {DB_PATH.name}：{size_mb:.1f} MB")
 
     if not keep_csv:

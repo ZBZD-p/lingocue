@@ -22,6 +22,9 @@ playback_state.json
 dictionary.db
 ecdict.csv
 
+# 由 indexer.py 扫本机 YouTube 字幕缓存生成，换台机器缓存不同，结果也不同。
+difficulty.db
+
 # YouTube 字幕缓存的默认位置（config.json 可以改到别处）。
 youtube/
 

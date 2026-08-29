@@ -79,8 +79,11 @@ DEEPSEEK_CONFIG_FILE = ROOT / "deepseek_config.json"
 sys.path.insert(0, str(ROOT))
 import deepseek_chat  # noqa: E402
 import dictionary  # noqa: E402
+import indexer  # noqa: E402
 import jellyfin  # noqa: E402
+import knowledge  # noqa: E402
 import playback  # noqa: E402
+import scoring  # noqa: E402
 import subs_now  # noqa: E402
 import youtube  # noqa: E402
 
@@ -300,6 +303,98 @@ def youtube_subtitles_upload(body: YouTubeCaptionUpload):
     """
     ok, detail = youtube.save_uploaded_subtitles(body.id, body.title, body.kind, body.json3)
     return {"ok": ok, "detail": detail}
+
+
+_lemma_ranks = None
+
+
+def _lex() -> indexer.LemmaRanks:
+    # Loaded once per process, not per request: it's the whole 57k-row
+    # word_rank table plus forms/entries held in memory (see indexer.py),
+    # and nothing in it changes without a `python build_dict.py` re-run,
+    # which only happens with the process stopped.
+    global _lemma_ranks
+    if _lemma_ranks is None:
+        _lemma_ranks = indexer.LemmaRanks(indexer.DICT_DB)
+    return _lemma_ranks
+
+
+def _find_cache_base(video_id: str) -> Path | None:
+    """Locate this video's cache files by video_id alone -- safe_base_name
+    always ends a marker's filename with "[<video_id>].tutor.json", so a
+    plain string-suffix check finds it without reconstructing the filename
+    from a title. The frontend's only candidate title (playback.py's
+    "title", which is actually a *filename* -- see get_playback_status)
+    doesn't round-trip through safe_base_name, so rebuilding the path from
+    it silently missed every real cache hit."""
+    suffix = f"[{video_id}].tutor.json"
+    for marker in youtube.CACHE_DIR.glob("*.tutor.json"):
+        if marker.name.endswith(suffix):
+            return marker.with_name(marker.name[: -len(".tutor.json")])
+    return None
+
+
+def _index_on_demand(db, video_id: str):
+    """A video the offline `python indexer.py` backfill hasn't seen yet --
+    e.g. anything watched since the last run -- gets profiled right here
+    instead of waiting for a cron-style re-run. Pure local file + CPU work,
+    same zero-network-request guarantee as the batch indexer."""
+    base = _find_cache_base(video_id)
+    if base is None:
+        return None
+    srt = base.with_name(f"{base.name}.en.srt")
+    if not srt.exists():
+        return None
+    marker = base.with_name(f"{base.name}.tutor.json")
+    try:
+        title = json.loads(marker.read_text(encoding="utf-8")).get("title", "")
+    except (json.JSONDecodeError, OSError):
+        title = ""
+    cues = subs_now.parse_srt_cues(srt)
+    profile = indexer.profile_video(cues, _lex())
+    if profile is None:
+        return None
+    db.execute(
+        """INSERT OR REPLACE INTO video_profile
+           (video_id, title, duration_sec, total_tokens, band_dist, rare_words,
+            speech_rate, proper_ratio, indexed_at, source)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (video_id, title, profile["duration_sec"], profile["total_tokens"],
+         json.dumps(profile["band_dist"]), json.dumps(profile["rare_words"]),
+         profile["speech_rate"], profile["proper_ratio"], int(time.time()), "live"),
+    )
+    db.commit()
+    return profile["total_tokens"], profile["band_dist"], profile["speech_rate"]
+
+
+@app.get("/api/difficulty/{video_id}")
+def get_difficulty(video_id: str):
+    """New-words-per-minute for a YouTube video, given what we already know
+    (or can cheaply learn) about it and the user's vocabulary."""
+    db = knowledge.open_db()
+    try:
+        row = db.execute(
+            "SELECT total_tokens, band_dist, speech_rate FROM video_profile WHERE video_id = ?",
+            (video_id,),
+        ).fetchone()
+        if row is None:
+            live = _index_on_demand(db, video_id)
+            row = live and (live[0], json.dumps(live[1]), live[2])
+        if row is None:
+            return {"status": "unindexed"}
+        _total_tokens, band_dist_json, speech_rate = row
+        band_dist = json.loads(band_dist_json)
+        v = knowledge.vocab_size(db)
+    finally:
+        db.close()
+
+    density = scoring.unknown_per_min(band_dist, speech_rate, v)
+    return {
+        "status": "ok",
+        "density_per_min": round(density, 1),
+        "label": scoring.label_for(density),
+        "vocab_size": v,
+    }
 
 
 @app.get("/api/vocab")
