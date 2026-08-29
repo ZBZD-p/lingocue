@@ -14,5 +14,12 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["grid-badges.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "options_page": "options.html"
 }

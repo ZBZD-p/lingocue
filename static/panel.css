@@ -291,8 +291,10 @@ button:focus-visible {
 .new-chat-btn:hover { background: var(--surface-2); }
 
 /* Current video's estimated new-words-per-minute (see /api/difficulty).
-   Text carries the meaning (轻松/刚好/有挑战/偏难), so one neutral pill
-   style is enough -- no separate traffic-light palette to introduce. */
+   Colored by label (轻松/刚好 green, 有挑战 amber, 偏难 red) -- same three
+   colors and thresholds as extension/grid-badges.js's card badges, so the
+   two badge surfaces read as one consistent system rather than two
+   different ideas of what "difficult" looks like. */
 .difficulty-badge {
   flex-shrink: 0;
   font-size: 11px;
@@ -303,6 +305,9 @@ button:focus-visible {
   white-space: nowrap;
   cursor: default;
 }
+.difficulty-badge.lc-ok { color: #2e8b52; background: rgba(70, 170, 110, .18); }
+.difficulty-badge.lc-mid { color: #a5741f; background: rgba(210, 150, 50, .18); }
+.difficulty-badge.lc-bad { color: #b23e30; background: rgba(210, 80, 70, .18); }
 
 /* ---- settings page ----
    One generic row shape, rendered from the SETTINGS declaration in
@@ -993,6 +998,40 @@ button:focus-visible {
 .quiz-progress { font-size: 12px; color: var(--muted-3); letter-spacing: 0.02em; }
 .quiz-exit-btn { width: 30px; height: 30px; padding: 0; color: var(--muted-3); }
 .quiz-exit-btn:hover { color: var(--ink); background: var(--surface-2); }
+
+/* Vocabulary-size test entry point -- sits above everything else on this
+   tab's idle state, since it's unrelated to the review-quiz pool below it. */
+.vocab-test-promo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.vocab-test-promo-title { font-size: 13px; color: var(--ink); font-weight: 500; }
+.vocab-test-promo-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.vocab-test-start-btn {
+  flex-shrink: 0;
+  padding: 0 16px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  font-size: 12.5px;
+}
+.vocab-test-start-btn:hover { background: var(--surface); border-color: var(--muted); }
+
+.vocab-test-result { text-align: center; }
+.vocab-test-result-size { font-size: 28px; font-weight: 600; color: var(--accent); margin: 4px 0; }
+.vocab-test-result-label { font-size: 15px; color: var(--ink); }
+.vocab-test-retake-warning {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--danger-line);
+  max-width: 260px;
+}
 
 /* Sits above .quiz-start (a sibling, not part of it) so it stays visible
    the whole time this tab is idle -- toggling it re-renders .quiz-start's

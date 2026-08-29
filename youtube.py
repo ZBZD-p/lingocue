@@ -1241,7 +1241,30 @@ def save_uploaded_subtitles(video_id: str, title: str, kind: str, json3_text: st
     return True, "已保存"
 
 
-def _register(video_id: str, title: str, duration: float, url: str) -> dict:
+def _merge_marker(base: Path, updates: dict) -> None:
+    """Adds fields to an existing .tutor.json marker without disturbing
+    what's already there -- used to backfill channel_id onto a video that
+    was registered before this field existed, or whose very first
+    registration raced the page and came up empty (see content.js's
+    channelIdFor). Only ever adds/fixes truthy values; never overwrites a
+    known value with an empty one."""
+    marker = base.with_name(f"{base.name}.tutor.json")
+    if not marker.exists():
+        return
+    try:
+        meta = json.loads(marker.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    changed = False
+    for k, v in updates.items():
+        if v and meta.get(k) != v:
+            meta[k] = v
+            changed = True
+    if changed:
+        marker.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+
+def _register(video_id: str, title: str, duration: float, url: str, channel_id: str = "") -> dict:
     """Registers a video and starts fetching its subtitles in the
     background, given an id/title the caller already knows (e.g. read
     straight off a youtube.com page) -- no yt-dlp probe round trip needed.
@@ -1270,6 +1293,7 @@ def _register(video_id: str, title: str, duration: float, url: str) -> dict:
             "id": video_id,
             "title": title,
             "duration": duration,
+            "channel_id": channel_id,
         }, ensure_ascii=False),
         encoding="utf-8")
 
@@ -1285,7 +1309,7 @@ def _register(video_id: str, title: str, duration: float, url: str) -> dict:
     }
 
 
-def ensure_current(video_id: str, title: str, url: str) -> dict:
+def ensure_current(video_id: str, title: str, url: str, channel_id: str = "") -> dict:
     """Like _register(), but a no-op (beyond returning the existing path) if
     this video's subtitles are already cached.
 
@@ -1307,11 +1331,13 @@ def ensure_current(video_id: str, title: str, url: str) -> dict:
     """
     base = CACHE_DIR / safe_base_name(title, video_id)
     if _english_subtitle(base):
+        _merge_marker(base, {"channel_id": channel_id})
         return {"id": video_id, "path": str(base.with_name(f"{base.name}.strm"))}
     placeholder = base.with_name(f"{base.name}.strm")
     if placeholder.exists() and _recently_failed(base):
+        _merge_marker(base, {"channel_id": channel_id})
         return {"id": video_id, "path": str(placeholder)}
-    return _register(video_id, title, 0, url)
+    return _register(video_id, title, 0, url, channel_id)
 
 
 def is_cached_path(path: Path) -> bool:

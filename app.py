@@ -85,6 +85,7 @@ import knowledge  # noqa: E402
 import playback  # noqa: E402
 import scoring  # noqa: E402
 import subs_now  # noqa: E402
+import vocab_test  # noqa: E402
 import youtube  # noqa: E402
 
 # On Windows `claude` resolves to claude.cmd; subprocess.run() with a plain
@@ -255,6 +256,14 @@ class YouTubeWatch(BaseModel):
     url: str
     # See PlaybackState.tab_id above.
     tab_id: str
+    # Actually the channel's @handle (e.g. "@mondaydotcom"), not YouTube's
+    # internal UC... channel id -- see content.js's channelIdFor for why: a
+    # video grid card only ever exposes the handle, never the UC... id, and
+    # this needs to be the same kind of string on both ends to work as
+    # channel_profile's join key. Often empty on a video's very first
+    # registration (page hasn't caught up yet) and filled in on a later call
+    # for the same video; see youtube.py's _merge_marker.
+    channel_id: str = ""
 
 
 class YouTubeCaptionUpload(BaseModel):
@@ -288,7 +297,7 @@ def youtube_watch(body: YouTubeWatch):
     was seen before) and makes it the current one, in a single call.
     """
     try:
-        info = youtube.ensure_current(body.id, body.title, body.url)
+        info = youtube.ensure_current(body.id, body.title, body.url, body.channel_id)
     except Exception as e:
         raise HTTPException(400, str(e))
     path = Path(info["path"])
@@ -350,6 +359,10 @@ def _index_on_demand(db, video_id: str):
         title = json.loads(marker.read_text(encoding="utf-8")).get("title", "")
     except (json.JSONDecodeError, OSError):
         title = ""
+    try:
+        channel_id = json.loads(marker.read_text(encoding="utf-8")).get("channel_id", "")
+    except (json.JSONDecodeError, OSError):
+        channel_id = ""
     cues = subs_now.parse_srt_cues(srt)
     profile = indexer.profile_video(cues, _lex())
     if profile is None:
@@ -357,11 +370,11 @@ def _index_on_demand(db, video_id: str):
     db.execute(
         """INSERT OR REPLACE INTO video_profile
            (video_id, title, duration_sec, total_tokens, band_dist, rare_words,
-            speech_rate, proper_ratio, indexed_at, source)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            speech_rate, proper_ratio, indexed_at, source, channel_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (video_id, title, profile["duration_sec"], profile["total_tokens"],
          json.dumps(profile["band_dist"]), json.dumps(profile["rare_words"]),
-         profile["speech_rate"], profile["proper_ratio"], int(time.time()), "live"),
+         profile["speech_rate"], profile["proper_ratio"], int(time.time()), "live", channel_id),
     )
     db.commit()
     return profile["total_tokens"], profile["band_dist"], profile["speech_rate"]
@@ -394,6 +407,144 @@ def get_difficulty(video_id: str):
         "density_per_min": round(density, 1),
         "label": scoring.label_for(density),
         "vocab_size": v,
+    }
+
+
+# A channel estimate this thin isn't worth showing -- matches the design's
+# own "n_videos < 3 isn't reliable enough to badge with" call (see
+# indexer.py's channel_profile docstring).
+MIN_CHANNEL_VIDEOS_FOR_ESTIMATE = 3
+
+
+class DifficultyBatchItem(BaseModel):
+    id: str
+    # The channel's @handle, pulled from the grid card's own channel link --
+    # see YouTubeWatch.channel_id for why it's a handle, not a channel id.
+    # Purely a fallback key for videos with no video_profile row of their own
+    # yet (nothing ever registered/watched them). Optional, best-effort.
+    channel_id: str = ""
+
+
+class DifficultyBatchRequest(BaseModel):
+    items: list[DifficultyBatchItem]
+
+
+@app.post("/api/difficulty/batch")
+def get_difficulty_batch(body: DifficultyBatchRequest):
+    """Difficulty for many videos at once -- the grid-page badge injection's
+    only path, since it has no per-video indexing trigger the way the single
+    open video does (nothing was ever registered for a video nobody clicked
+    on, so there's no cache to index on demand). Everything here is a local
+    SQLite read; never touches YouTube."""
+    ids = [item.id for item in body.items]
+    channel_by_id = {item.id: item.channel_id for item in body.items if item.channel_id}
+
+    db = knowledge.open_db()
+    try:
+        v = knowledge.vocab_size(db)
+        placeholders = ",".join("?" * len(ids)) if ids else "''"
+        video_rows = db.execute(
+            f"SELECT video_id, band_dist, speech_rate FROM video_profile "
+            f"WHERE video_id IN ({placeholders})", ids,
+        ).fetchall() if ids else []
+        by_video = {vid: (json.loads(bd), sr) for vid, bd, sr in video_rows}
+
+        wanted_channels = list({channel_by_id[vid] for vid in ids
+                                 if vid not in by_video and vid in channel_by_id})
+        channel_by_channel_id = {}
+        if wanted_channels:
+            cplaceholders = ",".join("?" * len(wanted_channels))
+            for cid, n_videos, band_dist_json, speech_rate in db.execute(
+                f"SELECT channel_id, n_videos, band_dist, speech_rate FROM channel_profile "
+                f"WHERE channel_id IN ({cplaceholders})", wanted_channels,
+            ).fetchall():
+                if n_videos >= MIN_CHANNEL_VIDEOS_FOR_ESTIMATE:
+                    channel_by_channel_id[cid] = (json.loads(band_dist_json), speech_rate)
+
+        result = {}
+        for vid in ids:
+            if vid in by_video:
+                band_dist, speech_rate = by_video[vid]
+                density = scoring.unknown_per_min(band_dist, speech_rate, v)
+                result[vid] = {"status": "ok", "source": "video",
+                                "density_per_min": round(density, 1), "label": scoring.label_for(density)}
+                continue
+            channel_hit = channel_by_channel_id.get(channel_by_id.get(vid))
+            if channel_hit:
+                band_dist, speech_rate = channel_hit
+                density = scoring.unknown_per_min(band_dist, speech_rate, v)
+                result[vid] = {"status": "ok", "source": "channel",
+                                "density_per_min": round(density, 1), "label": scoring.label_for(density)}
+                continue
+            result[vid] = {"status": "unassessed"}
+        return {"result": result, "vocab_size": v}
+    finally:
+        db.close()
+
+
+class VocabTestAnswer(BaseModel):
+    lemma: str
+    rank: int
+    known: bool
+    is_fake: bool = False
+
+
+class VocabTestStage2Request(BaseModel):
+    answers: list[VocabTestAnswer]  # stage 1 only, real words
+
+
+class VocabTestFinishRequest(BaseModel):
+    answers: list[VocabTestAnswer]  # every answer from both stages, fakes included
+
+
+def _to_pairs(answers: list[VocabTestAnswer]) -> list[tuple[int, bool]]:
+    return [(a.rank, a.known) for a in answers if not a.is_fake]
+
+
+@app.get("/api/vocab-test/status")
+def vocab_test_status():
+    db = knowledge.open_db()
+    try:
+        v = knowledge.vocab_size(db)
+    finally:
+        db.close()
+    return {"vocab_size": v, "level_label": vocab_test.level_label(v),
+            "is_default": v == knowledge.DEFAULT_VOCAB_SIZE}
+
+
+@app.post("/api/vocab-test/stage1")
+def vocab_test_stage1():
+    used: set[str] = set()
+    items = vocab_test.generate_stage(_lex(), vocab_test.COARSE_RANKS, used, with_fakes=False)
+    return {"items": items}
+
+
+@app.post("/api/vocab-test/stage2")
+def vocab_test_stage2(body: VocabTestStage2Request):
+    v1 = vocab_test.fit_vocab_size(_to_pairs(body.answers))
+    used = {a.lemma for a in body.answers}
+    ranks = vocab_test.stage_two_ranks(v1)
+    items = vocab_test.generate_stage(_lex(), ranks, used, with_fakes=True)
+    return {"items": items, "stage1_estimate": v1}
+
+
+@app.post("/api/vocab-test/finish")
+def vocab_test_finish(body: VocabTestFinishRequest):
+    fake_known = sum(1 for a in body.answers if a.is_fake and a.known)
+    retake_suggested = fake_known > vocab_test.MAX_FAKE_KNOWN_BEFORE_RETAKE
+    v = vocab_test.fit_vocab_size(_to_pairs(body.answers))
+
+    db = knowledge.open_db()
+    try:
+        knowledge.set_vocab_size(db, v)
+    finally:
+        db.close()
+
+    return {
+        "vocab_size": v,
+        "level_label": vocab_test.level_label(v),
+        "retake_suggested": retake_suggested,
+        "fake_known": fake_known,
     }
 
 

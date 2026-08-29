@@ -21,6 +21,7 @@ from pathlib import Path
 
 import app_config
 import difficulty_bands
+import dictionary
 import subs_now
 
 ROOT = Path(__file__).resolve().parent
@@ -39,14 +40,44 @@ WORD_RE = re.compile(r"[A-Za-z']+")
 # extremely common word that's always a single capital letter.
 NOT_PROPER = {"i"}
 
+# "n't" contractions absorb an extra "n" that dictionary.CLITIC_RE's plain
+# suffix strip doesn't account for -- stripping just "'t" turns "don't" into
+# "don" (not a word) rather than "do". Irregular enough (the "n" belongs to
+# the stem in "can't" but not in "don't"; "won't" isn't even "will" plus
+# any recognizable suffix) that a lookup table is more honest than a regex
+# that would get some of these wrong anyway. Values are real words that
+# LemmaRanks.lemma_of already knows how to resolve further (e.g. "isn't" ->
+# "is" -> "be").
+NEGATIVE_CONTRACTIONS = {
+    "don't": "do", "doesn't": "does", "didn't": "did",
+    "isn't": "is", "aren't": "are", "wasn't": "was", "weren't": "were",
+    "can't": "can", "couldn't": "could", "won't": "will", "wouldn't": "would",
+    "shouldn't": "should", "mustn't": "must", "mightn't": "might",
+    "haven't": "have", "hasn't": "has", "hadn't": "had",
+    "shan't": "shall", "needn't": "need", "ain't": "be",
+}
+
 
 def _tokenize(text: str):
-    """(lower, is_capitalized, is_sentence_initial) for every word in text."""
+    """(lower, is_capitalized, is_sentence_initial) for every word in text.
+
+    The lower form has any trailing clitic ('s/'re/'ve/'ll/'d/'m/'t) stripped
+    -- dictionary.CLITIC_RE, same rule the hover dictionary already applies
+    -- with NEGATIVE_CONTRACTIONS checked first for the "n't" cases that
+    rule alone gets wrong. Without either, "it's"/"don't"/"you're" never
+    match anything in word_rank (which only has bare headwords) and
+    silently fall into the rarest band as if they were obscure vocabulary --
+    confirmed for real: they were the single largest contributor to "rare
+    word" counts across every indexed video, badly inflating every
+    difficulty score computed so far."""
     tokens = []
     for sentence in SENTENCE_SPLIT_RE.split(text):
         words = WORD_RE.findall(sentence)
         for i, w in enumerate(words):
-            tokens.append((w.lower(), w[:1].isupper(), i == 0))
+            raw_lower = w.lower()
+            lower = NEGATIVE_CONTRACTIONS.get(raw_lower) or dictionary.CLITIC_RE.sub("", raw_lower)
+            if lower:
+                tokens.append((lower, w[:1].isupper(), i == 0))
     return tokens
 
 
@@ -61,15 +92,46 @@ class LemmaRanks:
         try:
             self.known_words = {row[0] for row in db.execute("SELECT word FROM entries")}
             self.forms = dict(db.execute("SELECT form, lemma FROM forms"))
-            self.rank = {lemma: (rank, band) for lemma, rank, band
-                         in db.execute("SELECT lemma, rank, band FROM word_rank")}
+            self.rank = {lemma: (rank, band) for lemma, rank, band, _has_tag
+                         in db.execute("SELECT lemma, rank, band, has_tag FROM word_rank")}
+            # Words ECDICT put on some exam syllabus -- used by vocab_test.py
+            # to filter out proper nouns (person/place/brand names), which
+            # get a corpus rank like any other word but essentially never an
+            # exam tag. Confirmed for real: without this filter, a vocab-size
+            # test asked "do you know 'natwest'" (a UK bank) and "'mildred'"
+            # (a first name) as if they were ordinary vocabulary.
+            self.exam_taggable = {lemma for lemma, has_tag
+                                   in db.execute("SELECT lemma, has_tag FROM word_rank") if has_tag}
         finally:
             db.close()
 
+    # "be" is the one verb ECDICT's own exchange-field inflection data
+    # doesn't fully cover -- forms.get("was"/"is"/"been"/"being") all
+    # correctly point here, but "are" and "were" have no entry at all.
+    # Patched by hand rather than left to fall through to word_rank's
+    # rarest-band fallback: these are two of the most common words in
+    # English and would otherwise dominate every video's "rare word" count.
+    _LEMMA_OVERRIDES = {"are": "be", "were": "be"}
+
     def lemma_of(self, word_lower: str) -> str:
-        if word_lower in self.rank or word_lower in self.known_words:
-            return word_lower
-        return self.forms.get(word_lower, word_lower)
+        override = self._LEMMA_OVERRIDES.get(word_lower)
+        if override:
+            return override
+        # Prefer the forms-table lemma over treating word_lower as its own
+        # word, even when word_lower already has its own rank/entry: ECDICT's
+        # per-spelling corpus rank is unreliable for a handful of common
+        # irregular inflections (confirmed for real: "is" and "was" carry
+        # ranks in the tens of thousands on their own, as if rare, while
+        # their shared lemma "be" correctly ranks at 2) -- the lemma's rank
+        # is the more trustworthy signal for "does the user know this word",
+        # which is all this is used for (unlike dictionary.py's hover
+        # lookup, which deliberately prefers a direct hit first because an
+        # inflected spelling can carry its own distinct meaning worth
+        # defining on its own terms).
+        mapped = self.forms.get(word_lower)
+        if mapped:
+            return mapped
+        return word_lower
 
     def rank_band(self, lemma: str) -> tuple[int, int]:
         hit = self.rank.get(lemma)
@@ -135,11 +197,33 @@ def _open_difficulty_db() -> sqlite3.Connection:
             indexed_at    INTEGER,
             source        TEXT
         );
+        -- Aggregated from video_profile (see recompute_channel_profiles), not
+        -- written to directly: a channel-wide estimate for videos this user
+        -- hasn't watched yet, so a badge can show something on an unwatched
+        -- video from a channel they've already seen a few of. n_videos < 3
+        -- is deliberately not filtered out here -- that threshold is a
+        -- "trust this enough to show" call for whoever's serving the badge,
+        -- not a reason to not have the row.
+        CREATE TABLE IF NOT EXISTS channel_profile (
+            channel_id   TEXT PRIMARY KEY,
+            n_videos     INTEGER,
+            band_dist    TEXT,
+            speech_rate  REAL,
+            updated_at   INTEGER
+        );
     """)
+    # channel_id was added to video_profile after this table already existed
+    # on some machines -- ALTER TABLE errors if the column is already there,
+    # so this only ever needs to succeed once per database file.
+    try:
+        db.execute("ALTER TABLE video_profile ADD COLUMN channel_id TEXT")
+        db.commit()
+    except sqlite3.OperationalError:
+        pass
     return db
 
 
-def _video_id_from_marker(marker: Path) -> tuple[str, str] | None:
+def _video_id_from_marker(marker: Path) -> tuple[str, str, str] | None:
     try:
         meta = json.loads(marker.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -147,7 +231,7 @@ def _video_id_from_marker(marker: Path) -> tuple[str, str] | None:
     video_id = meta.get("id")
     if not video_id:
         return None
-    return video_id, meta.get("title") or ""
+    return video_id, meta.get("title") or "", meta.get("channel_id") or ""
 
 
 def backfill(cache_dir: Path, lex: LemmaRanks, db: sqlite3.Connection, verbose: bool = True) -> int:
@@ -158,7 +242,7 @@ def backfill(cache_dir: Path, lex: LemmaRanks, db: sqlite3.Connection, verbose: 
         parsed = _video_id_from_marker(marker)
         if not parsed:
             continue
-        video_id, title = parsed
+        video_id, title, channel_id = parsed
 
         base_name = marker.name[: -len(".tutor.json")]
         srt = marker.with_name(f"{base_name}.en.srt")
@@ -179,20 +263,61 @@ def backfill(cache_dir: Path, lex: LemmaRanks, db: sqlite3.Connection, verbose: 
         db.execute(
             """INSERT OR REPLACE INTO video_profile
                (video_id, title, duration_sec, total_tokens, band_dist,
-                rare_words, speech_rate, proper_ratio, indexed_at, source)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                rare_words, speech_rate, proper_ratio, indexed_at, source, channel_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (video_id, title, profile["duration_sec"], profile["total_tokens"],
              json.dumps(profile["band_dist"]), json.dumps(profile["rare_words"]),
-             profile["speech_rate"], profile["proper_ratio"], int(time.time()), "cache"),
+             profile["speech_rate"], profile["proper_ratio"], int(time.time()), "cache", channel_id),
         )
         indexed += 1
         if verbose and indexed % 50 == 0:
             print(f"  已索引 {indexed} 个视频...")
 
     db.commit()
+    channels = recompute_channel_profiles(db)
     if verbose:
-        print(f"索引完成：{indexed} 个视频，跳过 {skipped} 个（没有英文字幕或字幕为空）")
+        print(f"索引完成：{indexed} 个视频，跳过 {skipped} 个（没有英文字幕或字幕为空），"
+              f"聚合出 {channels} 个频道画像")
     return indexed
+
+
+def recompute_channel_profiles(db: sqlite3.Connection) -> int:
+    """Token-count-weighted average band_dist/speech_rate per channel, from
+    whatever's currently in video_profile. Weighting by raw token counts
+    (not a plain per-video average) means one long, thoroughly-indexed video
+    doesn't get diluted by three short ones the way an unweighted mean
+    would."""
+    import time
+
+    rows = db.execute(
+        "SELECT channel_id, total_tokens, band_dist, speech_rate FROM video_profile "
+        "WHERE channel_id IS NOT NULL AND channel_id != ''"
+    ).fetchall()
+    by_channel: dict[str, list] = {}
+    for channel_id, total_tokens, band_dist_json, speech_rate in rows:
+        by_channel.setdefault(channel_id, []).append(
+            (total_tokens, json.loads(band_dist_json), speech_rate))
+
+    updated = 0
+    for channel_id, videos in by_channel.items():
+        total = sum(t for t, _, _ in videos)
+        if total <= 0:
+            continue
+        band_counts = [0.0] * difficulty_bands.BAND_COUNT
+        for t, band_dist, _sr in videos:
+            for i, share in enumerate(band_dist):
+                band_counts[i] += share * t
+        band_dist = [c / total for c in band_counts]
+        speech_rate = sum(t * sr for t, _, sr in videos) / total
+        db.execute(
+            """INSERT OR REPLACE INTO channel_profile
+               (channel_id, n_videos, band_dist, speech_rate, updated_at)
+               VALUES (?,?,?,?,?)""",
+            (channel_id, len(videos), json.dumps(band_dist), speech_rate, int(time.time())),
+        )
+        updated += 1
+    db.commit()
+    return updated
 
 
 def main():

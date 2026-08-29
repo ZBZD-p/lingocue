@@ -183,11 +183,14 @@
 
   // ---- backend port: the local FastAPI server -------------------------
   var backendPort = {
-    registerVideo: function (videoId, title) {
+    registerVideo: function (videoId, title, channelId) {
       return fetch(window.__englishTutorApiBase + "/api/youtube/watch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: videoId, title: title, url: location.href, tab_id: TAB_ID }),
+        body: JSON.stringify({
+          id: videoId, title: title, url: location.href, tab_id: TAB_ID,
+          channel_id: channelId || "",
+        }),
       }).then(function (res) { return res.json(); });
     },
     getSubtitleStatus: function () {
@@ -225,6 +228,33 @@
       if (!pr || (pr.videoDetails && pr.videoDetails.videoId !== videoId)) return null;
       return (pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
               pr.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
+    },
+    // For the difficulty engine's channel-level fallback (see app.py's
+    // channel_id threading and indexer.py's channel_profile). Reads the
+    // channel's @handle out of the owner link's DOM href, NOT
+    // videoDetails.channelId (the stable UC... id) -- confirmed for real
+    // that a video grid card (ytd-rich-item-renderer, the only place a
+    // video the user hasn't watched yet can be badged from) only ever
+    // exposes a channel's /@handle in its own DOM, never its UC... id, so
+    // that id would be a join key the batch endpoint could never match
+    // anything up with. The handle is stable and available identically in
+    // both places, so it's what's used everywhere instead. Guarded by
+    // videoId only loosely (via the player, not per-element) since unlike
+    // playerTitleFor/captionTracks there's no per-owner-element videoId to
+    // check against -- acceptable because a stale read here just means one
+    // registration call passes an empty or slightly-stale handle, which
+    // self-heals the same way a stale title does (see confirmTitle).
+    channelIdFor: function (videoId) {
+      var player = document.querySelector("#movie_player");
+      var pr = player && typeof player.getPlayerResponse === "function"
+        ? player.getPlayerResponse() : null;
+      if (!pr || !pr.videoDetails || pr.videoDetails.videoId !== videoId) return "";
+      var owner = document.querySelector("ytd-video-owner-renderer a, #channel-name a, ytd-channel-name a");
+      if (!owner || !owner.href) return "";
+      try {
+        var path = new URL(owner.href).pathname;
+        return path.indexOf("/@") === 0 ? path.slice(1) : "";
+      } catch (e) { return ""; }
     },
     // Toggling captions off (if already on) then back on reliably fires a
     // fresh timedtext request -- confirmed for real, an already-on button
@@ -308,7 +338,8 @@
   // ---- orchestrator: the actual decision logic, port-agnostic ----------
   function createVideoOrchestrator(deps) {
     function registerVideo(token, title) {
-      deps.backend.registerVideo(token.videoId, title)
+      var channelId = deps.page.channelIdFor(token.videoId);
+      deps.backend.registerVideo(token.videoId, title, channelId)
         .then(token.guard(function (data) {
           if (!data || !data.ok) return;
           token.setSource(data.path);

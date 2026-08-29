@@ -2009,6 +2009,15 @@
     let quizUnknown = 0;
     let quizMissed = [];
 
+    // Vocabulary-size test state -- separate from the review-quiz state
+    // above, since the two run through the same vocabQuiz container but are
+    // otherwise unrelated flows.
+    let vocabTestStage = 1;
+    let vocabTestItems = [];
+    let vocabTestIndex = 0;
+    let vocabTestAnswers = [];
+    let vocabTestStatus = null;  // last /api/vocab-test/status fetch, for the promo line
+
     function shuffled(arr) {
       const a = [...arr];
       for (let i = a.length - 1; i > 0; i--) {
@@ -2147,7 +2156,20 @@
         <button class="quiz-batch-pill${v === batch ? " selected" : ""}" data-batch="${v}">${v === "0" ? "不限" : v}</button>
       `).join("");
 
+      const statusLine = vocabTestStatus
+        ? (vocabTestStatus.is_default
+            ? "还没测过，视频难度目前按默认水平估计"
+            : `约 ${vocabTestStatus.vocab_size} 词 · ${vocabTestStatus.level_label}`)
+        : "加载中…";
+
       vocabQuiz.innerHTML = `
+        <div class="vocab-test-promo">
+          <div class="vocab-test-promo-text">
+            <div class="vocab-test-promo-title">你的词汇量</div>
+            <div class="vocab-test-promo-sub">${escapeHtml(statusLine)}</div>
+          </div>
+          <button class="vocab-test-start-btn">${vocabTestStatus && !vocabTestStatus.is_default ? "重新测一下" : "测一下"}</button>
+        </div>
         <div class="quiz-scope">
           <div class="quiz-scope-row">${scopeHtml}</div>
           <div class="quiz-batch-row">
@@ -2192,12 +2214,16 @@
 
       const startBtn = vocabQuiz.querySelector(".quiz-start-btn");
       if (startBtn) startBtn.addEventListener("click", () => startQuiz(pool));
+      vocabQuiz.querySelector(".vocab-test-start-btn").addEventListener("click", startVocabTest);
     }
 
     async function loadQuizStart() {
       vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">加载中…</div></div>`;
       try {
-        vocabEntries = await (await fetch(`${API}/api/vocab`)).json();
+        [vocabEntries, vocabTestStatus] = await Promise.all([
+          fetch(`${API}/api/vocab`).then((r) => r.json()),
+          fetch(`${API}/api/vocab-test/status`).then((r) => r.json()),
+        ]);
       } catch (e) {
         vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">加载生词本失败：${escapeHtml(e.message)}</div></div>`;
         return;
@@ -2286,6 +2312,126 @@
       vocabQuiz.querySelector(".quiz-exit-summary-btn").addEventListener("click", exitQuiz);
       const retryBtn = vocabQuiz.querySelector(".quiz-retry-missed-btn");
       if (retryBtn) retryBtn.addEventListener("click", () => startQuiz(quizMissed));
+    }
+
+    // ---- vocabulary-size test -------------------------------------------
+    //
+    // Two-stage adaptive test (see vocab_test.py): stage 1 samples 5 widely-
+    // spaced frequency ranks to get a rough estimate, stage 2 re-samples 5
+    // ranks around that estimate to refine it, plus a handful of made-up
+    // words mixed in to catch a click-through-everything run. Reuses
+    // .quiz-card/.quiz-topbar from the review quiz above -- it's the same
+    // "one word, one decision" shape, just without an answer to reveal.
+
+    function exitVocabTest() {
+      renderQuizStart();
+    }
+
+    async function startVocabTest() {
+      vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">准备题目中…</div></div>`;
+      vocabTestAnswers = [];
+      vocabTestStage = 1;
+      try {
+        const data = await (await fetch(`${API}/api/vocab-test/stage1`, { method: "POST" })).json();
+        vocabTestItems = data.items;
+      } catch (e) {
+        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div>`;
+        return;
+      }
+      vocabTestIndex = 0;
+      renderVocabTestCard();
+    }
+
+    // Rough total for the progress display -- stage 2's real length isn't
+    // known until stage 1 finishes (it's generated from stage 1's result),
+    // so this is an estimate (20 + 20 real + 5 fake ≈ 45), not a promise.
+    const VOCAB_TEST_ESTIMATED_TOTAL = 45;
+
+    function renderVocabTestCard() {
+      if (vocabTestIndex >= vocabTestItems.length) {
+        if (vocabTestStage === 1) { advanceVocabTestToStage2(); return; }
+        finishVocabTest();
+        return;
+      }
+      const item = vocabTestItems[vocabTestIndex];
+      const doneSoFar = vocabTestAnswers.length;
+      vocabQuiz.innerHTML = `
+        <div class="quiz-topbar">
+          <div class="quiz-progress">第 ${doneSoFar + 1} 题（约 ${VOCAB_TEST_ESTIMATED_TOTAL} 题）</div>
+          <button class="quiz-exit-btn" title="退出测试" aria-label="退出测试">${icon("close")}</button>
+        </div>
+        <div class="quiz-card">
+          <div class="quiz-word">${escapeHtml(item.lemma)}</div>
+          <div class="quiz-grade-row">
+            <button class="quiz-grade-btn quiz-grade-unknown">${icon("close")} 不认识</button>
+            <button class="quiz-grade-btn quiz-grade-known">${icon("check")} 认识</button>
+          </div>
+        </div>
+      `;
+      vocabQuiz.querySelector(".quiz-exit-btn").addEventListener("click", exitVocabTest);
+      vocabQuiz.querySelector(".quiz-grade-unknown").addEventListener("click", () => submitVocabTestAnswer(item, false));
+      vocabQuiz.querySelector(".quiz-grade-known").addEventListener("click", () => submitVocabTestAnswer(item, true));
+    }
+
+    function submitVocabTestAnswer(item, known) {
+      vocabTestAnswers.push({ lemma: item.lemma, rank: item.rank, known, is_fake: !!item.is_fake });
+      vocabTestIndex++;
+      renderVocabTestCard();
+    }
+
+    async function advanceVocabTestToStage2() {
+      vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">准备第二阶段…</div></div>`;
+      try {
+        const data = await (await fetch(`${API}/api/vocab-test/stage2`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answers: vocabTestAnswers }),
+        })).json();
+        vocabTestItems = data.items;
+      } catch (e) {
+        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div>`;
+        return;
+      }
+      vocabTestStage = 2;
+      vocabTestIndex = 0;
+      renderVocabTestCard();
+    }
+
+    async function finishVocabTest() {
+      vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">算分中…</div></div>`;
+      let result;
+      try {
+        result = await (await fetch(`${API}/api/vocab-test/finish`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answers: vocabTestAnswers }),
+        })).json();
+      } catch (e) {
+        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">提交失败：${escapeHtml(e.message)}</div></div>`;
+        return;
+      }
+      vocabTestStatus = { vocab_size: result.vocab_size, level_label: result.level_label, is_default: false };
+      vocabQuiz.innerHTML = `
+        <div class="quiz-topbar">
+          <div class="quiz-progress">完成</div>
+          <button class="quiz-exit-btn" title="退出测试" aria-label="退出测试">${icon("close")}</button>
+        </div>
+        <div class="vocab-test-result">
+          <div class="vocab-test-result-size">约 ${result.vocab_size} 词</div>
+          <div class="vocab-test-result-label">${escapeHtml(result.level_label)}</div>
+          ${result.retake_suggested
+            ? `<div class="vocab-test-retake-warning">这次答题里有 ${result.fake_known} 个"认识"给了不存在的词，结果可能不准，建议重新测一次。</div>`
+            : ""}
+          <div class="quiz-summary-actions">
+            ${result.retake_suggested ? `<button class="quiz-retry-missed-btn">重新测一次</button>` : ""}
+            <button class="quiz-exit-summary-btn">完成</button>
+          </div>
+        </div>
+      `;
+      vocabQuiz.querySelector(".quiz-exit-btn").addEventListener("click", exitVocabTest);
+      vocabQuiz.querySelector(".quiz-exit-summary-btn").addEventListener("click", exitVocabTest);
+      const retryBtn = vocabQuiz.querySelector(".quiz-retry-missed-btn");
+      if (retryBtn) retryBtn.addEventListener("click", startVocabTest);
     }
 
     async function saveVocabEntry(payload) {
@@ -2780,6 +2926,10 @@
     }
 
     let difficultyFetchInFlight = false;
+    // Same three colors/thresholds as extension/grid-badges.js's card
+    // badges (see .lc-ok/.lc-mid/.lc-bad in panel.css) -- one system, two
+    // surfaces.
+    const DIFFICULTY_LABEL_CLASS = { "轻松": "lc-ok", "刚好": "lc-ok", "有挑战": "lc-mid", "偏难": "lc-bad" };
 
     /** New-words-per-minute badge for the video currently open -- YouTube
      *  only, same as the jump-to-moment feature: Jellyfin's local files have
@@ -2816,6 +2966,7 @@
         // tick try again rather than treating this as a final no.
         if (videoId !== lastDifficultyVideoId || data.status !== "ok") return;
         difficultyBadge.hidden = false;
+        difficultyBadge.className = `difficulty-badge ${DIFFICULTY_LABEL_CLASS[data.label] || ""}`;
         difficultyBadge.textContent = `${data.label} · ${data.density_per_min}/分钟`;
         difficultyBadge.title = `按你当前词汇量估计（约 ${data.vocab_size} 词），这条视频每分钟大约有多少生词`;
       } catch (e) {

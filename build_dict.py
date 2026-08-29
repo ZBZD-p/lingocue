@@ -173,9 +173,10 @@ def build(keep_csv: bool) -> None:
         -- tooltip (is_common() drops it) but still worth ranking as "very
         -- rare" when scoring how hard a video is.
         CREATE TABLE word_rank (
-            lemma TEXT PRIMARY KEY,
-            rank  INTEGER NOT NULL,
-            band  INTEGER NOT NULL
+            lemma    TEXT PRIMARY KEY,
+            rank     INTEGER NOT NULL,
+            band     INTEGER NOT NULL,
+            has_tag  INTEGER NOT NULL   -- 1 if ECDICT's own tag column is non-empty
         );
     """)
 
@@ -188,8 +189,9 @@ def build(keep_csv: bool) -> None:
 
             word_lower = (row.get("word") or "").strip().lower()
             rank = unified_rank(parse_rank(row.get("frq")), parse_rank(row.get("bnc")))
+            has_tag = 1 if (row.get("tag") or "").strip() else 0
             if word_lower and rank > 0:
-                ranks.append((word_lower, rank, difficulty_bands.band_of(rank)))
+                ranks.append((word_lower, rank, difficulty_bands.band_of(rank), has_tag))
 
             if not is_common(row):
                 continue
@@ -216,14 +218,14 @@ def build(keep_csv: bool) -> None:
                 entries, forms = [], []
 
             if len(ranks) >= 20_000:
-                db.executemany("INSERT OR REPLACE INTO word_rank VALUES (?,?,?)", ranks)
+                db.executemany("INSERT OR REPLACE INTO word_rank VALUES (?,?,?,?)", ranks)
                 ranked += len(ranks)
                 ranks = []
 
     db.executemany("INSERT OR REPLACE INTO entries VALUES (?,?,?,?)", entries)
     db.executemany("INSERT OR IGNORE INTO forms VALUES (?,?)", forms)
     form_count += len(forms)
-    db.executemany("INSERT OR REPLACE INTO word_rank VALUES (?,?,?)", ranks)
+    db.executemany("INSERT OR REPLACE INTO word_rank VALUES (?,?,?,?)", ranks)
     ranked += len(ranks)
     db.commit()
     db.execute("VACUUM")
