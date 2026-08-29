@@ -788,6 +788,77 @@ class Dot(tk.Canvas):
         self.itemconfigure(self._id, fill=color)
 
 
+class Progress(tk.Canvas):
+    """Step progress bar: solid fill for completed steps, an animated
+    highlight sliding across whichever step is currently running.
+
+    Deliberately not byte-accurate -- pip and modelscope only ever offer
+    their own scrolling console text, which nothing here tries to parse.
+    The honest unit is "step i of n". But a single step can itself run for
+    several minutes (downloading the 1.2GB ct-punc model, say), and a bar
+    that just sits frozen at the same pixel for that whole time is exactly
+    the "looks like it hung" problem this exists to solve -- so the current
+    step's own span gets a moving highlight instead of standing still,
+    without claiming to know how much of that step is actually done.
+    """
+
+    def __init__(self, parent, width=200, height=8):
+        w, h = px(width), px(height)
+        super().__init__(parent, width=w, height=h, bg=parent["bg"],
+                         highlightthickness=0, bd=0)
+        # Named _bar_w/_bar_h, not _w/_h: Tkinter's own Misc base class
+        # already uses self._w internally for the widget's Tcl path name --
+        # overwriting it there made every later create_rectangle/coords call
+        # resolve to a Tcl command literally named "550" (the pixel width)
+        # instead of the canvas, raising "invalid command name".
+        self._bar_w, self._bar_h = w, h
+        self.create_rectangle(0, 0, w, h, fill=LINE, outline="")
+        self._fill = self.create_rectangle(0, 0, 0, h, fill=ACCENT, outline="")
+        self._glow = self.create_rectangle(0, 0, 0, h, fill=ACCENT_SOFT, outline="",
+                                           state="hidden")
+        self._glow_job = None
+        self._glow_x = 0
+
+    def set(self, frac: float):
+        """Static fill, no animation -- used for idle (0) and finished (1)."""
+        self._stop_glow()
+        frac = max(0.0, min(1.0, frac))
+        self.coords(self._fill, 0, 0, self._bar_w * frac, self._bar_h)
+        self.itemconfigure(self._glow, state="hidden")
+
+    def pulse(self, done: int, total: int):
+        """Solid fill through `done` of `total` steps, animated highlight
+        sliding across the (done+1)th step's span."""
+        self._stop_glow()
+        base = self._bar_w * (done / total)
+        span = self._bar_w / total
+        self.coords(self._fill, 0, 0, base, self._bar_h)
+        self._glow_base, self._glow_span = base, span
+        self._glow_x = 0
+        self.itemconfigure(self._glow, state="normal")
+        self._animate_glow()
+
+    def _animate_glow(self):
+        if not self.winfo_exists():
+            return
+        seg = max(self._bar_h * 3, self._glow_span * 0.35)
+        cycle = self._glow_span + seg
+        self._glow_x = (self._glow_x + px(3)) % cycle
+        x0 = self._glow_base + self._glow_x - seg
+        x1 = x0 + seg
+        lo, hi = self._glow_base, self._glow_base + self._glow_span
+        self.coords(self._glow, max(lo, x0), 0, min(hi, x1), self._bar_h)
+        self._glow_job = self.after(40, self._animate_glow)
+
+    def _stop_glow(self):
+        if self._glow_job:
+            try:
+                self.after_cancel(self._glow_job)
+            except tk.TclError:
+                pass
+            self._glow_job = None
+
+
 class Scroll(tk.Frame):
     """Vertically scrollable container.
 
@@ -1055,6 +1126,14 @@ class App:
         self.panel_btn = Button(bar, "打开面板", command=self.open_panel, width=110)
         self.panel_btn.pack(side=tk.LEFT, padx=(px(8), 0))
 
+        prog = tk.Frame(self.body, bg=BG)
+        prog.pack(fill=tk.X, pady=(0, px(10)))
+        self.progress_label = label(prog, "", size=9, color=MUTED, bg=BG)
+        self.progress_label.pack(anchor="w")
+        self.progress_bar = Progress(prog, width=440)
+        self.progress_bar.pack(anchor="w", pady=(px(4), 0))
+        self._render_progress()
+
         wrap = card(self.body)
         wrap.pack(fill=tk.BOTH, expand=True)
         self.log = tk.Text(wrap, bg=SURFACE, fg=MUTED, insertbackground=INK,
@@ -1292,13 +1371,18 @@ class App:
 
     # ---- install tasks -------------------------------------------------
 
-    def _run_task(self, title, argv_list, done=None):
+    def _run_task(self, title, argv_list, done=None, step_labels=None):
         """Run a sequence of commands, streaming into the log.
 
         On a worker thread because pip installing torch takes minutes, and
         the window has to keep drawing (and its log keep scrolling) the whole
         time -- a frozen window during a 5.7GB download is indistinguishable
         from a crashed one.
+
+        step_labels gives the "步骤 i/n" bar above the log something a
+        beginner can read at a glance -- pip's own scrolling console text
+        is real progress, but nobody who isn't already comfortable reading
+        it would recognize it as such.
         """
         if self.busy:
             self.write("已经有一个安装任务在跑了，等它结束。")
@@ -1306,6 +1390,10 @@ class App:
         self.busy = True
         self.show("状态")
         self.write(f"── {title} ──")
+        n = len(argv_list)
+        labels = step_labels or [f"执行第 {i + 1} 步" for i in range(n)]
+        gen = self._progress_gen = getattr(self, "_progress_gen", 0) + 1
+        self.root.after(0, lambda: self._set_progress(gen, 0, n, labels[0]))
 
         def work():
             ok = True
@@ -1313,7 +1401,8 @@ class App:
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUNBUFFERED"] = "1"
             env["MODELSCOPE_CACHE"] = str(model_cache_dir())
-            for argv in argv_list:
+            for i, argv in enumerate(argv_list):
+                self.root.after(0, lambda i=i: self._set_progress(gen, i, n, labels[i]))
                 self.write("$ " + " ".join(str(a) for a in argv))
                 try:
                     p = subprocess.Popen(argv, cwd=str(ROOT), env=env,
@@ -1331,6 +1420,7 @@ class App:
                     self.write(f"[启动失败：{exc}]")
                     break
             self.write("── 完成 ──" if ok else "── 中断 ──")
+            self.root.after(0, lambda: self._finish_progress(gen, ok))
             self.root.after(0, lambda: self._task_done(done, ok))
 
         threading.Thread(target=work, daemon=True).start()
@@ -1362,7 +1452,10 @@ class App:
         if not py:
             self.write("找不到 Python，先装 3.10+。")
             return
-        self._run_task("安装核心依赖", [[py, "-m", "pip", "install", "-r", "requirements.txt"]])
+        self._run_task("安装核心依赖",
+                       [[py, "-m", "pip", "install", "-r", "requirements.txt",
+                         "--progress-bar", "off"]],
+                       step_labels=["安装 fastapi / uvicorn 等核心依赖包"])
 
     # Constructing the model is what makes funasr fetch it; there is no
     # "download only" entry point. Done here, as the last step of the same
@@ -1379,9 +1472,14 @@ class App:
         self.write("这一步要下约 1.4GB（依赖 240MB + 模型 1.2GB），装完占 2.4GB。")
         self.write("模型那段下载没有逐行进度，看起来会像卡住，耐心等几分钟。")
         self._run_task("安装标点优化", [
-            [py, "-m", "pip", "install", "torch", "torchaudio", "--index-url", TORCH_INDEX],
-            [py, "-m", "pip", "install", "funasr"],
+            [py, "-m", "pip", "install", "torch", "torchaudio",
+             "--index-url", TORCH_INDEX, "--progress-bar", "off"],
+            [py, "-m", "pip", "install", "funasr", "--progress-bar", "off"],
             [py, "-c", self._FETCH_MODEL],
+        ], step_labels=[
+            "下载安装 torch / torchaudio（约 700MB）",
+            "下载安装 funasr（约 240MB）",
+            "下载 ct-punc 标点模型（约 1.2GB，可能要几分钟）",
         ])
 
     def build_dict(self):
@@ -1389,7 +1487,8 @@ class App:
         if not py:
             return
         self._run_task("生成本地词典（要下 63MB 的 ECDICT 词表）",
-                       [[py, "build_dict.py"]])
+                       [[py, "build_dict.py"]],
+                       step_labels=["下载 ECDICT 词表并生成词典（约 63MB）"])
 
     def pick_dict_csv(self):
         """Build the dictionary from a CSV the user already has.
@@ -1409,7 +1508,8 @@ class App:
         if not py:
             return
         self._run_task(f"从本地词表生成词典（{Path(path).name}）",
-                       [[py, "build_dict.py", "--csv", path]])
+                       [[py, "build_dict.py", "--csv", path]],
+                       step_labels=[f"从 {Path(path).name} 生成词典"])
 
     def install_required(self):
         py = find_python()
@@ -1420,15 +1520,18 @@ class App:
             # requirements, leaving only the dictionary for a second pass.
             self.install_runtime()
             return
-        steps = []
+        steps, labels = [], []
         if not self.env.get("core_ok"):
-            steps.append([py, "-m", "pip", "install", "-r", "requirements.txt"])
+            steps.append([py, "-m", "pip", "install", "-r", "requirements.txt",
+                          "--progress-bar", "off"])
+            labels.append("安装 fastapi / uvicorn 等核心依赖包")
         if not self.env.get("dict_db"):
             steps.append([py, "build_dict.py"])
+            labels.append("下载 ECDICT 词表并生成词典（约 63MB）")
         if not steps:
             self.write("必需项都齐了，没什么要装的。")
             return
-        self._run_task("安装缺少的必需项", steps)
+        self._run_task("安装缺少的必需项", steps, step_labels=labels)
 
     def install_ffmpeg(self):
         """Downloaded here rather than shelling out to setup.ps1: the same
@@ -1592,6 +1695,42 @@ class App:
 
     def write(self, line):
         self.log_queue.put(line.rstrip("\n"))
+
+    def _render_progress(self):
+        bar = getattr(self, "progress_bar", None)
+        if not bar or not bar.winfo_exists():
+            return
+        state = getattr(self, "progress_state", None)
+        if state is None:
+            self.progress_label.configure(text="")
+            bar.set(0)
+            return
+        done, total, text = state
+        if done < total:
+            self.progress_label.configure(text=f"步骤 {done + 1}/{total}：{text}")
+            bar.pulse(done, total)
+        else:
+            self.progress_label.configure(text=text)
+            bar.set(1.0)
+
+    def _set_progress(self, gen, done, total, text):
+        if gen != getattr(self, "_progress_gen", None):
+            return
+        self.progress_state = (done, total, text)
+        self._render_progress()
+
+    def _finish_progress(self, gen, ok):
+        if gen != getattr(self, "_progress_gen", None):
+            return
+        total = self.progress_state[1] if self.progress_state else 1
+        self.progress_state = (total, total, "完成" if ok else "已中断，看下面日志")
+        self._render_progress()
+        self.root.after(1500, lambda: self._clear_progress(gen))
+
+    def _clear_progress(self, gen):
+        if gen == getattr(self, "_progress_gen", None):
+            self.progress_state = None
+            self._render_progress()
 
     def _replay_log(self):
         for line in getattr(self, "_history", []):
