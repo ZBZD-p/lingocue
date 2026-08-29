@@ -168,7 +168,7 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 | 文件 | 干什么的 |
 |------|---------|
-| `config.json` | 文件路径类配置。`data_dir` 是下面那些数据存哪（默认项目下的 `data/`），`youtube_cache_dir` 是 YouTube 字幕存哪（默认 `data/youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录 |
+| `config.json` | 文件路径类配置。`data_dir` 是下面那些数据存哪（默认项目下的 `data/`），`youtube_cache_dir` 是 YouTube 字幕存哪（默认 `data/youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录，`model_cache_dir` 是标点优化的 ct-punc 模型（约 1.2GB）下载到哪（默认数据目录下的 `model_cache/`）|
 | `jellyfin_config.json` | Jellyfin 地址和 API key（在 Jellyfin 控制台 → API 密钥里生成） |
 | `deepseek_config.json` | DeepSeek 的 key 和模型。也可以直接在设置页里填，会自动写到这里 |
 

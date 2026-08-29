@@ -136,6 +136,21 @@ def port() -> int:
         return 8420
 
 
+def model_cache_dir() -> Path:
+    """Where FunASR's ct-punc model gets downloaded to (~1.2GB).
+
+    Defaults inside data_dir, like youtube_cache_dir does, rather than the
+    ~/.cache/modelscope funasr would otherwise pick on its own: keeping it
+    inside the project means deleting the project (but keeping data_dir)
+    carries the already-downloaded model along instead of orphaning it
+    somewhere in the user's home directory.
+    """
+    configured = config().get("model_cache_dir")
+    path = Path(configured) if configured else data_dir() / "model_cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def ffmpeg_dirs() -> list[Path]:
     """Extra directories to search for ffmpeg/ffprobe when they aren't on
     PATH. Empty by default -- PATH is where they're supposed to be, and this

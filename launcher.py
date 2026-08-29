@@ -458,6 +458,11 @@ def data_dir() -> Path:
     return Path(configured) if configured else ROOT / "data"
 
 
+def model_cache_dir() -> Path:
+    configured = read_config().get("model_cache_dir")
+    return Path(configured) if configured else data_dir() / "model_cache"
+
+
 def configured_port() -> int:
     try:
         return int(read_config().get("port") or DEFAULT_PORT)
@@ -489,8 +494,7 @@ def punct_model_size() -> int:
     1.2GB download starting silently while someone waits for subtitles, with
     no progress anywhere and no explanation if it fails.
     """
-    base = Path(os.environ.get("MODELSCOPE_CACHE") or (Path.home() / ".cache" / "modelscope"))
-    models = base / "models"
+    models = model_cache_dir() / "models"
     if not models.is_dir():
         return 0
     for d in models.glob("*punc_ct-transformer*"):
@@ -1171,6 +1175,8 @@ class App:
              "留空 = 数据目录下的 youtube/"),
             ("ffmpeg_dir", "ffmpeg 目录", cfg.get("ffmpeg_dir", ""),
              "ffmpeg 不在 PATH 时的兜底目录。留空 = 只找 PATH"),
+            ("model_cache_dir", "标点模型目录", cfg.get("model_cache_dir", ""),
+             "标点优化的 ct-punc 模型（约 1.2GB）下载到哪。留空 = 数据目录下的 model_cache/"),
         ]
         for i, (key, name, value, note) in enumerate(specs):
             row = tk.Frame(box, bg=SURFACE)
@@ -1275,7 +1281,7 @@ class App:
             self.save_hint.configure(text="端口要是 1-65535 的整数", fg=BAD)
             return
         updates["port"] = p
-        for key in ("data_dir", "youtube_cache_dir", "ffmpeg_dir"):
+        for key in ("data_dir", "youtube_cache_dir", "ffmpeg_dir", "model_cache_dir"):
             updates[key] = self.fields[key].get().strip()
         write_config(updates)
         set_autostart(self.autostart.get())
@@ -1306,6 +1312,7 @@ class App:
             env = dict(os.environ)
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUNBUFFERED"] = "1"
+            env["MODELSCOPE_CACHE"] = str(model_cache_dir())
             for argv in argv_list:
                 self.write("$ " + " ".join(str(a) for a in argv))
                 try:

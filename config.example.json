@@ -1,5 +1,6 @@
 {
   "data_dir": "",
   "youtube_cache_dir": "",
-  "ffmpeg_dir": ""
+  "ffmpeg_dir": "",
+  "model_cache_dir": ""
 }

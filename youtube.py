@@ -513,6 +513,7 @@ def _ct_punc_model():
     with _ct_punc_lock:
         if _ct_punc_model_cache == "not_loaded":
             try:
+                os.environ["MODELSCOPE_CACHE"] = str(app_config.model_cache_dir())
                 from funasr import AutoModel
                 _ct_punc_model_cache = AutoModel(model="ct-punc")
             except Exception:
