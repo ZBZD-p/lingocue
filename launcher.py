@@ -46,19 +46,145 @@ from tkinter import filedialog
 from tkinter import font as tkfont
 
 def _project_root() -> Path:
-    """The directory holding app.py -- which is NOT where __file__ points
-    once this is frozen.
+    """Where app.py lives -- which is NOT where __file__ points once frozen.
 
     PyInstaller's one-file mode unpacks the bundle into a temporary
     directory and sets __file__ inside it, so the usual
-    Path(__file__).parent would resolve to something like
-    %TEMP%\\_MEI123456 -- a folder containing neither app.py nor config.json,
-    and one that is deleted on exit. sys.executable is the actual .exe the
-    user double-clicked, and it sits beside the project.
+    Path(__file__).parent resolves to something like %TEMP%\_MEI123456: a
+    folder holding neither app.py nor config.json, and one that is deleted
+    on exit.
+
+    Running from source this is simply this file's own directory. Frozen,
+    it is wherever the user chose to install (see install_dir) -- and until
+    they have chosen there is no project directory at all, which is what
+    the first-run install view exists to resolve.
     """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).resolve().parent
+    return install_dir() or Path(sys.executable).resolve().parent
+
+
+# Where an installed copy put itself. Kept in HKCU rather than a file beside
+# the exe: the exe is one self-contained file the user may move, rename, or
+# run straight out of their downloads folder, and it cannot write to itself
+# to remember anything.
+APP_KEY = r"Software\LingoCue"
+
+
+def install_dir() -> Path | None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, APP_KEY) as k:
+            path = Path(winreg.QueryValueEx(k, "InstallDir")[0])
+    except (OSError, ValueError):
+        return None
+    # A recorded path whose contents are gone (the folder was deleted) means
+    # "not installed", not "installed and broken" -- the first-run view
+    # should come back rather than the main window failing in odd ways.
+    return path if (path / "app.py").exists() else None
+
+
+def set_install_dir(path: Path) -> None:
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, APP_KEY) as k:
+        winreg.SetValueEx(k, "InstallDir", 0, winreg.REG_SZ, str(path))
+
+
+def default_install_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+    return Path(base) / "Programs" / "LingoCue"
+
+
+def payload_dir() -> Path | None:
+    """The project files carried inside the exe (see build_launcher.py).
+
+    None when running from source, where the project is already on disk and
+    there is nothing to unpack.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    p = Path(getattr(sys, "_MEIPASS", "")) / "payload"
+    return p if p.is_dir() else None
+
+
+# Never overwritten when refreshing an existing install: these belong to the
+# user, not to the build. data/ holds the notebooks and databases, runtime/
+# is a 100MB+ interpreter there is no reason to re-extract, and the config
+# files hold their keys and paths.
+PRESERVE = {"data", "runtime", "ffmpeg", "config.json",
+            "jellyfin_config.json", "deepseek_config.json"}
+
+
+def install_payload(dest: Path, log) -> bool:
+    """Unpack the bundled project into dest, leaving user files alone.
+
+    Also used to refresh an existing install when the exe is newer than what
+    was unpacked, which is why it copies over the top rather than demanding
+    an empty directory.
+    """
+    payload = payload_dir()
+    if payload is None:
+        log("从源码运行，没有需要解压的东西。")
+        return True
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        count = 0
+        for item in sorted(payload.iterdir()):
+            if item.name in PRESERVE and (dest / item.name).exists():
+                log(f"  保留已有的 {item.name}")
+                continue
+            target = dest / item.name
+            if item.is_dir():
+                shutil.copytree(item, target, dirs_exist_ok=True)
+                count += sum(1 for f in item.rglob("*") if f.is_file())
+            else:
+                shutil.copy2(item, target)
+                count += 1
+        # data/ is preserved wholesale above, which would also skip the
+        # bundled dictionary for anyone who already has a data directory but
+        # no dictionary in it -- an install whose dictionary was deleted, or
+        # one created before the exe carried one. Delivered here as a
+        # special case: filled in when absent, never overwritten when
+        # present, since a rebuilt dictionary is still the user's.
+        bundled_db = payload / "data" / "dictionary.db"
+        target_db = dest / "data" / "dictionary.db"
+        if bundled_db.exists() and not target_db.exists():
+            target_db.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bundled_db, target_db)
+            log(f"  补上内置词典 ({target_db.stat().st_size/1e6:.1f}MB)")
+            count += 1
+
+        log(f"  已解压 {count} 个文件")
+        return True
+    except OSError as e:
+        log(f"解压失败：{e}")
+        return False
+
+
+def _stamp(folder: Path | None) -> str:
+    if folder is None:
+        return ""
+    try:
+        return (folder / "BUILD_STAMP").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def needs_refresh(root: Path) -> bool:
+    """Whether the exe carries a newer build than what is unpacked."""
+    bundled = _stamp(payload_dir())
+    return bool(bundled) and bundled != _stamp(root)
+
+
+def set_root(path: Path) -> None:
+    """Point every path the launcher uses at a project directory.
+
+    Settled once at startup and again after a first-run install, so these
+    are recomputed rather than staying constants derived from a ROOT that no
+    longer holds.
+    """
+    global ROOT, CONFIG_FILE, RUNTIME_DIR
+    ROOT = path
+    CONFIG_FILE = ROOT / "config.json"
+    RUNTIME_DIR = ROOT / "runtime"
 
 
 ROOT = _project_root()
@@ -606,6 +732,108 @@ def label(parent, text, size=10, color=INK, bold=False, bg=None):
 # the window
 # ======================================================================
 
+class Installer:
+    """First-run window: pick a folder, unpack the project into it.
+
+    Separate from App rather than a fourth view inside it, because until
+    this finishes there is no project directory for any of App's views to
+    describe -- no config to read, no app.py to start, no dependency tree to
+    check. Once it succeeds it hands off to App in the same window.
+    """
+
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        root.title("LingoCue 安装")
+        root.geometry(f"{px(620)}x{px(400)}")
+        root.minsize(px(560), px(360))
+        root.configure(bg=BG)
+
+        wrap = tk.Frame(root, bg=BG)
+        wrap.pack(fill=tk.BOTH, expand=True, padx=px(24), pady=px(22))
+
+        label(wrap, "LingoCue", size=18, bold=True).pack(anchor="w")
+        label(wrap, "看剧、看 YouTube 学英语的辅助面板",
+              size=10, color=MUTED).pack(anchor="w", pady=(px(2), px(18)))
+
+        label(wrap, "安装到", bold=True).pack(anchor="w")
+        label(wrap, "程序文件、Python 运行时和你的学习数据都会放在这里",
+              size=8, color=DIM).pack(anchor="w", pady=(0, px(6)))
+
+        row = tk.Frame(wrap, bg=BG)
+        row.pack(fill=tk.X)
+        self.entry = tk.Entry(row, bg=SURFACE, fg=INK, insertbackground=ACCENT,
+                              relief="flat", bd=0, font=("Consolas", 10),
+                              highlightthickness=1, highlightbackground=LINE,
+                              highlightcolor=ACCENT)
+        self.entry.insert(0, str(default_install_dir()))
+        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=px(7), ipadx=px(8))
+        Button(row, "浏览", command=self.browse, width=74).pack(side=tk.LEFT, padx=(px(8), 0))
+
+        payload = payload_dir()
+        size = sum(f.stat().st_size for f in payload.rglob("*") if f.is_file()) if payload else 0
+        label(wrap, f"需要约 {size/1e6:.0f}MB，装依赖后共约 400MB。"
+                    "已经内置了词典，不用再下 63MB 的词表。",
+              size=8, color=DIM).pack(anchor="w", pady=(px(10), px(16)))
+
+        actions = tk.Frame(wrap, bg=BG)
+        actions.pack(fill=tk.X)
+        self.go = Button(actions, "安装", command=self.install, variant="accent", width=110)
+        self.go.pack(side=tk.LEFT)
+        self.hint = label(actions, "", size=9, color=MUTED)
+        self.hint.pack(side=tk.LEFT, padx=(px(12), 0))
+
+        box = card(wrap)
+        box.pack(fill=tk.BOTH, expand=True, pady=(px(16), 0))
+        self.log = tk.Text(box, bg=SURFACE, fg=MUTED, font=("Consolas", 9),
+                           relief="flat", bd=0, wrap="word", padx=px(12), pady=px(10),
+                           state=tk.DISABLED)
+        self.log.pack(fill=tk.BOTH, expand=True)
+
+    def write(self, line):
+        self.log.configure(state=tk.NORMAL)
+        self.log.insert(tk.END, line.rstrip() + "\n")
+        self.log.see(tk.END)
+        self.log.configure(state=tk.DISABLED)
+        self.root.update_idletasks()
+
+    def browse(self):
+        picked = filedialog.askdirectory(title="选择安装位置")
+        if picked:
+            self.entry.delete(0, tk.END)
+            self.entry.insert(0, str(Path(picked) / "LingoCue"))
+
+    def install(self):
+        dest = Path(self.entry.get().strip())
+        if not dest.is_absolute():
+            self.hint.configure(text="请填一个完整路径", fg=BAD)
+            return
+        # Refuse a directory that already holds unrelated files: this copies
+        # a whole project tree in, and doing that into someone's Documents
+        # folder because they picked one level too high is not recoverable
+        # by them.
+        if dest.exists() and any(dest.iterdir()) and not (dest / "app.py").exists():
+            self.hint.configure(text="这个文件夹非空且不像已有安装，换一个", fg=BAD)
+            return
+
+        self.go.set_enabled(False)
+        self.hint.configure(text="")
+        self.write(f"安装到 {dest}")
+        if not install_payload(dest, self.write):
+            self.go.set_enabled(True)
+            self.hint.configure(text="安装失败，看下面的日志", fg=BAD)
+            return
+        try:
+            set_install_dir(dest)
+        except OSError as e:
+            self.write(f"（记不住安装位置：{e}）")
+        set_root(dest)
+        self.write("完成，正在打开主界面...")
+
+        for child in self.root.winfo_children():
+            child.destroy()
+        App(self.root)
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -645,6 +873,15 @@ class App:
             self.write("这个窗口只能管自己启动的进程，要接管的话先把那边停掉再点启动。")
 
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # An exe newer than what is unpacked refreshes the code in place. Only
+        # the code: PRESERVE keeps the notebooks, databases, interpreter and
+        # config files untouched, so updating is dropping in a new exe and
+        # reopening it.
+        if needs_refresh(ROOT):
+            self.write("检测到新版本，正在更新程序文件（不动你的数据）...")
+            install_payload(ROOT, self.write)
+            self.write("更新完成。")
+
         self.refresh()
         self.root.after(100, self._drain_log)
         self.refresh_env(quiet=True)
@@ -1237,7 +1474,13 @@ def main():
     # already ran. Tk scales point-sized fonts by itself once aware, so this
     # factor is applied to pixel measurements only.
     SCALE = root.winfo_fpixels("1i") / 96.0
-    App(root)
+
+    if getattr(sys, "frozen", False) and install_dir() is None:
+        # Nothing is installed yet, so there is no project directory for the
+        # main window's views to describe. Ask where it should go first.
+        Installer(root)
+    else:
+        App(root)
     root.mainloop()
 
 
