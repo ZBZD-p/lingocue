@@ -761,19 +761,6 @@ button:focus-visible {
   gap: 0;
   transition: color var(--line-change) var(--ease-soft),
               gap var(--line-change) var(--ease-soft);
-  /* Same motivation as .subs-scroll's `contain` just above: skip layout and
-     paint entirely for whichever cards aren't near the viewport, rather than
-     merely containing their cost once computed. `auto` (not `hidden`) keeps
-     scrolled-past cards in the accessibility tree and still ordinary
-     querySelector/scrollIntoView targets -- both of which highlightCue() and
-     updateSpokenWords() in tutor-panel.js rely on for the *current* card, so
-     nothing about the JS logic changes, only how much of the other ~99% of
-     the list the browser bothers rendering at any given moment. The
-     estimated height is deliberately generous (most cards are one short
-     line) since undershooting just means a bit of scrollbar jitter as real
-     heights are measured in, while overshooting would leave gaps. */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
 }
 .sub-card:nth-child(odd) { color: var(--ctx-far); }
 .sub-card:hover { color: var(--muted-2); }
