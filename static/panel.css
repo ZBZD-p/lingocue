@@ -772,12 +772,10 @@ button:focus-visible {
      estimated height is deliberately generous (most cards are one short
      line) since undershooting just means a bit of scrollbar jitter as real
      heights are measured in, while overshooting would leave gaps.
-     Paired with scrollCardIntoView() in tutor-panel.js, which animates a
-     fixed pixel offset instead of using scrollIntoView -- see that
-     function's own comment for why the two have to go together:
-     scrollIntoView tracking a live element's position was what turned this
-     into a runaway oscillation, not content-visibility or smooth scrolling
-     by themselves. */
+     Paired with highlightCue()'s switch to an instant (not smooth)
+     scrollIntoView -- see that function's own comment for why the two have
+     to go together: smooth scrolling was what turned this into a runaway
+     oscillation, not content-visibility by itself. */
   content-visibility: auto;
   contain-intrinsic-size: auto 120px;
 }

@@ -1885,28 +1885,6 @@
       spans.forEach((span, i) => span.classList.toggle("spoken", i < lit));
     }
 
-    // scrollIntoView tracks the *element's own* position for the whole
-    // length of a smooth animation, and .sub-card has content-visibility:
-    // auto (see panel.css) -- so as the animation crosses other cards into
-    // relevance mid-flight, their height swaps from a placeholder to their
-    // real one, which shifts the element's position out from under the
-    // animation's own target. It keeps chasing a moving target and never
-    // settles (confirmed for real: runaway back-and-forth scrolling).
-    // Computing one fixed pixel offset up front and animating the
-    // *container's* scrollTop to that number sidesteps this entirely: a
-    // plain number can't drift the way a live element position can, so
-    // nothing is left to re-chase once the animation starts. The position
-    // read here is still accurate despite content-visibility, per the spec's
-    // "auto" guarantee that explicit geometry queries (getBoundingClientRect
-    // included) force correct layout rather than returning the placeholder.
-    function scrollCardIntoView(card, smooth) {
-      const containerRect = subsScroll.getBoundingClientRect();
-      const cardRect = card.getBoundingClientRect();
-      const target = subsScroll.scrollTop + (cardRect.top - containerRect.top)
-        - (subsScroll.clientHeight / 2 - cardRect.height / 2);
-      subsScroll.scrollTo({ top: target, behavior: smooth ? "smooth" : "auto" });
-    }
-
     function highlightCue(idx, autoScroll) {
       const prev = subsScroll.querySelector(".sub-card.current");
       if (prev) prev.classList.remove("current");
@@ -1920,7 +1898,19 @@
       const card = subsScroll.querySelector(`.sub-card[data-index="${idx}"]`);
       if (!card) return;
       card.classList.add("current");
-      if (autoScroll) scrollCardIntoView(card, true);
+      // Instant, not "smooth": .sub-card has content-visibility: auto (see
+      // panel.css), so most of this list is sized off a placeholder height
+      // until a card is actually near the viewport. A multi-frame smooth
+      // scroll animation gives content-visibility time to "unlock" cards
+      // mid-flight as they cross into relevance, swapping their placeholder
+      // height for their real one -- which shifts the total scroll height
+      // out from under the animation's target, so it keeps chasing a moving
+      // target and never settles (confirmed for real: runaway back-and-forth
+      // scrolling). An instant jump computes the target once, synchronously,
+      // against correctly-unlocked geometry (the one thing content-visibility
+      // guarantees for scrollIntoView per spec) -- there's no animation
+      // window left for the target to drift during.
+      if (autoScroll) card.scrollIntoView({ behavior: "auto", block: "center" });
     }
 
     // ---- Line loop (A-B repeat) ----
