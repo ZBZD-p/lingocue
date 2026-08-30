@@ -129,10 +129,63 @@
   }, { rootMargin: "200px" });
 
   ensureStyle();
-  new MutationObserver(function () {
+  // Scanning on every single mutation record was the actual perf bug here:
+  // on a /watch page, YouTube's own caption renderer rewrites its overlay's
+  // text nodes on essentially every subtitle update (multiple times per
+  // second during dialogue), and each of those churns through this observer
+  // too since it's watching the whole subtree. A raw per-mutation
+  // querySelectorAll(document) then runs at that same multi-times-a-second
+  // rate for the entire page, which is enough to pin a CPU core solid on
+  // slower machines -- confirmed as the cause of severe, sustained jank
+  // (not just a one-off stutter) that scaled with how much caption text was
+  // on screen.
+  //
+  // Throttled by wall-clock time, not just per-frame: a new video card is
+  // something a human notices on a timescale of "did the page finish
+  // loading", not frames, so there's no reason to ever scan faster than
+  // human-perceptible regardless of how fast mutations are arriving. Two
+  // tiers rather than one fixed interval: while a video is actively
+  // playing, caption churn is at its worst *and* the user's attention is on
+  // the video, not on newly-appeared badges elsewhere on the page, so this
+  // backs off hard (SCAN_INTERVAL_PLAYING_MS). Once nothing's playing
+  // (browsing the home/recommendations feed, the actual point of this
+  // feature) it goes back to a snappier interval so freshly-scrolled-in
+  // cards get badged promptly -- still well above single-digit-ms, since
+  // nothing about a badge appearing needs to beat the eye's own reaction
+  // time (SCAN_INTERVAL_IDLE_MS).
+  var SCAN_INTERVAL_PLAYING_MS = 1000;
+  var SCAN_INTERVAL_IDLE_MS = 100;
+
+  function isVideoPlaying() {
+    var v = document.querySelector("video");
+    return !!(v && !v.paused && !v.ended && v.readyState > 2);
+  }
+
+  var lastScanAt = 0;
+  var scanTimer = null;
+  function scanForCards() {
+    scanTimer = null;
+    lastScanAt = Date.now();
     document.querySelectorAll(CARD_SELECTOR + ":not([data-lc-observed])").forEach(function (card) {
       card.setAttribute("data-lc-observed", "1");
       io.observe(card);
     });
-  }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+  function scheduleScan() {
+    if (scanTimer) return; // a scan is already queued -- this mutation rides along with it
+    var interval = isVideoPlaying() ? SCAN_INTERVAL_PLAYING_MS : SCAN_INTERVAL_IDLE_MS;
+    var wait = Math.max(0, interval - (Date.now() - lastScanAt));
+    scanTimer = setTimeout(scanForCards, wait);
+  }
+
+  // Scoped to the page-manager (the SPA's own content root) rather than
+  // document.documentElement -- excludes the masthead/header, which has its
+  // own independent churn (notification badges, live search suggestions)
+  // that's just as irrelevant to "did a video card appear" as the caption
+  // overlay is. Falls back to documentElement if that element isn't there
+  // yet (observed once at script-start, before YouTube's custom elements
+  // are guaranteed to have mounted).
+  var observeRoot = document.querySelector("ytd-page-manager") || document.documentElement;
+  new MutationObserver(scheduleScan)
+    .observe(observeRoot, { childList: true, subtree: true });
 })();
