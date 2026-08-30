@@ -1347,6 +1347,22 @@
     let cueUnknownWords = [];
     let currentCueIndex = -1;
     let lastUserScrollAt = 0;
+    // Separate from lastUserScrollAt above (which only fires on mousedown --
+    // see that listener's own comment for why wheel/trackpad scrolling was
+    // deliberately left out of it, a different concern about the
+    // still-extracting re-render below). This one exists specifically to
+    // back off the current-line auto-scroll while the user is reading ahead,
+    // so it does need to fire on every kind of scroll, wheel included --
+    // confirmed for real that without it, wheel-scrolling down to read ahead
+    // got yanked back to the current line on the very next cue change,
+    // because nothing was ever resetting the clock for that input method.
+    let lastManualScrollAt = 0;
+    // Set right before this script's own scrollCardIntoView() moves the
+    // list, so the "scroll" listener below can tell that apart from the
+    // user's own input and not treat it as "user just scrolled" -- without
+    // this, every auto-scroll would immediately re-arm its own suppression
+    // window and never manage to land.
+    let programmaticScroll = false;
     let extractPollTimer = null;
     const USER_SCROLL_QUIET_MS = 4000;
     const EXTRACT_POLL_MS = 3000;
@@ -1601,7 +1617,10 @@
     // clock, so on a still-updating video the cards could keep missing their
     // window to ever re-render.)
     subsScroll.addEventListener("mousedown", () => { lastUserScrollAt = Date.now(); }, { passive: true });
-    subsScroll.addEventListener("scroll", () => { wordPopup.classList.remove("open"); }, { passive: true });
+    subsScroll.addEventListener("scroll", () => {
+      wordPopup.classList.remove("open");
+      if (!programmaticScroll) lastManualScrollAt = Date.now();
+    }, { passive: true });
 
     // Split a line into hoverable per-word spans so the popup can target the
     // exact word under the cursor, not the whole sentence.
@@ -1859,7 +1878,8 @@
       // it, so floor the display at the loop's own start.
       if (loopActive() && idx < loopStartIdx) idx = loopStartIdx;
       if (idx !== currentCueIndex) {
-        highlightCue(idx, Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS);
+        const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
+        highlightCue(idx, quietFor >= USER_SCROLL_QUIET_MS);
       }
       // Outside the cue-changed check on purpose: the whole point is to keep
       // moving *within* one line, which is exactly the case that check skips.
@@ -1910,7 +1930,17 @@
       // against correctly-unlocked geometry (the one thing content-visibility
       // guarantees for scrollIntoView per spec) -- there's no animation
       // window left for the target to drift during.
-      if (autoScroll) card.scrollIntoView({ behavior: "auto", block: "center" });
+      if (autoScroll) {
+        // Marks the "scroll" event this jump itself fires as not being the
+        // user, so it doesn't immediately re-arm lastManualScrollAt's own
+        // suppression window (see that listener's comment) -- cleared next
+        // frame rather than synchronously after, since the resulting scroll
+        // event isn't guaranteed to have already fired by the time this
+        // call returns.
+        programmaticScroll = true;
+        card.scrollIntoView({ behavior: "auto", block: "center" });
+        requestAnimationFrame(() => { programmaticScroll = false; });
+      }
     }
 
     // ---- Line loop (A-B repeat) ----
