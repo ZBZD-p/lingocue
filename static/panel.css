@@ -333,23 +333,28 @@ button:focus-visible {
 .preview-btn:hover { border-color: var(--accent); }
 .preview-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
-/* Sits inside .body (already position:relative) rather than .shell, so it
-   covers exactly the page area and never the topbar/composer above/below. */
+/* A .shell sibling, not a .body child: position:fixed here resolves
+   against the real viewport (nothing between this and :host sets a
+   transform/filter to redirect it), so the card floats centered over the
+   whole page -- the video included -- rather than being boxed into
+   whatever the sidebar's own width happens to be. :host's own z-index
+   (2147483000) already puts everything in this shadow tree above the
+   host page; this only needs to beat the panel's own top elements. */
 .preview-overlay {
-  position: absolute; inset: 0; z-index: 5;
-  background: var(--bg);
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(10, 8, 6, 0.6);
   display: flex; align-items: center; justify-content: center;
   padding: 24px 20px;
 }
 
 .preview-card {
-  width: 100%; max-width: 300px;
+  width: 100%; max-width: 380px;
   background: var(--surface-raised); border: 1px solid var(--line-strong);
-  border-radius: var(--radius); box-shadow: var(--shadow-lift);
-  padding: 20px 22px 18px;
+  border-radius: var(--radius); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  padding: 26px 28px 22px;
 }
 .preview-card .pc-row1 { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.preview-card .pc-word { font-family: var(--font-heading); font-size: 27px; color: var(--ink); line-height: 1.1; }
+.preview-card .pc-word { font-family: var(--font-heading); font-size: 34px; color: var(--ink); line-height: 1.1; }
 .preview-card .pc-idx { font-size: 11px; color: var(--muted); flex-shrink: 0; white-space: nowrap; }
 .preview-card .pc-phon { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); margin: 6px 0 14px; }
 .preview-card .pc-speak {
@@ -370,8 +375,10 @@ button:focus-visible {
 .preview-card .pc-acts { display: flex; justify-content: space-between; gap: 8px; }
 
 .preview-end {
-  width: 100%; max-width: 280px; text-align: center;
-  display: flex; flex-direction: column; gap: 16px;
+  width: 100%; max-width: 340px; text-align: center;
+  background: var(--surface-raised); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  padding: 26px 28px; display: flex; flex-direction: column; gap: 16px;
 }
 .preview-end .pe-text { font-size: 13.5px; color: var(--ink); line-height: 1.6; }
 .preview-end .pe-text b { color: var(--accent); }

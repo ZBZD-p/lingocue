@@ -326,7 +326,6 @@
         </div>
       </div>
       <div class="body">
-        <div class="preview-overlay" id="previewOverlay" hidden></div>
         <div class="page active" id="chatPage"><div class="chat" id="chat"></div></div>
         <div class="page" id="subsPage">
           <div class="subs-note" id="subsNote" hidden></div>
@@ -381,6 +380,7 @@
         </div>
       </div>
     </div>
+    <div class="preview-overlay" id="previewOverlay" hidden></div>
   `;
 
   // ---- bootstrap ---------------------------------------------------------
