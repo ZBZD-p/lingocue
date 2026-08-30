@@ -1898,7 +1898,19 @@
       const card = subsScroll.querySelector(`.sub-card[data-index="${idx}"]`);
       if (!card) return;
       card.classList.add("current");
-      if (autoScroll) card.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Instant, not "smooth": .sub-card has content-visibility: auto (see
+      // panel.css), so most of this list is sized off a placeholder height
+      // until a card is actually near the viewport. A multi-frame smooth
+      // scroll animation gives content-visibility time to "unlock" cards
+      // mid-flight as they cross into relevance, swapping their placeholder
+      // height for their real one -- which shifts the total scroll height
+      // out from under the animation's target, so it keeps chasing a moving
+      // target and never settles (confirmed for real: runaway back-and-forth
+      // scrolling). An instant jump computes the target once, synchronously,
+      // against correctly-unlocked geometry (the one thing content-visibility
+      // guarantees for scrollIntoView per spec) -- there's no animation
+      // window left for the target to drift during.
+      if (autoScroll) card.scrollIntoView({ behavior: "auto", block: "center" });
     }
 
     // ---- Line loop (A-B repeat) ----
