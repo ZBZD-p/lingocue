@@ -40,13 +40,29 @@ WORD_RE = re.compile(r"[A-Za-z']+")
 # extremely common word that's always a single capital letter.
 NOT_PROPER = {"i"}
 
-# Verbal disfluency, not vocabulary -- confirmed for real these carry real
-# but misleadingly rare-looking word_rank entries (ECDICT has them, but a
-# transcribed "um" is nowhere near as common in written corpora as it is in
-# actual speech), so a viewer got told "um"/"uh" were words worth learning.
-# Excluded outright rather than scored: there's no meaning to look up, so
-# "likely unknown" isn't a meaningful question to ask about them at all.
-FILLER_WORDS = {"um", "umm", "uh", "uhh", "uhm", "erm", "hmm"}
+# Two different reasons a word ends up here, same treatment either way:
+# never worth flagging as "a word you don't know". The disfluencies (um/uh)
+# carry real but misleadingly rare-looking word_rank entries -- ECDICT has
+# them, but a transcribed "um" is nowhere near as common in written corpora
+# as it is in actual speech, so a viewer got told they were words worth
+# learning. The greetings/interjections have the same problem from the
+# other direction: ECDICT's frequency data comes from written text, where
+# "hello" and "wow" as bare interjections are genuinely less common than
+# they are in speech, so their corpus rank alone doesn't reflect how
+# universally known they are before any level this app targets -- "hello"/
+# "wow" showed up as preview-card picks against actual cached videos,
+# "huh" (27 hits on one real video) reported directly from the running
+# panel. The rest of this list is filled in ahead of a report rather than
+# waited for one, on the same reasoning. Excluded outright rather than
+# scored either way: there's no meaning to look up for the first group,
+# and no one left to teach it to for the second.
+FILLER_WORDS = {
+    "um", "umm", "uh", "uhh", "uhm", "erm", "hmm", "huh",
+    "hello", "hi", "hey", "hiya", "wow", "whoa",
+    "ok", "okay", "oh", "ah", "aha", "yeah", "yep", "yup", "nope", "bye", "goodbye",
+    "eh", "ugh", "hah", "haha", "yay", "aw", "aww", "meh", "argh", "ouch", "oops",
+    "duh", "gosh", "geez", "gee", "yo",
+}
 
 # "n't" contractions absorb an extra "n" that dictionary.CLITIC_RE's plain
 # suffix strip doesn't account for -- stripping just "'t" turns "don't" into
@@ -66,6 +82,9 @@ NEGATIVE_CONTRACTIONS = {
 }
 
 
+_REAL_SINGLE_LETTER_WORDS = {"i", "a"}
+
+
 def _tokenize(text: str):
     """(lower, is_capitalized, is_sentence_initial) for every word in text.
 
@@ -77,14 +96,25 @@ def _tokenize(text: str):
     silently fall into the rarest band as if they were obscure vocabulary --
     confirmed for real: they were the single largest contributor to "rare
     word" counts across every indexed video, badly inflating every
-    difficulty score computed so far."""
+    difficulty score computed so far.
+
+    Also drops any single-character token that isn't a real English word:
+    WORD_RE matches letters only, so "3D"/"4K" lose their digit and leave a
+    bare "d"/"k" behind that reads as a word to everything downstream. That
+    fake token then gets a word_rank lookup like any other -- ECDICT has no
+    entry for bare "d", so it fell into the rarest band by default (same
+    failure mode NEGATIVE_CONTRACTIONS exists for), and separately reached
+    an actual preview card with 8 real hits, all "3D" -> "d". English has
+    exactly two genuine single-letter words -- kept by name rather than
+    dropping every single-character token outright.
+    """
     tokens = []
     for sentence in SENTENCE_SPLIT_RE.split(text):
         words = WORD_RE.findall(sentence)
         for i, w in enumerate(words):
             raw_lower = w.lower()
             lower = NEGATIVE_CONTRACTIONS.get(raw_lower) or dictionary.CLITIC_RE.sub("", raw_lower)
-            if lower:
+            if lower and (len(lower) > 1 or lower in _REAL_SINGLE_LETTER_WORDS):
                 tokens.append((lower, w[:1].isupper(), i == 0))
     return tokens
 
@@ -176,6 +206,53 @@ def _spoken_seconds(cues: list[tuple[int, int, str]]) -> float:
     return sum(end - start for start, end in merged) / 1000
 
 
+def _always_capitalized_lemmas(tokens: list[tuple[str, bool, bool]], lex: LemmaRanks) -> set[str]:
+    """Lemmas that are almost certainly proper nouns, judged across the
+    whole transcript rather than one occurrence at a time.
+
+    The per-occurrence rule below (is_cap and not is_initial) misses a
+    proper noun that happens to open sentences often -- a news video
+    repeating "Israel warned..." / "Israel's response..." leaves plenty of
+    non-sentence-initial capitalized hits to catch it, but one where every
+    single mention happens to open a sentence slips through every time
+    (confirmed for real: "israel" reached a preview card with 39 hits this
+    way). A real common word shows up lowercase somewhere in a transcript
+    of any real length -- an article, a plural, mid-sentence use; a name
+    doesn't. So: any lemma seen at least twice that was capitalized *every*
+    time, sentence-initial or not, gets excluded outright rather than just
+    its mid-sentence occurrences. Requires >=2 sightings precisely because
+    one sentence-initial mention alone is no evidence at all -- every word
+    that happens to start the one sentence it appears in would otherwise
+    look "always capitalized".
+
+    Checked against lex.exam_taggable, not lex.is_known: ECDICT defines
+    "Israel"/"Korea"/"Kim" the same as any ordinary headword (real
+    translations, no different from "orbit"), so is_known's "does ECDICT
+    have an entry" is true for them and would have exempted every one of
+    them right back out. exam_taggable is vocab_test.py's existing answer
+    to this exact problem (see its own docstring: "guitar" vs "gustavsson")
+    -- a country/person/brand name gets a corpus rank like any other word
+    but essentially never lands on an actual exam syllabus, while "Monday"/
+    "China"/"God" -- also always-capitalized by convention or usage, but
+    genuinely words worth knowing -- do.
+    """
+    seen_lemmas = set()
+    seen_lowercase = set()
+    occurrence_count = Counter()
+    for lower, is_cap, _is_initial in tokens:
+        if lower in NOT_PROPER:
+            continue
+        lemma = lex.lemma_of(lower)
+        if lemma in lex.exam_taggable:
+            continue
+        seen_lemmas.add(lemma)
+        occurrence_count[lemma] += 1
+        if not is_cap:
+            seen_lowercase.add(lemma)
+    return {lemma for lemma in seen_lemmas
+            if lemma not in seen_lowercase and occurrence_count[lemma] >= 2}
+
+
 def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | None:
     text = " ".join(c[2] for c in cues)
     tokens = _tokenize(text)
@@ -186,14 +263,16 @@ def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | N
     rare = Counter()
     proper_count = 0
     counted = 0
+    proper_lemmas = _always_capitalized_lemmas(tokens, lex)
 
     for lower, is_cap, is_initial in tokens:
-        if is_cap and not is_initial and lower not in NOT_PROPER and not lex.is_known(lower):
+        lemma = lex.lemma_of(lower)
+        if lemma in proper_lemmas or (
+                is_cap and not is_initial and lower not in NOT_PROPER and not lex.is_known(lower)):
             proper_count += 1
             continue
         if lower in FILLER_WORDS:
             continue
-        lemma = lex.lemma_of(lower)
         _rank, band = lex.rank_band(lemma)
         band_counts[band] += 1
         counted += 1
