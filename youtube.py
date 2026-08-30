@@ -1033,6 +1033,10 @@ def _write_secondary(base: Path, tracks) -> None:
         pass  # an optional extra; never worth failing the English track over
 
 
+_preview_cues_cache: dict[str, list[tuple[int, int, str]]] = {}
+_PREVIEW_CUES_CACHE_MAX = 50
+
+
 def preview_cues(video_id: str) -> list[tuple[int, int, str]] | None:
     """Fastest possible read of a video's English words, for the preview-
     cards prompt -- which only needs to know *which words appear*, not
@@ -1046,9 +1050,24 @@ def preview_cues(video_id: str) -> list[tuple[int, int, str]] | None:
     parsing entirely (that parsing exists only for the word-by-word
     highlight, which the preview prompt has no use for).
 
+    Cached per video_id: a caption track never changes mid-session, but
+    "再来 N 张" (another round, with `exclude` set) calls this again for the
+    same video, and without a cache that repeated the full 3-4s network
+    round trip for a result that would come back byte-identical -- measured
+    for real, confirmed as the whole source of that wait. Capped rather
+    than left to grow forever across a long-running process; a plain dict
+    is insertion-ordered, so dropping the oldest key is a real (if crude)
+    LRU-ish eviction, not just "first key found".
+
     None if there's no English track at all, same meaning as everywhere
-    else in this module: nothing to work with.
+    else in this module: nothing to work with. Not cached -- a track that
+    doesn't exist yet could exist on a retry (member-only video whose auth
+    just hasn't landed, a transient fetch failure), so there's nothing
+    trustworthy to remember here.
     """
+    cached = _preview_cues_cache.get(video_id)
+    if cached is not None:
+        return cached
     tracks = _caption_tracks(video_id)
     track = _pick_track(tracks, ("en",), generated=False) or _pick_track(tracks, ("en",), generated=True)
     if not track:
@@ -1057,7 +1076,12 @@ def preview_cues(video_id: str) -> list[tuple[int, int, str]] | None:
         cues = _snippets_to_cues(track)
     except Exception:
         return None
-    return cues or None
+    if not cues:
+        return None
+    if len(_preview_cues_cache) >= _PREVIEW_CUES_CACHE_MAX:
+        _preview_cues_cache.pop(next(iter(_preview_cues_cache)))
+    _preview_cues_cache[video_id] = cues
+    return cues
 
 
 def _fetch_auto_captions(base: Path, tracks, on_stage=None) -> Path | None:
