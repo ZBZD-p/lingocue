@@ -1,6 +1,6 @@
 # LingoCue
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
 [![YouTube extension](https://img.shields.io/badge/YouTube-Chrome%20extension-red.svg)](extension)
@@ -230,4 +230,4 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 ## 协议
 
-[MIT](LICENSE)
+[GPL-3.0](LICENSE)
