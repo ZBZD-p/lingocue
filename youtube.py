@@ -1033,6 +1033,33 @@ def _write_secondary(base: Path, tracks) -> None:
         pass  # an optional extra; never worth failing the English track over
 
 
+def preview_cues(video_id: str) -> list[tuple[int, int, str]] | None:
+    """Fastest possible read of a video's English words, for the preview-
+    cards prompt -- which only needs to know *which words appear*, not
+    punctuation, not real sentence boundaries, not per-word timing.
+
+    Two network calls total (list tracks, fetch one track's snippets) versus
+    the full pipeline's up to four (list, try manual, fall back to the raw
+    auto-caption VTT, write secondary) -- and no local processing at all:
+    track.fetch() already returns plain per-snippet text for both manual and
+    auto-generated tracks, so this skips _track_vtt's inline-timestamp
+    parsing entirely (that parsing exists only for the word-by-word
+    highlight, which the preview prompt has no use for).
+
+    None if there's no English track at all, same meaning as everywhere
+    else in this module: nothing to work with.
+    """
+    tracks = _caption_tracks(video_id)
+    track = _pick_track(tracks, ("en",), generated=False) or _pick_track(tracks, ("en",), generated=True)
+    if not track:
+        return None
+    try:
+        cues = _snippets_to_cues(track)
+    except Exception:
+        return None
+    return cues or None
+
+
 def _fetch_auto_captions(base: Path, tracks, on_stage=None) -> Path | None:
     """Auto captions, repaired, written out as an ordinary .srt sidecar.
 
@@ -1093,11 +1120,6 @@ def _fetch_subtitles(base: Path, url: str) -> None:
                 base, tracks, on_stage=lambda text: _set_stage(base, text))
             kind = "auto"
 
-        # Best-effort and deliberately after English is settled: the second
-        # language is an optional reading aid, and a video having none is
-        # normal rather than a failure worth reporting.
-        _write_secondary(base, tracks)
-
         if not subtitle:
             _set_stage(base, "!这个视频没有可用的英文字幕（既没有人工字幕，也没有英文原声的自动字幕）。")
             return
@@ -1113,10 +1135,16 @@ def _fetch_subtitles(base: Path, url: str) -> None:
         marker.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
         _set_stage(base, None)
+        # Both of these used to run *before* the ready signal above, adding
+        # a full extra network round trip (secondary) or a model load
+        # (polish) to the wait before subtitles were usable at all, for
+        # something neither one is needed for. Best-effort and after
+        # English is settled: a video having no second language is normal
+        # rather than a failure worth reporting.
+        _write_secondary(base, tracks)
         if kind == "auto":
             # Human-written subs already have real punctuation; only the
-            # auto-caption fallback ever needs this. Fires after the ready
-            # signal above so it never delays subtitles being usable --
+            # auto-caption fallback ever needs this.
             # polish_auto_captions_in_background re-checks is_unpunctuated
             # itself and no-ops if this track turned out fine already.
             request_polish(base)

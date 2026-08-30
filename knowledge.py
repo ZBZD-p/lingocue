@@ -42,6 +42,11 @@ DELTA = {
     "srs_graduated": 2.5,   # a word's review streak hit MASTERED_STREAK
     "srs_pass": 0.6,        # one successful review, not yet mastered
     "collected": -2.0,      # saved into the vocab book -- explicit "don't know"
+    # Preview-cards "我认识这个" -- stronger than a single quiz pass (this
+    # word was never even saved, so there's no prior "didn't know it" signal
+    # to overcome) but short of graduated (one self-report, not six verified
+    # reviews).
+    "self_known": 1.2,
 }
 LOGIT_CLAMP = 4.0
 

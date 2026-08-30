@@ -309,6 +309,74 @@ button:focus-visible {
 .difficulty-badge.lc-mid { color: #a5741f; background: rgba(210, 150, 50, .18); }
 .difficulty-badge.lc-bad { color: #b23e30; background: rgba(210, 80, 70, .18); }
 
+/* ---- preview-cards prompt ----
+   A .topbar child with flex-basis:100% so it wraps onto its own line below
+   the tabs row, rather than a new .shell grid row -- .shell's own
+   grid-template-rows is a fixed 3-row layout (topbar/body/composer) that a
+   fourth direct child would silently misalign. */
+.preview-bar {
+  flex: 0 0 100%;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 10px; padding: 9px 12px;
+  background: var(--accent-soft); border: 1px solid var(--accent-soft-strong);
+  border-radius: var(--radius-sm);
+}
+.preview-bar-text { font-size: 12.5px; color: var(--ink); line-height: 1.4; }
+.preview-bar-text b { color: var(--accent); font-weight: 700; }
+.preview-bar-btns { display: flex; gap: 8px; flex-shrink: 0; }
+
+.preview-btn {
+  font: inherit; font-size: 12px; padding: 6px 13px; border-radius: 999px;
+  border: 1px solid var(--line-strong); background: var(--surface-raised);
+  color: var(--ink); cursor: pointer; white-space: nowrap;
+}
+.preview-btn:hover { border-color: var(--accent); }
+.preview-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+
+/* Sits inside .body (already position:relative) rather than .shell, so it
+   covers exactly the page area and never the topbar/composer above/below. */
+.preview-overlay {
+  position: absolute; inset: 0; z-index: 5;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px 20px;
+}
+
+.preview-card {
+  width: 100%; max-width: 300px;
+  background: var(--surface-raised); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow-lift);
+  padding: 20px 22px 18px;
+}
+.preview-card .pc-row1 { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.preview-card .pc-word { font-family: var(--font-heading); font-size: 27px; color: var(--ink); line-height: 1.1; }
+.preview-card .pc-idx { font-size: 11px; color: var(--muted); flex-shrink: 0; white-space: nowrap; }
+.preview-card .pc-phon { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); margin: 6px 0 14px; }
+.preview-card .pc-speak {
+  width: 21px; height: 21px; flex-shrink: 0; border-radius: 5px; padding: 0;
+  background: var(--accent-soft); color: var(--accent); border: none;
+  display: inline-grid; place-items: center; cursor: pointer;
+}
+.preview-card .pc-speak:hover { background: var(--accent-soft-strong); }
+.preview-card .pc-def { font-size: 14.5px; color: var(--ink); margin: 0 0 12px; line-height: 1.55; white-space: pre-line; }
+.preview-card .pc-quote {
+  border-left: 2px solid var(--accent); padding: 2px 0 2px 11px; margin: 0 0 14px;
+  font-size: 12.5px; color: var(--ctx-near); font-style: italic; line-height: 1.5;
+}
+.preview-card .pc-facts {
+  font-size: 11px; color: var(--muted); padding-bottom: 11px;
+  border-bottom: 1px solid var(--line); margin-bottom: 12px;
+}
+.preview-card .pc-acts { display: flex; justify-content: space-between; gap: 8px; }
+
+.preview-end {
+  width: 100%; max-width: 280px; text-align: center;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.preview-end .pe-text { font-size: 13.5px; color: var(--ink); line-height: 1.6; }
+.preview-end .pe-text b { color: var(--accent); }
+.preview-end .pe-btns { display: flex; gap: 8px; justify-content: center; }
+
 /* ---- settings page ----
    One generic row shape, rendered from the SETTINGS declaration in
    tutor-panel.js, so a new setting needs no new CSS. */
@@ -734,6 +802,12 @@ button:focus-visible {
    doesn't fight the word-by-word spoken/unspoken dimming below or the hover
    background above; both still read clearly with this stacked underneath. */
 .sub-word-unknown { text-decoration: underline dotted var(--accent); text-underline-offset: 3px; }
+
+/* Preview-cards收口: a word just previewed, now spotted in the real
+   subtitles -- a filled background rather than another underline style, so
+   it still reads clearly stacked on top of .sub-word-unknown's dotted line
+   when a word happens to be both. */
+.sub-word-previewed { background: var(--accent-soft); }
 
 /* Word-by-word highlight: the line fills in as it's spoken, so you can see
    at a glance how far along the reading is. The dimming sits on the

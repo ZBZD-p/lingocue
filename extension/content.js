@@ -58,6 +58,17 @@
         var v = document.querySelector("video");
         if (v) v.currentTime = seconds;
       },
+      // Preview cards (tutor-panel.js's updatePreviewPrompt) pausing to run
+      // a round and resuming after -- YouTube's player is a real <video>
+      // element under the hood, same as everywhere else in this bridge.
+      pause: function () {
+        var v = document.querySelector("video");
+        if (v) v.pause();
+      },
+      play: function () {
+        var v = document.querySelector("video");
+        if (v) v.play().catch(function () {});
+      },
     };
   }
 

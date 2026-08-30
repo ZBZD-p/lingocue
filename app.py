@@ -91,6 +91,7 @@ import indexer  # noqa: E402
 import jellyfin  # noqa: E402
 import knowledge  # noqa: E402
 import playback  # noqa: E402
+import preview  # noqa: E402
 import scoring  # noqa: E402
 import subs_now  # noqa: E402
 import vocab_test  # noqa: E402
@@ -663,6 +664,87 @@ def get_difficulty_batch(body: DifficultyBatchRequest):
         return {"result": result, "vocab_size": v}
     finally:
         db.close()
+
+
+# Below this many candidate words, a preview round would either repeat
+# itself or pad with words that don't really belong -- and the whole
+# feature's credibility rests on "these words will really show up", which
+# padding breaks the first time it happens. Not shown at all beats shown
+# with filler.
+MIN_PREVIEW_CANDIDATES = 2
+PREVIEW_CARDS_PER_ROUND = 4
+
+
+@app.get("/api/preview/{video_id}")
+def get_preview(video_id: str, exclude: str = ""):
+    """Which words from this (YouTube) video are worth a 30-second preview
+    before the user starts watching -- see preview.py for the ranking.
+
+    `exclude`: comma-separated lemmas already shown this session (the
+    "再来 N 张" button asking for another round) -- see preview_words.
+
+    Deliberately independent of the subtitle-cache pipeline youtube.py
+    otherwise runs through: preview_cues() does its own minimal fetch (list
+    tracks, pull one track's snippets, nothing else), so this can answer
+    before -- and without waiting for -- the full cue/punctuation pipeline
+    that /api/subtitles depends on.
+    """
+    cues = youtube.preview_cues(video_id)
+    if not cues:
+        return {"should_show": False}
+
+    excluded = frozenset(w for w in exclude.split(",") if w)
+    db = knowledge.open_db()
+    try:
+        lex = _lex()
+        vocab_lemmas = preview.vocab_book_lemmas(load_vocab(), lex)
+        scored, total = preview.preview_words(cues, db, lex, vocab_lemmas,
+                                               top_n=PREVIEW_CARDS_PER_ROUND, exclude=excluded)
+        if total < MIN_PREVIEW_CANDIDATES:
+            return {"should_show": False}
+
+        cards = []
+        for _score, lemma, hits, _rank, forms, sentence in scored:
+            entry = dictionary.define(lemma)
+            cards.append({
+                "lemma": lemma,
+                "phonetic": entry["phonetic"] if entry else "",
+                "definition": entry["translation"] if entry else "",
+                "sentence": sentence,
+                "hits": hits,
+                "tags": entry["tags"] if entry else [],
+                "in_wordbook": lemma in vocab_lemmas,
+                # Surface spellings this lemma actually appeared as -- lets
+                # the panel match real subtitle-card words back to this
+                # card for the highlight-after-preview closing loop.
+                "forms": sorted(forms),
+            })
+        return {"should_show": True, "cards": cards, "more": max(0, total - len(cards))}
+    finally:
+        db.close()
+
+
+class PreviewResult(BaseModel):
+    lemma: str
+    action: str  # "known" | "next"
+
+
+@app.post("/api/preview/result")
+def preview_result(body: PreviewResult):
+    """action=known writes real evidence into the same word_knowledge table
+    quiz results and vocab-book saves feed -- see knowledge.DELTA["self_known"].
+    "next" (skipped without a known/unknown judgment) carries no signal and
+    is accepted purely so the frontend has one endpoint for both buttons."""
+    if body.action == "known":
+        lex = _lex()
+        rank, _band = lex.rank_band(body.lemma)
+        db = knowledge.open_db()
+        try:
+            knowledge.apply_evidence(db, body.lemma, rank, "self_known")
+            db.commit()
+        finally:
+            db.close()
+    return {"ok": True}
 
 
 class VocabTestAnswer(BaseModel):
