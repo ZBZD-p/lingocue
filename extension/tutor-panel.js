@@ -1384,7 +1384,7 @@
     let virtualRangeEnd = -1;
     let cueEstimatedHeights = [];
     let cueOffsets = [];
-    const VIRTUAL_BUFFER_CUES = 36;
+    const VIRTUAL_BUFFER_CUES = 72;
     const DEFAULT_CUE_HEIGHT = 52;
     let lastUserScrollAt = 0;
     // Separate from lastUserScrollAt above (which only fires on mousedown --
@@ -1406,6 +1406,7 @@
     let smoothScrollRaf = 0;
     let smoothScrollToken = 0;
     let smoothScrollVelocity = 0;
+    let virtualRecycleTimer = 0;
     let extractPollTimer = null;
     const USER_SCROLL_QUIET_MS = 4000;
     const EXTRACT_POLL_MS = 3000;
@@ -1421,6 +1422,14 @@
       smoothScrollRaf = 0;
       programmaticScroll = false;
       if (resetVelocity) smoothScrollVelocity = 0;
+    }
+
+    function scheduleVirtualRecycle() {
+      if (virtualRecycleTimer) clearTimeout(virtualRecycleTimer);
+      virtualRecycleTimer = setTimeout(() => {
+        virtualRecycleTimer = 0;
+        if (!programmaticScroll && subtitleCues.length) renderVirtualWindow();
+      }, 180);
     }
 
     function smoothCenterCard(card) {
@@ -1870,6 +1879,7 @@
     }
 
     function renderSubtitleCards() {
+      if (virtualRecycleTimer) { clearTimeout(virtualRecycleTimer); virtualRecycleTimer = 0; }
       subtitleCardEls = new Array(subtitleCues.length);
       cueWordSpans = new Array(subtitleCues.length).fill(null);
       cueTextEls = new Array(subtitleCues.length);
@@ -1931,7 +1941,7 @@
       // event would apply a second anchor correction and make the animation
       // oscillate past the target. The explicit playback jump already mounts
       // the needed range before the animation starts.
-      if (!programmaticScroll && subtitleCues.length) renderVirtualWindow();
+      if (!programmaticScroll && subtitleCues.length) scheduleVirtualRecycle();
     }, { passive: true });
 
     // One delegated listener replaces thousands of per-card/per-word
