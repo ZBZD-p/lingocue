@@ -3478,10 +3478,43 @@
     const POSITION_POLL_MS = 250;
     const POSITION_POLL_WORD_MS = 100;
     let positionTimer = null;
+    let seekVideo = null;
+
+    function handleVideoSeeking() {
+      cancelSmoothScroll();
+      // A progress-bar drag can emit several intermediate currentTime values.
+      // Force the next cue lookup down the binary-search path instead of
+      // advancing from the old playback position.
+      lastPositionMs = NaN;
+    }
+
+    function handleVideoSeeked() {
+      const p = player();
+      if (!p) return;
+      const nowMs = p.currentTimeMs();
+      if (!Number.isFinite(nowMs)) return;
+      lastPositionMs = NaN;
+      updateCurrentCue(nowMs);
+    }
+
+    function bindSeekEvents() {
+      const video = document.querySelector("video");
+      if (video === seekVideo) return;
+      if (seekVideo) {
+        seekVideo.removeEventListener("seeking", handleVideoSeeking);
+        seekVideo.removeEventListener("seeked", handleVideoSeeked);
+      }
+      seekVideo = video || null;
+      if (seekVideo) {
+        seekVideo.addEventListener("seeking", handleVideoSeeking, { passive: true });
+        seekVideo.addEventListener("seeked", handleVideoSeeked, { passive: true });
+      }
+    }
 
     function startPositionPolling() {
       clearInterval(positionTimer);
       positionTimer = setInterval(() => {
+        bindSeekEvents();
         const p = player();
         if (!p) return;
         const nowMs = p.currentTimeMs();
