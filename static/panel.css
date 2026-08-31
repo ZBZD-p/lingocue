@@ -570,6 +570,12 @@ button:focus-visible {
   from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: none; }
 }
+@keyframes word-lift-spring {
+  0%   { transform: translateY(0); }
+  54%  { transform: translateY(-4.1px); }
+  78%  { transform: translateY(-3.3px); }
+  100% { transform: translateY(-3.5px); }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .pulse-icon { animation: none; }
@@ -581,7 +587,10 @@ button:focus-visible {
     --line-change: 0s;
   }
   .sub-card.current .sub-time,
-  .sub-card.current .sub-actions { animation: none; }
+  .sub-card.current .sub-actions,
+  .sub-card.current .sub-text.has-word-times .sub-word.spoken {
+    animation: none;
+  }
 }
 
 .thinking-box { margin: 9px 0; font-size: 12px; color: var(--muted); }
@@ -690,13 +699,15 @@ button:focus-visible {
      sideways scrollbar at all times -- which is never the right answer
      here, since anything too wide should wrap instead (see .sub-text). */
   overflow-x: hidden;
+  overflow-anchor: none;
   padding: 10px 22px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 26px;
-  /* renderSubtitleCards() (tutor-panel.js) builds every cue in the whole
-     video up front, un-virtualized -- for a long video that's thousands of
-     .sub-card elements, each with its own per-word spans/listeners. `contain`
+  /* A block flow avoids flexbox measuring every subtitle item whenever the
+     current card changes. The old flex column made each playback update
+     walk the full transcript even though most cards are off-screen. */
+  display: block;
+  /* renderSubtitleCards() (tutor-panel.js) keeps only a bounded card window
+     mounted; spacer elements represent the off-screen transcript. Word spans
+     and controls are created only near the viewport/current line. `contain`
      tells the browser this subtree's layout/paint can't leak in or out, so
      unrelated invalidations elsewhere on the page (confirmed for real: the
      YouTube page's own native caption renderer repaints on essentially every
@@ -711,6 +722,11 @@ button:focus-visible {
 /* With no cards in it the list must not still claim half the page, or
    the "loading" message beside it gets pushed to the bottom. */
 .subs-scroll:empty { flex: 0; padding: 0; }
+.subs-virtual-spacer {
+  display: block;
+  width: 1px;
+  pointer-events: none;
+}
 /* A sibling of .subs-scroll rather than a child: the card list is rebuilt
    with innerHTML, which would otherwise detach this permanently and leave
    every "loading" and "failed" message rendering into nothing. */
@@ -741,7 +757,8 @@ button:focus-visible {
    controls instead, none of which touch layout. */
 .sub-card {
   padding: 0;
-  margin: 0;
+  margin: 0 0 26px;
+  contain: layout paint;
   border: none;
   background: none;
   cursor: pointer;
@@ -787,6 +804,7 @@ button:focus-visible {
   content-visibility: auto;
   contain-intrinsic-size: auto 40px;
 }
+.sub-card:last-child { margin-bottom: 0; }
 .sub-card:nth-child(odd) { color: var(--ctx-far); }
 .sub-card:hover { color: var(--muted-2); }
 
@@ -840,7 +858,13 @@ button:focus-visible {
 .sub-time {
   display: none; /* only the current cue shows its timestamp -- see above */
 }
-.sub-word { border-radius: 4px; padding: 0 1px; }
+.sub-word {
+  display: inline-block;
+  vertical-align: baseline;
+  border-radius: 4px;
+  padding: 0;
+  transform: translateY(0);
+}
 .sub-word:hover { background: var(--accent-soft-strong); cursor: pointer; }
 
 /* "生词高亮" -- a dotted underline rather than a background fill, so it
@@ -867,9 +891,17 @@ button:focus-visible {
    the current line, not blend into the lines above and below it. */
 .sub-card.current .sub-text.has-word-times { color: var(--muted-2); }
 .sub-card.current .sub-text.has-word-times .sub-word {
-  transition: color 0.12s var(--ease);
+  transition: color 0.14s var(--ease);
 }
-.sub-card.current .sub-text.has-word-times .sub-word.spoken { color: var(--ink); }
+.sub-card.current .sub-text.has-word-times .sub-word.spoken {
+  color: var(--ink);
+  transform: translateY(-3.5px);
+  animation: word-lift-spring 0.34s cubic-bezier(0.22, 0.61, 0.24, 1) both;
+}
+:host([word-lift-off]) .sub-card.current .sub-text.has-word-times .sub-word.spoken {
+  transform: translateY(0);
+  animation: none;
+}
 
 /* Loop/ask/read controls only exist inline under the current line -- there
    is nothing to hover-reveal on the other lines, so no absolute positioning

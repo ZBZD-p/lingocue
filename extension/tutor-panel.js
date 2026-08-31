@@ -132,6 +132,11 @@
     { value: "off", label: "关" },
   ];
 
+  const WORD_LIFT_OPTIONS = [
+    { value: "on", label: "开", default: true },
+    { value: "off", label: "关" },
+  ];
+
   // Off by default -- unlike wordHighlight above, this depends on a
   // vocabulary-size estimate that starts at a guessed bootstrap value (see
   // knowledge.DEFAULT_VOCAB_SIZE) until the user actually takes the test,
@@ -250,6 +255,13 @@
         "只有 YouTube 自动字幕带逐词时间，人工字幕和本地视频没有这个数据，会自动跳过。",
       options: WORD_HIGHLIGHT_OPTIONS,
       storageKey: "english-tutor-word-highlight",
+    },
+    {
+      key: "wordLiftAnimation",
+      label: "逐词上移动画",
+      hint: "逐词高亮时让当前单词轻微上移并回弹。关闭后仍保留颜色高亮。",
+      options: WORD_LIFT_OPTIONS,
+      storageKey: "english-tutor-word-lift-animation",
     },
     {
       key: "vocabHighlight",
@@ -755,6 +767,7 @@
       subtitleCues = [];
       subtitleIsPartial = false;
       currentCueIndex = -1;
+      lastPositionMs = NaN;
       clearLoop();
       stopExtractPolling();
       subsNote.hidden = true;
@@ -775,6 +788,7 @@
       subtitleCues = [];
       subtitleIsPartial = false;
       currentCueIndex = -1;
+      lastPositionMs = NaN;
       stopExtractPolling();
       if (currentPage === "subs") loadSubtitleCues();
     }
@@ -846,6 +860,7 @@
       subWeight: applySubWeight,
       secondaryLang: reloadForSecondary,
       wordHighlight: reloadForWordHighlight,
+      wordLiftAnimation: (value) => host.toggleAttribute("word-lift-off", value === "off"),
       vocabHighlight: toggleVocabHighlight,
       deepseekKey: pushDeepSeekConfig,
       deepseekModel: pushDeepSeekConfig,
@@ -1341,11 +1356,36 @@
 
     let subtitleCues = [];
     let subtitleIsPartial = false;
+    // Keep direct references to rendered cards and their word spans. The
+    // subtitle list can contain thousands of cards; querying the whole DOM
+    // on every playback tick made the cost grow with video length.
+    let subtitleCardEls = [];
+    let cueWordSpans = [];
+    let cueTextEls = [];
+    let cueActionEls = [];
+    let wordObserver = null;
+    let cueVisible = [];
+    let currentCardEl = null;
+    let currentWordSpans = [];
+    let lastPositionMs = NaN;
+    let lastAutoScrollAt = 0;
     // Parallel to subtitleCues -- cueUnknownWords[i] is a Set of the
     // lowercased words in subtitleCues[i].text flagged likely-unknown, or
     // undefined until /api/vocab-highlight has answered for this render.
     let cueUnknownWords = [];
     let currentCueIndex = -1;
+    // Card-level virtualization: keep the cue data in memory, but only mount
+    // a bounded window of cards around the viewport/current line. The old
+    // implementation still allocated one DOM subtree per cue, which made
+    // long transcripts expensive even after word spans were lazy-loaded.
+    let virtualTopSpacer = null;
+    let virtualBottomSpacer = null;
+    let virtualRangeStart = 0;
+    let virtualRangeEnd = -1;
+    let cueEstimatedHeights = [];
+    let cueOffsets = [];
+    const VIRTUAL_BUFFER_CUES = 36;
+    const DEFAULT_CUE_HEIGHT = 52;
     let lastUserScrollAt = 0;
     // Separate from lastUserScrollAt above (which only fires on mousedown --
     // see that listener's own comment for why wheel/trackpad scrolling was
@@ -1363,6 +1403,9 @@
     // this, every auto-scroll would immediately re-arm its own suppression
     // window and never manage to land.
     let programmaticScroll = false;
+    let smoothScrollRaf = 0;
+    let smoothScrollToken = 0;
+    let smoothScrollVelocity = 0;
     let extractPollTimer = null;
     const USER_SCROLL_QUIET_MS = 4000;
     const EXTRACT_POLL_MS = 3000;
@@ -1371,6 +1414,64 @@
     // would just be wasted requests -- this is purely a "did it finish yet"
     // poll, not something with real progress to report more granularly.
     const POLISH_POLL_MS = 5000;
+
+    function cancelSmoothScroll(resetVelocity = true) {
+      smoothScrollToken++;
+      if (smoothScrollRaf) cancelAnimationFrame(smoothScrollRaf);
+      smoothScrollRaf = 0;
+      programmaticScroll = false;
+      if (resetVelocity) smoothScrollVelocity = 0;
+    }
+
+    function smoothCenterCard(card) {
+      if (!card || !card.isConnected) return;
+      const rootRect = subsScroll.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      const delta = ((cardRect.top + cardRect.bottom) - (rootRect.top + rootRect.bottom)) / 2;
+      if (!Number.isFinite(delta) || Math.abs(delta) < 3) return;
+      const maxScroll = Math.max(0, subsScroll.scrollHeight - subsScroll.clientHeight);
+      const start = subsScroll.scrollTop;
+      const target = Math.max(0, Math.min(maxScroll, start + delta));
+      if (Math.abs(target - start) < 3) return;
+      // Keep the current velocity when a new cue retargets the center. That
+      // continuity is what gives native lyrics views their gentle "drag"
+      // instead of restarting every transition from a dead stop.
+      cancelSmoothScroll(false);
+      const token = smoothScrollToken;
+      let position = start;
+      let velocity = smoothScrollVelocity;
+      let previousTime = performance.now();
+      programmaticScroll = true;
+      const step = (now) => {
+        if (token !== smoothScrollToken) return;
+        const dt = Math.min(0.034, Math.max(0.001, (now - previousTime) / 1000));
+        previousTime = now;
+        // Critically damped spring: smooth acceleration/deceleration with no
+        // intentional overshoot, while preserving velocity across retargets.
+        const acceleration = (target - position) * 180 - velocity * 26;
+        velocity += acceleration * dt;
+        position += velocity * dt;
+        if ((target - start) * (target - position) < 0) {
+          position = target;
+          velocity = 0;
+        }
+        subsScroll.scrollTop = position;
+        smoothScrollVelocity = velocity;
+        if (Math.abs(target - position) > 0.35 || Math.abs(velocity) > 2) {
+          smoothScrollRaf = requestAnimationFrame(step);
+        } else {
+          subsScroll.scrollTop = target;
+          smoothScrollVelocity = 0;
+          smoothScrollRaf = 0;
+          // Let the final scroll event observe the programmatic flag before
+          // user-scroll suppression is re-enabled.
+          requestAnimationFrame(() => {
+            if (token === smoothScrollToken) programmaticScroll = false;
+          });
+        }
+      };
+      smoothScrollRaf = requestAnimationFrame(step);
+    }
 
     function stopExtractPolling() {
       if (extractPollTimer) { clearTimeout(extractPollTimer); extractPollTimer = null; }
@@ -1391,7 +1492,10 @@
         // place they sit there looking authoritative while the new video is
         // still being resolved -- and every path out of here that isn't
         // success renders into subsEmpty, not the card list.
-        if (startedAt === null) subsScroll.innerHTML = "";
+        if (startedAt === null) {
+          if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
+          subsScroll.innerHTML = "";
+        }
         const lang2 = settingValue("secondaryLang") || "";
         const data = await (await fetch(
           `${API}/api/subtitles?lang=en&tab_id=${TAB_ID}${lang2 ? `&secondary=${lang2}` : ""}` +
@@ -1435,6 +1539,7 @@
         subtitleCues = data.cues;
         subtitleIsPartial = data.complete === false;
         currentCueIndex = -1;
+        lastPositionMs = NaN;
         // Skipped while the user looks like they're mid-drag-select in the
         // list -- a full rebuild here would yank the text out from under
         // them, same reason the auto-scroll below already backs off during
@@ -1507,12 +1612,23 @@
       clearLoop();
     }
 
-    function renderSubtitleCards() {
+    function renderSubtitleCardsLegacy() {
       const frag = document.createDocumentFragment();
+      subtitleCardEls = new Array(subtitleCues.length);
+      cueWordSpans = new Array(subtitleCues.length).fill(null);
+      cueTextEls = new Array(subtitleCues.length);
+      cueActionEls = new Array(subtitleCues.length);
+      cueVisible = new Array(subtitleCues.length).fill(false);
+      if (wordObserver) wordObserver.disconnect();
+      wordObserver = null;
+      currentCardEl = null;
+      currentWordSpans = [];
+      spokenWordCount = -1;
       subtitleCues.forEach((cue, i) => {
         const card = document.createElement("div");
         card.className = "sub-card";
         card.dataset.index = String(i);
+        subtitleCardEls[i] = card;
 
         // Timestamp and the loop/ask/read row only ever render for whichever
         // cue is current -- highlightCue() below fills these in on the one
@@ -1534,7 +1650,10 @@
         // Jellyfin) renders exactly as it always did instead of showing a
         // permanently dim line that never fills in.
         if (cue.words) text.classList.add("has-word-times");
-        appendWordSpans(text, cue.text, i, cue.words);
+        // Word spans are the expensive part of a long transcript. Keep the
+        // cue as plain text until it is near the viewport or becomes current.
+        text.textContent = cue.text;
+        cueTextEls[i] = text;
         card.appendChild(text);
 
         if (cue.text2) {
@@ -1550,31 +1669,7 @@
 
         const actions = document.createElement("div");
         actions.className = "sub-actions";
-
-        const loop = document.createElement("button");
-        loop.className = "sub-loop-btn";
-        loop.innerHTML = `${icon("repeat")}循环`;
-        loop.title = "循环这句（循环中再点另一句可以循环这一段）";
-        loop.setAttribute("aria-label", "循环这句");
-        loop.addEventListener("click", (e) => { e.stopPropagation(); toggleLoopAt(i); });
-        actions.appendChild(loop);
-
-        const ask = document.createElement("button");
-        ask.className = "sub-ask-btn";
-        ask.innerHTML = `${icon("help")}问这句`;
-        ask.title = "问一下这句什么意思";
-        ask.setAttribute("aria-label", "问一下这句什么意思");
-        ask.addEventListener("click", (e) => { e.stopPropagation(); askAboutCue(i); });
-        actions.appendChild(ask);
-
-        const read = document.createElement("button");
-        read.className = "sub-read-btn";
-        read.innerHTML = `${icon("speaker")}朗读`;
-        read.title = "朗读这句";
-        read.setAttribute("aria-label", "朗读这句");
-        read.addEventListener("click", (e) => { e.stopPropagation(); speakWord(cue.text); });
-        actions.appendChild(read);
-
+        cueActionEls[i] = actions;
         card.appendChild(actions);
 
         // Clicking a card seeks the actual player -- the panel is inside
@@ -1588,20 +1683,216 @@
         // from here -- see its own docstring -- this just routes a click on
         // any card into that instead of the ordinary seek-and-exit once a
         // loop exists to extend.
-        card.addEventListener("click", () => {
-          if (loopActive()) { toggleLoopAt(i); return; }
-          const p = player();
-          if (p) p.seekMs(cue.start_ms);
-          lastUserScrollAt = 0;
-          highlightCue(i, true);
-        });
         frag.appendChild(card);
       });
       subsScroll.innerHTML = "";
       subsScroll.appendChild(frag);
+      if (typeof IntersectionObserver === "function") {
+        wordObserver = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            const index = Number(entry.target.dataset.index);
+            if (!Number.isInteger(index)) return;
+            if (subtitleCardEls[index] !== entry.target) return;
+            const root = entry.rootBounds;
+            const rect = entry.boundingClientRect;
+            cueVisible[index] = !!(root && rect.bottom > root.top && rect.top < root.bottom);
+            if (entry.isIntersecting || index === currentCueIndex) {
+              decorateCardWords(index);
+            } else if (index !== currentCueIndex && cueWordSpans[index] !== null) {
+              // Keep only a bounded word-span window in the DOM as playback
+              // moves through a feature-length transcript.
+              cueTextEls[index].textContent = subtitleCues[index].text;
+              cueWordSpans[index] = null;
+            }
+          });
+        }, { root: subsScroll, rootMargin: "800px 0px" });
+        subtitleCardEls.forEach((card) => wordObserver.observe(card));
+      } else {
+        // Chromium supports IntersectionObserver, but keep a functional
+        // fallback for embedded webviews that do not.
+        subtitleCues.forEach((_, i) => decorateCardWords(i));
+      }
       // Cards are rebuilt from scratch on every reload (including the
       // partial-to-complete upgrade mid-extraction), so the loop's own
       // highlighting has to be painted back on afterwards.
+      renderLoopState();
+    }
+
+    // Virtualized replacement for the legacy full-list renderer above. The
+    // later function declaration intentionally wins, while keeping the old
+    // implementation nearby makes this change easy to audit/revert.
+    function estimateCueHeight(cue) {
+      const text = String(cue && cue.text || "");
+      const lines = Math.max(1, Math.ceil(text.length / 42));
+      return DEFAULT_CUE_HEIGHT + (lines - 1) * 24 + (cue && cue.text2 ? 22 : 0);
+    }
+
+    function virtualIndexAtOffset(offset) {
+      let lo = 0, hi = Math.max(0, cueOffsets.length - 2);
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (cueOffsets[mid] <= offset) lo = mid; else hi = mid - 1;
+      }
+      return lo;
+    }
+
+    function createVirtualCueCard(i) {
+      const cue = subtitleCues[i];
+      const card = document.createElement("div");
+      card.className = "sub-card";
+      card.dataset.index = String(i);
+      const time = document.createElement("span");
+      time.className = "sub-time";
+      const timeText = document.createElement("span");
+      timeText.className = "sub-time-text";
+      timeText.textContent = fmt(cue.start_ms);
+      time.appendChild(timeText);
+      card.appendChild(time);
+      const text = document.createElement("div");
+      text.className = "sub-text";
+      if (cue.words) text.classList.add("has-word-times");
+      text.textContent = cue.text;
+      cueTextEls[i] = text;
+      card.appendChild(text);
+      if (cue.text2) {
+        const text2 = document.createElement("div");
+        text2.className = "sub-text-2";
+        text2.textContent = cue.text2;
+        card.appendChild(text2);
+      }
+      const actions = document.createElement("div");
+      actions.className = "sub-actions";
+      cueActionEls[i] = actions;
+      card.appendChild(actions);
+      subtitleCardEls[i] = card;
+      return card;
+    }
+
+    function renderVirtualWindow(anchorIndex = -1) {
+      if (!subtitleCues.length || !virtualTopSpacer || !virtualBottomSpacer) return;
+      const firstVisible = virtualIndexAtOffset(subsScroll.scrollTop);
+      const anchor = anchorIndex >= 0 ? anchorIndex : firstVisible;
+      const center = anchorIndex >= 0 ? anchorIndex : firstVisible;
+      // While the user is scrolling, keep the current window stable until
+      // they approach its edge. Re-centering on every wheel tick makes all
+      // cards get removed/reinserted continuously, which looks like shaking
+      // and also defeats the point of virtualization. Explicit playback
+      // jumps still re-center immediately via anchorIndex.
+      if (anchorIndex < 0 && virtualRangeEnd >= virtualRangeStart &&
+          firstVisible >= virtualRangeStart + 12 &&
+          firstVisible <= virtualRangeEnd - 12) return;
+      const start = Math.max(0, center - VIRTUAL_BUFFER_CUES);
+      const end = Math.min(subtitleCues.length - 1, center + VIRTUAL_BUFFER_CUES);
+      if (start === virtualRangeStart && end === virtualRangeEnd &&
+          subtitleCardEls[anchor] && subtitleCardEls[anchor].isConnected) return;
+      // When recycling because of user scrolling, preserve the current
+      // viewport anchor. Changing the top spacer while replacing cards can
+      // otherwise make the browser keep the old scrollTop but display a
+      // different cue, producing the occasional large jump/overshoot.
+      let preserveIndex = -1;
+      let preserveTop = NaN;
+      if (anchorIndex < 0 && virtualRangeEnd >= virtualRangeStart) {
+        preserveIndex = firstVisible;
+        const oldAnchor = subtitleCardEls[preserveIndex];
+        if (oldAnchor && oldAnchor.isConnected) preserveTop = oldAnchor.getBoundingClientRect().top;
+      }
+      if (wordObserver) wordObserver.disconnect();
+      wordObserver = null;
+      // Rebuild the bounded window as one ordered fragment. Removing the old
+      // range wholesale also handles reverse scrolling without accidentally
+      // appending earlier cues after later ones.
+      for (let i = virtualRangeStart; i <= virtualRangeEnd; i++) {
+        const card = subtitleCardEls[i];
+        if (card) {
+          card.remove();
+          subtitleCardEls[i] = null;
+          cueTextEls[i] = null;
+          cueActionEls[i] = null;
+          cueWordSpans[i] = null;
+          cueVisible[i] = false;
+          if (currentCardEl === card) {
+            currentCardEl = null;
+            currentWordSpans = [];
+            spokenWordCount = -1;
+          }
+        }
+      }
+      const frag = document.createDocumentFragment();
+      for (let i = start; i <= end; i++) {
+        const card = subtitleCardEls[i] || createVirtualCueCard(i);
+        if (!card.isConnected) frag.appendChild(card);
+      }
+      virtualTopSpacer.style.height = `${cueOffsets[start] || 0}px`;
+      virtualBottomSpacer.style.height = `${Math.max(0, cueOffsets[subtitleCues.length] - (cueOffsets[end + 1] || cueOffsets[subtitleCues.length]))}px`;
+      subsScroll.insertBefore(frag, virtualBottomSpacer);
+      if (preserveIndex >= start && preserveIndex <= end && Number.isFinite(preserveTop)) {
+        const newAnchor = subtitleCardEls[preserveIndex];
+        if (newAnchor) {
+          const newTop = newAnchor.getBoundingClientRect().top;
+          if (Number.isFinite(newTop)) subsScroll.scrollTop += newTop - preserveTop;
+        }
+      }
+      virtualRangeStart = start;
+      virtualRangeEnd = end;
+      if (typeof IntersectionObserver === "function") {
+        wordObserver = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            const index = Number(entry.target.dataset.index);
+            if (!Number.isInteger(index) || subtitleCardEls[index] !== entry.target) return;
+            // `isIntersecting` includes the 800px preload margin. Keep a
+            // separate real-viewport test for auto-follow, otherwise a line
+            // that is merely near the viewport suppresses centering.
+            const root = entry.rootBounds;
+            const rect = entry.boundingClientRect;
+            cueVisible[index] = !!(root && rect.bottom > root.top && rect.top < root.bottom);
+            if (entry.isIntersecting || index === currentCueIndex) decorateCardWords(index);
+            else if (index !== currentCueIndex && cueWordSpans[index] !== null) {
+              cueTextEls[index].textContent = subtitleCues[index].text;
+              cueWordSpans[index] = null;
+            }
+          });
+        }, { root: subsScroll, rootMargin: "800px 0px" });
+        for (let i = start; i <= end; i++) if (subtitleCardEls[i]) wordObserver.observe(subtitleCardEls[i]);
+      } else {
+        for (let i = start; i <= end; i++) decorateCardWords(i);
+      }
+      if (currentCueIndex >= start && currentCueIndex <= end && subtitleCardEls[currentCueIndex]) {
+        const current = subtitleCardEls[currentCueIndex];
+        current.classList.add("current");
+        decorateCardWords(currentCueIndex);
+        ensureCardActions(currentCueIndex);
+        currentCardEl = current;
+        currentWordSpans = subtitleCues[currentCueIndex].words
+          ? (cueWordSpans[currentCueIndex] || []) : [];
+        spokenWordCount = -1;
+      }
+      renderLoopState();
+    }
+
+    function renderSubtitleCards() {
+      subtitleCardEls = new Array(subtitleCues.length);
+      cueWordSpans = new Array(subtitleCues.length).fill(null);
+      cueTextEls = new Array(subtitleCues.length);
+      cueActionEls = new Array(subtitleCues.length);
+      cueVisible = new Array(subtitleCues.length).fill(false);
+      cueEstimatedHeights = subtitleCues.map(estimateCueHeight);
+      cueOffsets = new Array(subtitleCues.length + 1);
+      cueOffsets[0] = 0;
+      for (let i = 0; i < subtitleCues.length; i++) cueOffsets[i + 1] = cueOffsets[i] + cueEstimatedHeights[i];
+      if (wordObserver) wordObserver.disconnect();
+      wordObserver = null;
+      currentCardEl = null;
+      currentWordSpans = [];
+      spokenWordCount = -1;
+      virtualRangeStart = 0;
+      virtualRangeEnd = -1;
+      subsScroll.innerHTML = "";
+      virtualTopSpacer = document.createElement("div");
+      virtualBottomSpacer = document.createElement("div");
+      virtualTopSpacer.className = "subs-virtual-spacer";
+      virtualBottomSpacer.className = "subs-virtual-spacer";
+      subsScroll.append(virtualTopSpacer, virtualBottomSpacer);
+      renderVirtualWindow(currentCueIndex);
       renderLoopState();
     }
 
@@ -1615,11 +1906,77 @@
     // (search "Jellyfin binds wheel-to-volume"). Wiring plain scrolling into
     // this same busy-guard just meant any scroll over the list reset the
     // clock, so on a still-updating video the cards could keep missing their
-    // window to ever re-render.)
-    subsScroll.addEventListener("mousedown", () => { lastUserScrollAt = Date.now(); }, { passive: true });
+    // window to ever re-render. The separate wheel listener below only
+    // cancels an in-flight lyric animation when the user takes control.)
+    subsScroll.addEventListener("mousedown", () => {
+      cancelSmoothScroll();
+      lastUserScrollAt = Date.now();
+    }, { passive: true });
+    subsScroll.addEventListener("wheel", () => {
+      cancelSmoothScroll();
+      lastUserScrollAt = Date.now();
+      lastManualScrollAt = Date.now();
+    }, { passive: true });
     subsScroll.addEventListener("scroll", () => {
       wordPopup.classList.remove("open");
-      if (!programmaticScroll) lastManualScrollAt = Date.now();
+      if (!programmaticScroll) {
+        cancelSmoothScroll();
+        lastManualScrollAt = Date.now();
+      }
+      // Recycle the card window as the user scrolls through a long transcript.
+      // The range check makes ordinary playback scroll events effectively
+      // free when the current card is already mounted.
+      // During an automatic lyric animation, its scrollTop is the source of
+      // truth. Rebuilding the virtual window from every intermediate scroll
+      // event would apply a second anchor correction and make the animation
+      // oscillate past the target. The explicit playback jump already mounts
+      // the needed range before the animation starts.
+      if (!programmaticScroll && subtitleCues.length) renderVirtualWindow();
+    }, { passive: true });
+
+    // One delegated listener replaces thousands of per-card/per-word
+    // listeners. The cue data remains in subtitleCues, so spans only need a
+    // compact cue index and normalized word on themselves.
+    subsScroll.addEventListener("click", (event) => {
+      const target = event.target && event.target.closest
+        ? event.target : event.target && event.target.parentElement;
+      if (!target || !subsScroll.contains(target)) return;
+      const wordSpan = target.closest(".sub-word");
+      if (wordSpan) {
+        const index = Number(wordSpan.dataset.cueIndex);
+        const cue = subtitleCues[index];
+        if (cue) showWordPopup(wordSpan, wordSpan.dataset.word, cue.text, index);
+        event.stopPropagation();
+        return;
+      }
+      const action = target.closest("[data-sub-action]");
+      const card = target.closest(".sub-card");
+      if (!card || !subsScroll.contains(card)) return;
+      const index = Number(card.dataset.index);
+      if (!Number.isInteger(index) || !subtitleCues[index]) return;
+      if (action) {
+        event.stopPropagation();
+        if (action.dataset.subAction === "loop") toggleLoopAt(index);
+        else if (action.dataset.subAction === "ask") askAboutCue(index);
+        else if (action.dataset.subAction === "read") speakWord(subtitleCues[index].text);
+        return;
+      }
+      if (loopActive()) { toggleLoopAt(index); return; }
+      const p = player();
+      if (p) p.seekMs(subtitleCues[index].start_ms);
+      lastUserScrollAt = 0;
+      lastPositionMs = NaN;
+      highlightCue(index, true);
+    });
+    subsScroll.addEventListener("mouseout", (event) => {
+      const target = event.target && event.target.closest
+        ? event.target : event.target && event.target.parentElement;
+      if (target && target.closest && target.closest(".sub-word")) {
+        const related = event.relatedTarget;
+        if (!related || !related.closest || !related.closest(".sub-word")) {
+          scheduleHideWordPopup();
+        }
+      }
     }, { passive: true });
 
     // Split a line into hoverable per-word spans so the popup can target the
@@ -1632,6 +1989,7 @@
       // rest of the line's timings by one and silently highlight the wrong
       // words from that point on.
       let wordIndex = 0;
+      const spans = [];
       for (const token of sentence.split(/(\s+)/)) {
         if (!token) continue;
         if (/^\s+$/.test(token)) {
@@ -1645,20 +2003,43 @@
         const span = document.createElement("span");
         span.className = "sub-word";
         span.textContent = token;
+        span.dataset.word = word;
+        span.dataset.cueIndex = String(cueIndex);
         if (time) span.dataset.start = time[0];
-        // A click opens the popup (stopped here so it doesn't also fall
-        // through to the card's own click, which seeks the player) -- hover
-        // is left to the plain CSS :hover highlight on .sub-word, not a
-        // reason to pop anything up on its own, since a popup appearing
-        // just from passing the cursor over the line while reading was more
-        // often in the way than useful.
-        span.addEventListener("click", (e) => {
-          e.stopPropagation();
-          showWordPopup(span, word, sentence, cueIndex);
-        });
-        span.addEventListener("mouseleave", scheduleHideWordPopup);
         container.appendChild(span);
+        spans.push(span);
       }
+      return spans;
+    }
+
+    function decorateCardWords(index) {
+      if (cueWordSpans[index] !== null) return;
+      const cue = subtitleCues[index];
+      const text = cueTextEls[index];
+      if (!cue || !text) return;
+      text.textContent = "";
+      cueWordSpans[index] = appendWordSpans(text, cue.text, index, cue.words);
+      applyVocabHighlightToCard(index);
+      applyPreviewHighlightToCard(index);
+    }
+
+    function ensureCardActions(index) {
+      const actions = cueActionEls[index];
+      if (!actions || actions.childElementCount) return;
+      const cue = subtitleCues[index];
+      if (!cue) return;
+      const makeButton = (className, action, html, title) => {
+        const button = document.createElement("button");
+        button.className = className;
+        button.dataset.subAction = action;
+        button.innerHTML = html;
+        button.title = title;
+        button.setAttribute("aria-label", title);
+        actions.appendChild(button);
+      };
+      makeButton("sub-loop-btn", "loop", `${icon("repeat")}循环`, "循环这句");
+      makeButton("sub-ask-btn", "ask", `${icon("help")}问这句`, "问一下这句什么意思");
+      makeButton("sub-read-btn", "read", `${icon("speaker")}朗读`, "朗读这句");
     }
 
     // ---- vocab-highlight ("生词高亮") -------------------------------------
@@ -1688,12 +2069,18 @@
     }
 
     function applyVocabHighlight() {
-      subsScroll.querySelectorAll(".sub-card").forEach((card) => {
-        const unknown = cueUnknownWords[Number(card.dataset.index)];
-        card.querySelectorAll(".sub-word").forEach((span) => {
-          const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
-          span.classList.toggle("sub-word-unknown", !!(unknown && unknown.has(norm)));
-        });
+      cueWordSpans.forEach((spans, index) => {
+        if (spans !== null) applyVocabHighlightToCard(index);
+      });
+    }
+
+    function applyVocabHighlightToCard(index) {
+      const unknown = cueUnknownWords[index];
+      const spans = cueWordSpans[index];
+      if (!spans) return;
+      spans.forEach((span) => {
+        const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
+        span.classList.toggle("sub-word-unknown", !!(unknown && unknown.has(norm)));
       });
     }
 
@@ -1864,11 +2251,25 @@
 
     function updateCurrentCue(positionMs) {
       if (subtitleCues.length === 0) return;
-      let idx = -1;
-      for (let i = 0; i < subtitleCues.length; i++) {
-        if (subtitleCues[i].start_ms <= positionMs) idx = i;
-        else break;
+      let idx = currentCueIndex;
+      // During normal playback timestamps only move forward, so advance the
+      // existing index instead of rescanning the entire cue array. A seek or
+      // rewind falls back to an upper-bound binary search.
+      if (!Number.isFinite(lastPositionMs) || positionMs < lastPositionMs) {
+        let lo = 0;
+        let hi = subtitleCues.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (subtitleCues[mid].start_ms <= positionMs) lo = mid + 1;
+          else hi = mid;
+        }
+        idx = lo - 1;
+      } else {
+        if (idx < -1 || idx >= subtitleCues.length) idx = -1;
+        while (idx + 1 < subtitleCues.length &&
+               subtitleCues[idx + 1].start_ms <= positionMs) idx++;
       }
+      lastPositionMs = positionMs;
       // The loop's own seek deliberately lands LOOP_LEAD_MS before the
       // loop-start cue's start_ms, as a pre-roll so the line's first word
       // doesn't get clipped -- but that position genuinely falls inside the
@@ -1895,28 +2296,59 @@
       // No match when the setting is off (nothing was requested, so no cue
       // carries the marker) or when this video has no per-word data at all,
       // which is what makes both cases a no-op without checking either.
-      const line = subsScroll.querySelector(".sub-card.current .has-word-times");
-      if (!line) return;
-      const spans = line.querySelectorAll(".sub-word");
+      const spans = currentWordSpans;
+      if (spans.length === 0) return;
       let lit = 0;
       while (lit < spans.length && Number(spans[lit].dataset.start) <= positionMs) lit++;
       if (lit === spokenWordCount) return;
+      if (lit > spokenWordCount) {
+        for (let i = Math.max(0, spokenWordCount); i < lit; i++) {
+          spans[i].classList.add("spoken");
+        }
+      } else {
+        for (let i = lit; i < spokenWordCount; i++) {
+          if (spans[i]) spans[i].classList.remove("spoken");
+        }
+      }
       spokenWordCount = lit;
-      spans.forEach((span, i) => span.classList.toggle("spoken", i < lit));
     }
 
     function highlightCue(idx, autoScroll) {
-      const prev = subsScroll.querySelector(".sub-card.current");
+      const prev = currentCardEl;
       if (prev) prev.classList.remove("current");
+      if (currentCueIndex >= 0 && cueActionEls[currentCueIndex]) {
+        cueActionEls[currentCueIndex].replaceChildren();
+      }
+      if (currentWordSpans.length) {
+        currentWordSpans.forEach((span) => span.classList.remove("spoken"));
+      }
       currentCueIndex = idx;
       // The new line starts unlit, and its count has to be invalidated
       // rather than carried over -- otherwise the first tick on a line that
       // happens to light the same number of words as the last one would be
       // mistaken for "nothing changed" and never paint.
       spokenWordCount = -1;
-      if (idx < 0) return;
-      const card = subsScroll.querySelector(`.sub-card[data-index="${idx}"]`);
-      if (!card) return;
+      if (idx < 0) {
+        currentCardEl = null;
+        currentWordSpans = [];
+        return;
+      }
+      // Playback can jump several minutes ahead of the mounted window. Bring
+      // that cue into the small virtualized range before touching its DOM.
+      if (!subtitleCardEls[idx] || !subtitleCardEls[idx].isConnected) renderVirtualWindow(idx);
+      const card = subtitleCardEls[idx];
+      if (!card) {
+        currentCardEl = null;
+        currentWordSpans = [];
+        return;
+      }
+      currentCardEl = card;
+      currentWordSpans = subtitleCues[idx] && subtitleCues[idx].words
+        ? (cueWordSpans[idx] || []) : [];
+      decorateCardWords(idx);
+      currentWordSpans = subtitleCues[idx] && subtitleCues[idx].words
+        ? (cueWordSpans[idx] || []) : [];
+      ensureCardActions(idx);
       card.classList.add("current");
       // Instant, not "smooth": .sub-card has content-visibility: auto (see
       // panel.css), so most of this list is sized off a placeholder height
@@ -1930,16 +2362,25 @@
       // against correctly-unlocked geometry (the one thing content-visibility
       // guarantees for scrollIntoView per spec) -- there's no animation
       // window left for the target to drift during.
-      if (autoScroll) {
-        // Marks the "scroll" event this jump itself fires as not being the
-        // user, so it doesn't immediately re-arm lastManualScrollAt's own
-        // suppression window (see that listener's comment) -- cleared next
-        // frame rather than synchronously after, since the resulting scroll
-        // event isn't guaranteed to have already fired by the time this
-        // call returns.
-        programmaticScroll = true;
-        card.scrollIntoView({ behavior: "auto", block: "center" });
-        requestAnimationFrame(() => { programmaticScroll = false; });
+      // Every cue change gets its own exact center target, like a lyrics view.
+      // There is no viewport tolerance here: even a short line-to-line height
+      // difference should be corrected so the new active line lands on the
+      // same visual baseline every time.
+      let needsCenter = false;
+      if (autoScroll && card.isConnected) {
+        const rootRect = subsScroll.getBoundingClientRect();
+        const cardRect = card.getBoundingClientRect();
+        const rootCenter = (rootRect.top + rootRect.bottom) / 2;
+        const cardCenter = (cardRect.top + cardRect.bottom) / 2;
+        needsCenter = !Number.isFinite(cardCenter) || Math.abs(cardCenter - rootCenter) > 1;
+      }
+      if (autoScroll && needsCenter && Date.now() - lastAutoScrollAt >= 180) {
+        // Animate scrollTop ourselves instead of using native smooth
+        // scrollIntoView. The virtualized list can recycle cards while a
+        // native animation is running; an explicit target plus cancellation
+        // on user input keeps the lyric-style motion stable.
+        smoothCenterCard(card);
+        lastAutoScrollAt = Date.now();
       }
     }
 
@@ -2068,15 +2509,15 @@
     }
 
     function renderLoopState() {
-      subsScroll.querySelectorAll(".sub-card.in-loop").forEach((el) => {
-        el.classList.remove("in-loop", "loop-edge");
+      subtitleCardEls.forEach((el) => {
+        if (el) el.classList.remove("in-loop", "loop-edge");
       });
       const on = loopActive();
       loopPillWrap.hidden = !on;
       if (!on) return;
 
       for (let i = loopStartIdx; i <= loopEndIdx; i++) {
-        const card = subsScroll.querySelector(`.sub-card[data-index="${i}"]`);
+        const card = subtitleCardEls[i];
         if (!card) continue;
         card.classList.add("in-loop");
         if (i === loopStartIdx || i === loopEndIdx) card.classList.add("loop-edge");
@@ -2994,6 +3435,7 @@
           subtitleCues = [];
           subtitleIsPartial = false;
           currentCueIndex = -1;
+          lastPositionMs = NaN;
           // Loop bounds are indices into the cue list that just went away.
           clearLoop();
           subsNote.hidden = true;
@@ -3014,8 +3456,10 @@
       subtitleCues = [];
       subtitleIsPartial = false;
       currentCueIndex = -1;
+      lastPositionMs = NaN;
       currentItemId = null;
       subsNote.hidden = true;
+      if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
       subsScroll.innerHTML = "";
       stopExtractPolling();
       clearLoop();
@@ -3377,7 +3821,15 @@
      *  marked wherever it appears, not looked up by cue index. */
     function applyPreviewHighlight() {
       if (previewedWordForms.size === 0) return;
-      subsScroll.querySelectorAll(".sub-word").forEach((span) => {
+      cueWordSpans.forEach((spans, index) => {
+        if (spans !== null) applyPreviewHighlightToCard(index);
+      });
+    }
+
+    function applyPreviewHighlightToCard(index) {
+      const spans = cueWordSpans[index];
+      if (!spans) return;
+      spans.forEach((span) => {
         const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
         if (previewedWordForms.has(norm)) span.classList.add("sub-word-previewed");
       });
