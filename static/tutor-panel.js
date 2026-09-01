@@ -71,6 +71,7 @@
       return fresh(); // storage blocked (private browsing etc.) -- unique for this load, at least
     }
   })();
+  const PLAYBACK_SESSION_ID = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
   const HISTORY_KEY = "english-tutor-chat-v1";
   const COLLAPSE_KEY = "english-tutor-collapsed";
   const WIDTH_KEY = "english-tutor-width";
@@ -758,18 +759,27 @@
       else style.removeProperty("--english-tutor-sub-weight");
     }
 
+    function applySubSizeAndInvalidate(value, isUserChange) {
+      applySubSize(value);
+      if (isUserChange && typeof invalidateVirtualMeasurements === "function") {
+        invalidateVirtualMeasurements();
+      }
+    }
+
+    function applySubWeightAndInvalidate(value, isUserChange) {
+      applySubWeight(value);
+      if (isUserChange && typeof invalidateVirtualMeasurements === "function") {
+        invalidateVirtualMeasurements();
+      }
+    }
+
     /** Turning the second language on or off changes what the backend has to
      *  merge, so the cue list has to be refetched. Only on a real change --
      *  at boot the cards load lazily when the subtitle tab is first opened,
      *  and half the state this touches hasn't been declared yet. */
     function reloadForSecondary(value, isUserChange) {
       if (!isUserChange) return;
-      subtitleCues = [];
-      subtitleIsPartial = false;
-      currentCueIndex = -1;
-      lastPositionMs = NaN;
-      clearLoop();
-      stopExtractPolling();
+      resetSubtitleSession();
       subsNote.hidden = true;
       if (currentPage === "subs") loadSubtitleCues();
     }
@@ -785,11 +795,7 @@
     function reloadForWordHighlight(value, isUserChange) {
       if (!isUserChange) return;
       startPositionPolling();
-      subtitleCues = [];
-      subtitleIsPartial = false;
-      currentCueIndex = -1;
-      lastPositionMs = NaN;
-      stopExtractPolling();
+      resetSubtitleSession();
       if (currentPage === "subs") loadSubtitleCues();
     }
 
@@ -812,6 +818,7 @@
       if (value === "on") {
         refreshVocabHighlight();
       } else {
+        abortVocabHighlight();
         cueUnknownWords = [];
         applyVocabHighlight();
       }
@@ -856,8 +863,8 @@
     }
 
     const SETTING_HANDLERS = {
-      subSize: applySubSize,
-      subWeight: applySubWeight,
+      subSize: applySubSizeAndInvalidate,
+      subWeight: applySubWeightAndInvalidate,
       secondaryLang: reloadForSecondary,
       wordHighlight: reloadForWordHighlight,
       wordLiftAnimation: (value) => host.toggleAttribute("word-lift-off", value === "off"),
@@ -1356,6 +1363,7 @@
 
     let subtitleCues = [];
     let subtitleIsPartial = false;
+    let subtitleCueSignature = "";
     // Keep direct references to rendered cards and their word spans. The
     // subtitle list can contain thousands of cards; querying the whole DOM
     // on every playback tick made the cost grow with video length.
@@ -1364,7 +1372,14 @@
     let cueTextEls = [];
     let cueActionEls = [];
     let wordObserver = null;
-    let cueVisible = [];
+    const mountedCueIndices = new Set();
+    // A cue can arrive in several extraction batches. Keep a small identity
+    // set so the loading animation is reserved for genuinely new lines and
+    // is not replayed when virtualization recycles a card during scrolling.
+    let subtitleRevealPending = new Set();
+    let subtitleRevealCursor = 0;
+    let subtitleBoundaryRevealOrder = null;
+    let lastVirtualFirstVisible = -1;
     let currentCardEl = null;
     let currentWordSpans = [];
     let lastPositionMs = NaN;
@@ -1408,7 +1423,18 @@
     let smoothScrollVelocity = 0;
     let virtualRecycleTimer = 0;
     let virtualMeasureRaf = 0;
+    let virtualResizeRaf = 0;
     let extractPollTimer = null;
+    let subtitleGeneration = 0;
+    let subtitleRequestSeq = 0;
+    let subtitleRequestController = null;
+    let subtitleModelVersion = 0;
+    let pendingSubtitleCommit = null;
+    let pendingSubtitleCommitTimer = null;
+    let vocabHighlightSeq = 0;
+    let vocabHighlightController = null;
+    let subtitleResizeObserver = null;
+    let subtitleRevealObserver = null;
     const USER_SCROLL_QUIET_MS = 4000;
     const EXTRACT_POLL_MS = 1000;
     // Punctuation restoration takes much longer than an extraction tick
@@ -1416,6 +1442,176 @@
     // would just be wasted requests -- this is purely a "did it finish yet"
     // poll, not something with real progress to report more granularly.
     const POLISH_POLL_MS = 5000;
+
+    function abortVocabHighlight() {
+      vocabHighlightSeq++;
+      if (vocabHighlightController) vocabHighlightController.abort();
+      vocabHighlightController = null;
+    }
+
+    function invalidateSubtitleSession() {
+      subtitleGeneration++;
+      subtitleRequestSeq++;
+      if (subtitleRequestController) subtitleRequestController.abort();
+      subtitleRequestController = null;
+      pendingSubtitleCommit = null;
+      if (pendingSubtitleCommitTimer) { clearTimeout(pendingSubtitleCommitTimer); pendingSubtitleCommitTimer = null; }
+      abortVocabHighlight();
+      if (virtualRecycleTimer) { clearTimeout(virtualRecycleTimer); virtualRecycleTimer = 0; }
+      if (virtualMeasureRaf) { cancelAnimationFrame(virtualMeasureRaf); virtualMeasureRaf = 0; }
+      if (virtualResizeRaf) { cancelAnimationFrame(virtualResizeRaf); virtualResizeRaf = 0; }
+      if (subtitleRevealObserver) { subtitleRevealObserver.disconnect(); subtitleRevealObserver = null; }
+      cancelSmoothScroll();
+    }
+
+    function clearSubtitleModel() {
+      if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
+      if (subtitleRevealObserver) { subtitleRevealObserver.disconnect(); subtitleRevealObserver = null; }
+      subtitleCues = [];
+      subtitleIsPartial = false;
+      subtitleCueSignature = "";
+      subtitleModelVersion++;
+      abortVocabHighlight();
+      subtitleCardEls = [];
+      cueWordSpans = [];
+      cueTextEls = [];
+      cueActionEls = [];
+      mountedCueIndices.clear();
+      subtitleRevealPending.clear();
+      subtitleRevealCursor = 0;
+      subtitleBoundaryRevealOrder = null;
+      lastVirtualFirstVisible = -1;
+      cueEstimatedHeights = [];
+      cueOffsets = [];
+      virtualRangeStart = 0;
+      virtualRangeEnd = -1;
+      virtualTopSpacer = null;
+      virtualBottomSpacer = null;
+      currentCardEl = null;
+      currentWordSpans = [];
+      currentCueIndex = -1;
+      lastPositionMs = NaN;
+      spokenWordCount = -1;
+      cueUnknownWords = [];
+      if (subsScroll) subsScroll.innerHTML = "";
+    }
+
+    function resetSubtitleSession() {
+      invalidateSubtitleSession();
+      if (typeof clearLoop === "function") clearLoop();
+      clearSubtitleModel();
+    }
+
+    function subtitleRequestIsCurrent(generation, requestId) {
+      return generation === subtitleGeneration && requestId === subtitleRequestSeq;
+    }
+
+    function schedulePendingSubtitleCommit(generation) {
+      if (pendingSubtitleCommitTimer) return;
+      pendingSubtitleCommitTimer = setTimeout(() => {
+        pendingSubtitleCommitTimer = null;
+        if (generation !== subtitleGeneration || !pendingSubtitleCommit) return;
+        const quietFor = Date.now() - lastUserScrollAt;
+        if (quietFor < USER_SCROLL_QUIET_MS) {
+          schedulePendingSubtitleCommit(generation);
+          return;
+        }
+        const pending = pendingSubtitleCommit;
+        pendingSubtitleCommit = null;
+        commitSubtitleCues(pending.cues, pending.partial);
+        subsEmpty.hidden = true;
+      }, Math.max(50, USER_SCROLL_QUIET_MS - Math.max(0, Date.now() - lastUserScrollAt)));
+    }
+
+    function cueIdentity(cue) {
+      if (!cue) return "";
+      return `${cue.start_ms}|${cue.end_ms}|${cue.text || ""}`;
+    }
+
+    function cueRevealIdentity(cue) {
+      if (!cue) return "";
+      // Start/end timestamps stay stable when a later response adds
+      // punctuation or a translated line, so those updates do not make an
+      // already-read subtitle fade in again.
+      return `${cue.start_ms}|${cue.end_ms}`;
+    }
+
+    function cuesSignature(cues, isPartial) {
+      return `${isPartial ? "partial" : "complete"}|${(cues || []).map((cue) =>
+        `${cueIdentity(cue)}|${cue && cue.text2 || ""}|${cue && cue.words ? "words" : ""}`).join("\u001f")}`;
+    }
+
+    function findCueByIdentity(cues, identity, fallback = -1) {
+      if (!identity) return fallback;
+      const exact = cues.findIndex((cue) => cueIdentity(cue) === identity);
+      return exact >= 0 ? exact : fallback;
+    }
+
+    function captureVirtualAnchor() {
+      if (!subtitleCues.length || !subsScroll) return null;
+      const index = virtualIndexAtOffset(subsScroll.scrollTop);
+      const card = subtitleCardEls[index];
+      if (!card || !card.isConnected) return { index, identity: cueIdentity(subtitleCues[index]), top: NaN };
+      return { index, identity: cueIdentity(subtitleCues[index]), top: card.getBoundingClientRect().top };
+    }
+
+    function restoreVirtualAnchor(anchor) {
+      if (!anchor || !subtitleCues.length) return;
+      const index = findCueByIdentity(subtitleCues, anchor.identity, anchor.index);
+      const card = subtitleCardEls[index];
+      if (!card || !card.isConnected || !Number.isFinite(anchor.top)) return;
+      const top = card.getBoundingClientRect().top;
+      if (!Number.isFinite(top) || Math.abs(top - anchor.top) < 0.5) return;
+      programmaticScroll = true;
+      subsScroll.scrollTop += top - anchor.top;
+      requestAnimationFrame(() => { programmaticScroll = false; });
+    }
+
+    function commitSubtitleCues(nextCues, isPartial, anchor = null) {
+      const normalizedCues = Array.isArray(nextCues) ? nextCues : [];
+      const nextSignature = cuesSignature(normalizedCues, isPartial);
+      if (nextSignature === subtitleCueSignature) return false;
+      const oldCues = subtitleCues;
+      const wasPartial = subtitleIsPartial;
+      const oldRevealKeys = new Set(oldCues.map(cueRevealIdentity));
+      const oldCurrentKey = cueIdentity(oldCues[currentCueIndex]);
+      const oldLoop = typeof loopActive === "function" && loopActive()
+        ? { start: cueIdentity(oldCues[loopStartIdx]), end: cueIdentity(oldCues[loopEndIdx]) }
+        : null;
+      const savedAnchor = anchor || captureVirtualAnchor();
+
+      subtitleCues = normalizedCues;
+      subtitleIsPartial = !!isPartial;
+      subtitleCueSignature = nextSignature;
+      subtitleModelVersion++;
+      subtitleRevealPending = new Set();
+      if (oldCues.length === 0 || wasPartial || isPartial) {
+        normalizedCues.forEach((cue) => {
+          const key = cueRevealIdentity(cue);
+          if (key && !oldRevealKeys.has(key)) subtitleRevealPending.add(key);
+        });
+      }
+      subtitleRevealCursor = 0;
+      cueUnknownWords = [];
+      currentCueIndex = findCueByIdentity(subtitleCues, oldCurrentKey, -1);
+      lastPositionMs = NaN;
+
+      if (oldLoop) {
+        const start = findCueByIdentity(subtitleCues, oldLoop.start, -1);
+        const end = findCueByIdentity(subtitleCues, oldLoop.end, -1);
+        if (start >= 0 && end >= 0) {
+          loopStartIdx = Math.min(start, end);
+          loopEndIdx = Math.max(start, end);
+        } else {
+          clearLoop();
+        }
+      }
+
+      renderSubtitleCards(savedAnchor);
+      refreshVocabHighlight();
+      applyPreviewHighlight();
+      return true;
+    }
 
     function cancelSmoothScroll(resetVelocity = true) {
       smoothScrollToken++;
@@ -1447,15 +1643,21 @@
         cancelSmoothScroll();
         programmaticScroll = true;
         subsScroll.scrollTop = target;
-        // The target may have been outside content-visibility's activation
-        // range, and adding .current also reveals its timestamp/actions. Both
-        // can change its real height after this first write. Re-center for a
-        // couple of layout frames while the internal-scroll guard is active,
-        // so one seek still lands exactly once from the user's perspective.
+        // The target may have been outside the mounted window, and adding
+        // .current also reveals its timestamp/actions. Both can change its
+        // real height after this first write. Re-center for a couple of
+        // layout frames while the internal-scroll guard is active, so one
+        // seek still lands exactly once from the user's perspective.
         const token = smoothScrollToken;
         let settleFrames = 0;
         const settle = () => {
-          if (token !== smoothScrollToken || !card.isConnected) return;
+          if (token !== smoothScrollToken) return;
+          if (!card.isConnected) {
+            programmaticScroll = false;
+            smoothScrollRaf = 0;
+            smoothScrollVelocity = 0;
+            return;
+          }
           const nextRootRect = subsScroll.getBoundingClientRect();
           const nextCardRect = card.getBoundingClientRect();
           const correction = ((nextCardRect.top + nextCardRect.bottom) -
@@ -1527,6 +1729,11 @@
 
     async function loadSubtitleCues(startedAt = null) {
       stopExtractPolling();
+      const generation = subtitleGeneration;
+      const requestId = ++subtitleRequestSeq;
+      if (subtitleRequestController) subtitleRequestController.abort();
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      subtitleRequestController = controller;
       if (startedAt === null) {
         subsEmpty.hidden = false;
         subsEmpty.textContent = "正在加载字幕…";
@@ -1541,10 +1748,13 @@
           subsScroll.innerHTML = "";
         }
         const lang2 = settingValue("secondaryLang") || "";
-        const data = await (await fetch(
+        const response = await fetch(
           `${API}/api/subtitles?lang=en&tab_id=${TAB_ID}${lang2 ? `&secondary=${lang2}` : ""}` +
-          `${wordHighlightOn() ? "&words=1" : ""}`
-        )).json();
+          `${wordHighlightOn() ? "&words=1" : ""}`,
+          controller ? { signal: controller.signal } : undefined
+        );
+        const data = await response.json();
+        if (!subtitleRequestIsCurrent(generation, requestId)) return;
         // "ready" | "extracting" | an error string; absent when no second
         // language was asked for.
         const sec = data.secondary_status;
@@ -1575,28 +1785,25 @@
 
         if (!data.available || !data.cues || data.cues.length === 0) {
           showSubtitleError(`没有可用字幕：${data.error || "未知原因"}`);
-          subtitleCues = [];
+          clearSubtitleModel();
           return;
         }
 
+        const nextCues = Array.isArray(data.cues) ? data.cues : [];
+        const nextPartial = data.complete === false;
         const wasPartial = subtitleIsPartial;
-        subtitleCues = data.cues;
-        subtitleIsPartial = data.complete === false;
-        currentCueIndex = -1;
-        lastPositionMs = NaN;
-        // Skipped while the user looks like they're mid-drag-select in the
-        // list -- a full rebuild here would yank the text out from under
-        // them, same reason the auto-scroll below already backs off during
-        // this window.
         const userBusy = Date.now() - lastUserScrollAt < USER_SCROLL_QUIET_MS;
-        if (!userBusy) {
-          renderSubtitleCards();
+        if (userBusy && subtitleCues.length) {
+          pendingSubtitleCommit = { cues: nextCues, partial: nextPartial };
+          schedulePendingSubtitleCommit(generation);
+        } else {
+          pendingSubtitleCommit = null;
+          if (pendingSubtitleCommitTimer) { clearTimeout(pendingSubtitleCommitTimer); pendingSubtitleCommitTimer = null; }
+          commitSubtitleCues(nextCues, nextPartial);
           subsEmpty.hidden = true;
-          refreshVocabHighlight();  // fire-and-forget -- see its own comment
-          applyPreviewHighlight();  // re-mark previewed words on the new cards
         }
 
-        if (subtitleIsPartial || secondaryPending) {
+        if (nextPartial || secondaryPending) {
           const t0 = startedAt || Date.now();
           const secs = Math.round((Date.now() - t0) / 1000);
           subsNote.hidden = false;
@@ -1639,7 +1846,10 @@
           if (wasPartial) lastUserScrollAt = 0;
         }
       } catch (e) {
+        if (!subtitleRequestIsCurrent(generation, requestId) || e.name === "AbortError") return;
         showSubtitleError(`加载字幕失败：${e.message}`);
+      } finally {
+        if (subtitleRequestIsCurrent(generation, requestId)) subtitleRequestController = null;
       }
     }
 
@@ -1656,119 +1866,26 @@
       clearLoop();
     }
 
-    function renderSubtitleCardsLegacy() {
-      const frag = document.createDocumentFragment();
-      subtitleCardEls = new Array(subtitleCues.length);
-      cueWordSpans = new Array(subtitleCues.length).fill(null);
-      cueTextEls = new Array(subtitleCues.length);
-      cueActionEls = new Array(subtitleCues.length);
-      cueVisible = new Array(subtitleCues.length).fill(false);
-      if (wordObserver) wordObserver.disconnect();
-      wordObserver = null;
-      currentCardEl = null;
-      currentWordSpans = [];
-      spokenWordCount = -1;
-      subtitleCues.forEach((cue, i) => {
-        const card = document.createElement("div");
-        card.className = "sub-card";
-        card.dataset.index = String(i);
-        subtitleCardEls[i] = card;
-
-        // Timestamp and the loop/ask/read row only ever render for whichever
-        // cue is current -- highlightCue() below fills these in on the one
-        // card that needs them instead of every card carrying dead, hidden
-        // markup for controls that only make sense on the line actually
-        // playing right now.
-        const time = document.createElement("span");
-        time.className = "sub-time";
-        const timeText = document.createElement("span");
-        timeText.className = "sub-time-text";
-        timeText.textContent = fmt(cue.start_ms);
-        time.appendChild(timeText);
-        card.appendChild(time);
-
-        const text = document.createElement("div");
-        text.className = "sub-text";
-        // The marker class is what gates the dimming in panel.css, so a
-        // video with no per-word data (human subtitles, anything from
-        // Jellyfin) renders exactly as it always did instead of showing a
-        // permanently dim line that never fills in.
-        if (cue.words) text.classList.add("has-word-times");
-        // Word spans are the expensive part of a long transcript. Keep the
-        // cue as plain text until it is near the viewport or becomes current.
-        text.textContent = cue.text;
-        cueTextEls[i] = text;
-        card.appendChild(text);
-
-        if (cue.text2) {
-          const text2 = document.createElement("div");
-          text2.className = "sub-text-2";
-          // Deliberately not run through appendWordSpans: the hover lookup is
-          // an English dictionary, so per-word spans over Chinese would only
-          // produce misses, and on touch they'd swallow taps meant for the
-          // card's seek.
-          text2.textContent = cue.text2;
-          card.appendChild(text2);
-        }
-
-        const actions = document.createElement("div");
-        actions.className = "sub-actions";
-        cueActionEls[i] = actions;
-        card.appendChild(actions);
-
-        // Clicking a card seeks the actual player -- the panel is inside
-        // Jellyfin's page, so it can just drive the <video> element. With a
-        // loop already running, though, a plain click on ANY line is the
-        // only way left to pick the loop's other end: only the current line
-        // still gets its own dedicated 循环 button (see .sub-actions above),
-        // so that button alone can start a single-line loop but can never
-        // reach a second, not-currently-playing line to widen it into a
-        // range. toggleLoopAt already knows how to widen/narrow/turn off
-        // from here -- see its own docstring -- this just routes a click on
-        // any card into that instead of the ordinary seek-and-exit once a
-        // loop exists to extend.
-        frag.appendChild(card);
-      });
-      subsScroll.innerHTML = "";
-      subsScroll.appendChild(frag);
-      if (typeof IntersectionObserver === "function") {
-        wordObserver = new IntersectionObserver((entries) => {
-          entries.forEach((entry) => {
-            const index = Number(entry.target.dataset.index);
-            if (!Number.isInteger(index)) return;
-            if (subtitleCardEls[index] !== entry.target) return;
-            const root = entry.rootBounds;
-            const rect = entry.boundingClientRect;
-            cueVisible[index] = !!(root && rect.bottom > root.top && rect.top < root.bottom);
-            if (entry.isIntersecting || index === currentCueIndex) {
-              decorateCardWords(index);
-            } else if (index !== currentCueIndex && cueWordSpans[index] !== null) {
-              // Keep only a bounded word-span window in the DOM as playback
-              // moves through a feature-length transcript.
-              cueTextEls[index].textContent = subtitleCues[index].text;
-              cueWordSpans[index] = null;
-            }
-          });
-        }, { root: subsScroll, rootMargin: "800px 0px" });
-        subtitleCardEls.forEach((card) => wordObserver.observe(card));
-      } else {
-        // Chromium supports IntersectionObserver, but keep a functional
-        // fallback for embedded webviews that do not.
-        subtitleCues.forEach((_, i) => decorateCardWords(i));
-      }
-      // Cards are rebuilt from scratch on every reload (including the
-      // partial-to-complete upgrade mid-extraction), so the loop's own
-      // highlighting has to be painted back on afterwards.
-      renderLoopState();
-    }
-
-    // Virtualized replacement for the legacy full-list renderer above. The
-    // later function declaration intentionally wins, while keeping the old
-    // implementation nearby makes this change easy to audit/revert.
-    function estimateCueHeight(cue) {
+    // Virtualized subtitle renderer: the cue data remains in memory, while
+    // only the bounded window around the viewport is mounted in the DOM.
+    function estimateCueHeight(cue, isLast = false) {
       const text = String(cue && cue.text || "");
-      const lines = Math.max(1, Math.ceil(text.length / 42));
-      return DEFAULT_CUE_HEIGHT + (lines - 1) * 24 + (cue && cue.text2 ? 25 : 0);
+      const text2 = String(cue && cue.text2 || "");
+      const width = Math.max(160, (subsScroll ? subsScroll.clientWidth : 440) - 44);
+      const rootStyle = getComputedStyle(document.documentElement);
+      const configured = parseFloat(rootStyle.getPropertyValue("--english-tutor-sub-size"));
+      const fontSize = configured || (window.matchMedia("(max-width: 700px)").matches ? 18 : 16);
+      const charsPerLine = Math.max(12, Math.floor(width / (fontSize * 0.56)));
+      const primaryLines = Math.max(1, Math.ceil(text.length / charsPerLine));
+      let height = primaryLines * fontSize * 1.5;
+      if (text2) {
+        const secondaryCharsPerLine = Math.max(10, Math.floor(width / (fontSize * 0.72)));
+        const secondaryLines = Math.max(1, Math.ceil(text2.length / secondaryCharsPerLine));
+        height += 6 + secondaryLines * fontSize * 0.75 * 1.6;
+      }
+      height += isLast ? 0 : 26;
+      const minimum = isLast ? fontSize * 1.5 : DEFAULT_CUE_HEIGHT;
+      return Math.max(minimum, Math.ceil(height));
     }
 
     function rebuildCueOffsets() {
@@ -1788,9 +1905,8 @@
       )}px`;
     }
 
-    // content-visibility:auto reports its intrinsic placeholder height for
-    // cards outside the activation range. Only measure cards close to the
-    // real viewport, where the browser has laid out their actual text.
+    // Only measure cards close to the real viewport, where the browser has
+    // laid out their actual text; distant cards use the estimate above.
     function measureMountedCueHeight(card) {
       if (!card || !card.isConnected) return NaN;
       const rect = card.getBoundingClientRect();
@@ -1807,6 +1923,24 @@
         if (subtitleCues.length && virtualRangeEnd >= virtualRangeStart) {
           measureVirtualWindow();
         }
+      });
+    }
+
+    function invalidateVirtualMeasurements() {
+      if (!subtitleCues.length || virtualResizeRaf) return;
+      virtualResizeRaf = requestAnimationFrame(() => {
+        virtualResizeRaf = 0;
+        if (programmaticScroll) {
+          invalidateVirtualMeasurements();
+          return;
+        }
+        const anchor = captureVirtualAnchor();
+        cueEstimatedHeights = subtitleCues.map((cue, i) =>
+          estimateCueHeight(cue, i === subtitleCues.length - 1));
+        rebuildCueOffsets();
+        updateVirtualSpacers();
+        restoreVirtualAnchor(anchor);
+        scheduleVirtualMeasure();
       });
     }
 
@@ -1851,10 +1985,12 @@
     }
 
     function virtualIndexAtOffset(offset) {
+      const paddingTop = parseFloat(getComputedStyle(subsScroll).paddingTop) || 0;
+      const target = Math.max(0, offset + paddingTop);
       let lo = 0, hi = Math.max(0, cueOffsets.length - 2);
       while (lo < hi) {
         const mid = (lo + hi + 1) >> 1;
-        if (cueOffsets[mid] <= offset) lo = mid; else hi = mid - 1;
+        if (cueOffsets[mid] <= target) lo = mid; else hi = mid - 1;
       }
       return lo;
     }
@@ -1863,6 +1999,31 @@
       const cue = subtitleCues[i];
       const card = document.createElement("div");
       card.className = "sub-card";
+      const revealKey = cueRevealIdentity(cue);
+      const boundaryReveal = subtitleBoundaryRevealOrder && subtitleBoundaryRevealOrder.get(i);
+      if (boundaryReveal) {
+        card.classList.add("subtitle-reveal");
+        card.style.setProperty(
+          "--subtitle-reveal-delay",
+          `${Math.min(boundaryReveal.order * 54, 720)}ms`
+        );
+        card.style.setProperty(
+          "--subtitle-reveal-offset",
+          `${boundaryReveal.direction * 7}px`
+        );
+      } else if (revealKey && subtitleRevealPending.has(revealKey)) {
+        card.classList.add("subtitle-reveal");
+        card.style.setProperty(
+          "--subtitle-reveal-delay",
+          `${Math.min(subtitleRevealCursor * 54, 1800)}ms`
+        );
+        subtitleRevealPending.delete(revealKey);
+        subtitleRevealCursor++;
+      }
+      if (card.classList.contains("subtitle-reveal") && typeof IntersectionObserver === "function") {
+        card.classList.add("subtitle-reveal-waiting");
+      }
+      if (i === subtitleCues.length - 1) card.classList.add("sub-card-last");
       card.dataset.index = String(i);
       const time = document.createElement("span");
       time.className = "sub-time";
@@ -1888,12 +2049,18 @@
       cueActionEls[i] = actions;
       card.appendChild(actions);
       subtitleCardEls[i] = card;
+      mountedCueIndices.add(i);
       return card;
     }
 
     function renderVirtualWindow(anchorIndex = -1) {
       if (!subtitleCues.length || !virtualTopSpacer || !virtualBottomSpacer) return;
       const firstVisible = virtualIndexAtOffset(subsScroll.scrollTop);
+      const previousFirstVisible = lastVirtualFirstVisible;
+      const userScrollRender = anchorIndex < 0 && !programmaticScroll;
+      const scrollDirection = previousFirstVisible >= 0
+        ? Math.sign(firstVisible - previousFirstVisible) : 0;
+      lastVirtualFirstVisible = firstVisible;
       const anchor = anchorIndex >= 0 ? anchorIndex : firstVisible;
       const center = anchorIndex >= 0 ? anchorIndex : firstVisible;
       // While the user is scrolling, keep the current window stable until
@@ -1921,10 +2088,14 @@
       }
       if (wordObserver) wordObserver.disconnect();
       wordObserver = null;
-      // Rebuild the bounded window as one ordered fragment. Removing the old
-      // range wholesale also handles reverse scrolling without accidentally
-      // appending earlier cues after later ones.
-      for (let i = virtualRangeStart; i <= virtualRangeEnd; i++) {
+      if (subtitleRevealObserver) subtitleRevealObserver.disconnect();
+      subtitleRevealObserver = null;
+      // Recycle only the part that left the window. Keeping the overlap avoids
+      // destroying word spans, focus and selection on every boundary crossing.
+      const oldStart = virtualRangeStart;
+      const oldEnd = virtualRangeEnd;
+      for (let i = oldStart; i <= oldEnd; i++) {
+        if (i >= start && i <= end) continue;
         const card = subtitleCardEls[i];
         if (card) {
           card.remove();
@@ -1932,7 +2103,7 @@
           cueTextEls[i] = null;
           cueActionEls[i] = null;
           cueWordSpans[i] = null;
-          cueVisible[i] = false;
+          mountedCueIndices.delete(i);
           if (currentCardEl === card) {
             currentCardEl = null;
             currentWordSpans = [];
@@ -1940,20 +2111,61 @@
           }
         }
       }
-      const frag = document.createDocumentFragment();
-      for (let i = start; i <= end; i++) {
-        const card = subtitleCardEls[i] || createVirtualCueCard(i);
-        if (!card.isConnected) frag.appendChild(card);
-      }
       virtualRangeStart = start;
       virtualRangeEnd = end;
       updateVirtualSpacers();
-      subsScroll.insertBefore(frag, virtualBottomSpacer);
+      // Only the cards entering from the direction of a real user scroll get
+      // this boundary animation. Playback jumps and subtitle refreshes use
+      // their own reveal path, so they never make the viewport flash.
+      subtitleBoundaryRevealOrder = null;
+      if (userScrollRender && scrollDirection !== 0 && oldEnd >= oldStart) {
+        const entering = new Map();
+        if (scrollDirection > 0) {
+          let order = 0;
+          for (let i = Math.max(start, oldEnd + 1); i <= end; i++) {
+            entering.set(i, { order: order++, direction: scrollDirection });
+          }
+        } else {
+          let order = 0;
+          for (let i = Math.min(end, oldStart - 1); i >= start; i--) {
+            entering.set(i, { order: order++, direction: scrollDirection });
+          }
+        }
+        subtitleBoundaryRevealOrder = entering.size ? entering : null;
+      }
+      for (let i = start; i <= end; i++) {
+        if (subtitleCardEls[i] && subtitleCardEls[i].isConnected) continue;
+        const card = subtitleCardEls[i] || createVirtualCueCard(i);
+        let next = virtualBottomSpacer;
+        for (let j = i + 1; j <= end; j++) {
+          if (subtitleCardEls[j] && subtitleCardEls[j].isConnected) {
+            next = subtitleCardEls[j];
+            break;
+          }
+        }
+        subsScroll.insertBefore(card, next);
+      }
+      subtitleBoundaryRevealOrder = null;
       if (preserveIndex >= start && preserveIndex <= end && Number.isFinite(preserveTop)) {
         const newAnchor = subtitleCardEls[preserveIndex];
         if (newAnchor) {
           const newTop = newAnchor.getBoundingClientRect().top;
           if (Number.isFinite(newTop)) subsScroll.scrollTop += newTop - preserveTop;
+        }
+      }
+      if (typeof IntersectionObserver === "function") {
+        subtitleRevealObserver = new IntersectionObserver((entries, observer) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            entry.target.classList.remove("subtitle-reveal-waiting");
+            observer.unobserve(entry.target);
+          });
+        }, { root: subsScroll, rootMargin: "0px", threshold: 0.01 });
+        for (let i = start; i <= end; i++) {
+          const card = subtitleCardEls[i];
+          if (card && card.classList.contains("subtitle-reveal")) {
+            subtitleRevealObserver.observe(card);
+          }
         }
       }
       if (typeof IntersectionObserver === "function") {
@@ -1966,7 +2178,6 @@
             // that is merely near the viewport suppresses centering.
             const root = entry.rootBounds;
             const rect = entry.boundingClientRect;
-            cueVisible[index] = !!(root && rect.bottom > root.top && rect.top < root.bottom);
             if (entry.isIntersecting || index === currentCueIndex) decorateCardWords(index);
             else if (index !== currentCueIndex && cueWordSpans[index] !== null) {
               cueTextEls[index].textContent = subtitleCues[index].text;
@@ -1992,15 +2203,19 @@
       scheduleVirtualMeasure();
     }
 
-    function renderSubtitleCards() {
+    function renderSubtitleCards(anchor = null) {
+      const savedAnchor = anchor || captureVirtualAnchor();
+      cancelSmoothScroll();
       if (virtualRecycleTimer) { clearTimeout(virtualRecycleTimer); virtualRecycleTimer = 0; }
       if (virtualMeasureRaf) { cancelAnimationFrame(virtualMeasureRaf); virtualMeasureRaf = 0; }
       subtitleCardEls = new Array(subtitleCues.length);
       cueWordSpans = new Array(subtitleCues.length).fill(null);
       cueTextEls = new Array(subtitleCues.length);
       cueActionEls = new Array(subtitleCues.length);
-      cueVisible = new Array(subtitleCues.length).fill(false);
-      cueEstimatedHeights = subtitleCues.map(estimateCueHeight);
+      mountedCueIndices.clear();
+      subtitleRevealCursor = 0;
+      cueEstimatedHeights = subtitleCues.map((cue, i) =>
+        estimateCueHeight(cue, i === subtitleCues.length - 1));
       cueOffsets = new Array(subtitleCues.length + 1);
       rebuildCueOffsets();
       if (wordObserver) wordObserver.disconnect();
@@ -2010,6 +2225,9 @@
       spokenWordCount = -1;
       virtualRangeStart = 0;
       virtualRangeEnd = -1;
+      lastVirtualFirstVisible = -1;
+      if (subtitleRevealObserver) subtitleRevealObserver.disconnect();
+      subtitleRevealObserver = null;
       subsScroll.innerHTML = "";
       virtualTopSpacer = document.createElement("div");
       virtualBottomSpacer = document.createElement("div");
@@ -2017,7 +2235,13 @@
       virtualBottomSpacer.className = "subs-virtual-spacer";
       subsScroll.append(virtualTopSpacer, virtualBottomSpacer);
       renderVirtualWindow(currentCueIndex);
+      restoreVirtualAnchor(savedAnchor);
       renderLoopState();
+    }
+
+    if (typeof ResizeObserver === "function") {
+      subtitleResizeObserver = new ResizeObserver(() => invalidateVirtualMeasurements());
+      subtitleResizeObserver.observe(subsScroll);
     }
 
     // A mousedown here usually means the user is about to drag-select
@@ -2041,11 +2265,23 @@
       lastUserScrollAt = Date.now();
       lastManualScrollAt = Date.now();
     }, { passive: true });
+    subsScroll.addEventListener("pointerdown", () => {
+      cancelSmoothScroll();
+      lastUserScrollAt = Date.now();
+      lastManualScrollAt = Date.now();
+    }, { passive: true });
+    subsScroll.addEventListener("touchstart", () => {
+      cancelSmoothScroll();
+      lastUserScrollAt = Date.now();
+      lastManualScrollAt = Date.now();
+    }, { passive: true });
     subsScroll.addEventListener("scroll", () => {
       wordPopup.classList.remove("open");
       if (!programmaticScroll) {
         cancelSmoothScroll();
-        lastManualScrollAt = Date.now();
+        const now = Date.now();
+        lastUserScrollAt = now;
+        lastManualScrollAt = now;
       }
       // Recycle the card window as the user scrolls through a long transcript.
       // The range check makes ordinary playback scroll events effectively
@@ -2178,24 +2414,35 @@
 
     async function refreshVocabHighlight() {
       if (!vocabHighlightOn() || subtitleCues.length === 0) return;
+      const generation = subtitleGeneration;
+      const modelVersion = subtitleModelVersion;
+      const requestId = ++vocabHighlightSeq;
+      if (vocabHighlightController) vocabHighlightController.abort();
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      vocabHighlightController = controller;
+      const cues = subtitleCues.map((c) => c.text);
       try {
         const res = await fetch(`${API}/api/vocab-highlight`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cues: subtitleCues.map((c) => c.text) }),
+          body: JSON.stringify({ cues }),
+          ...(controller ? { signal: controller.signal } : {}),
         });
         const data = await res.json();
+        if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion ||
+            requestId !== vocabHighlightSeq || !vocabHighlightOn()) return;
         cueUnknownWords = data.result.map((words) => new Set(words));
       } catch (e) {
         return;  // best-effort -- cards just stay unhighlighted
+      } finally {
+        if (requestId === vocabHighlightSeq) vocabHighlightController = null;
       }
+      if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion) return;
       applyVocabHighlight();
     }
 
     function applyVocabHighlight() {
-      cueWordSpans.forEach((spans, index) => {
-        if (spans !== null) applyVocabHighlightToCard(index);
-      });
+      for (const index of mountedCueIndices) applyVocabHighlightToCard(index);
     }
 
     function applyVocabHighlightToCard(index) {
@@ -2477,11 +2724,10 @@
       ensureCardActions(idx);
       card.classList.add("current");
       // Seek jumps use an immediate scroll rather than the normal spring:
-      // .sub-card has content-visibility:auto (see panel.css), so an
-      // offscreen target can switch from its placeholder height to real
-      // layout as it enters the viewport. smoothCenterCard() performs a
-      // short, guarded post-layout recenter for that transition; a long
-      // spring would keep chasing the moving virtual-list geometry.
+      // an offscreen target may be mounted with an estimated height and then
+      // corrected by the virtual-list measurement pass. smoothCenterCard()
+      // performs a short, guarded post-layout recenter for that transition;
+      // a long spring would keep chasing the moving geometry.
       // Every cue change gets its own exact center target, like a lyrics view.
       // There is no viewport tolerance here: even a short line-to-line height
       // difference should be corrected so the new active line lands on the
@@ -2631,9 +2877,10 @@
     }
 
     function renderLoopState() {
-      subtitleCardEls.forEach((el) => {
+      for (const index of mountedCueIndices) {
+        const el = subtitleCardEls[index];
         if (el) el.classList.remove("in-loop", "loop-edge");
-      });
+      }
       const on = loopActive();
       loopPillWrap.hidden = !on;
       if (!on) return;
@@ -3556,9 +3803,16 @@
       catch (e) { return null; }
     }
 
+    let playbackReportSeq = 0;
+    let playbackReportController = null;
+
     async function reportPlaybackState() {
       const p = player();
       if (!p) return;  // html5Player/youtubePlayer already set lastProbe
+      const reportSeq = ++playbackReportSeq;
+      if (playbackReportController) playbackReportController.abort();
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      playbackReportController = controller;
 
       // Under Jellyfin only position/duration go up: the element's src is an
       // opaque blob: URL under MSE, so identity has to come from /Sessions on
@@ -3572,9 +3826,13 @@
             duration_ms: Math.round(p.durationMs()),
             status: p.paused() ? "paused" : "playing",
             tab_id: TAB_ID,
+            client_session: PLAYBACK_SESSION_ID,
+            client_seq: reportSeq,
             ...(p.source ? { source: p.source } : {}),
           }),
+          ...(controller ? { signal: controller.signal } : {}),
         });
+        if (reportSeq !== playbackReportSeq) return;
         if (!res.ok) {
           lastProbe = res.status === 409
             ? "Jellyfin 还没报告播放会话，稍等几秒"
@@ -3588,19 +3846,19 @@
           currentItemId = data.path;
           // New episode -- drop the old cues so the subtitle page reloads
           // for what's playing now, not the previous episode.
-          subtitleCues = [];
-          subtitleIsPartial = false;
-          currentCueIndex = -1;
-          lastPositionMs = NaN;
+          invalidateDifficultyBadge();
+          resetSubtitleSession();
           detachSeekVideo();
           // Loop bounds are indices into the cue list that just went away.
-          clearLoop();
           subsNote.hidden = true;
           stopExtractPolling();
           if (currentPage === "subs") loadSubtitleCues();
         }
       } catch (e) {
+        if (e.name === "AbortError" || reportSeq !== playbackReportSeq) return;
         lastProbe = "连不上后端 app.py";
+      } finally {
+        if (reportSeq === playbackReportSeq) playbackReportController = null;
       }
     }
 
@@ -3610,17 +3868,20 @@
     // outright instead of leaving the panel showing the previous video's
     // subtitles, which look perfectly plausible and are entirely wrong.
     window.addEventListener("english-tutor:source-changed", () => {
-      subtitleCues = [];
-      subtitleIsPartial = false;
-      currentCueIndex = -1;
-      lastPositionMs = NaN;
+      playbackReportSeq++;
+      if (playbackReportController) playbackReportController.abort();
+      playbackReportController = null;
+      invalidateDifficultyBadge();
+      resetSubtitleSession();
       detachSeekVideo();
       currentItemId = null;
       subsNote.hidden = true;
-      if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
-      subsScroll.innerHTML = "";
-      stopExtractPolling();
-      clearLoop();
+      previewedWordForms.clear();
+      if (previewSession) {
+        previewSession = null;
+        previewOverlay.hidden = true;
+        previewOverlay.innerHTML = "";
+      }
       if (currentPage === "subs") loadSubtitleCues();
     });
 
@@ -3733,7 +3994,14 @@
     startPositionPolling();
     setInterval(reportPlaybackState, 2000);
 
+    let contextRequestSeq = 0;
+    let contextRequestController = null;
+
     async function refreshContext() {
+      const contextSeq = ++contextRequestSeq;
+      if (contextRequestController) contextRequestController.abort();
+      const contextController = typeof AbortController === "function" ? new AbortController() : null;
+      contextRequestController = contextController;
       // Independent of whether /api/context below has anything to say: the
       // badge only needs the video id straight out of the URL, not the
       // playback-state pipeline's own "is anything reporting in yet" state
@@ -3743,7 +4011,10 @@
       updateDifficultyBadge();
       updatePreviewPrompt();
       try {
-        const data = await (await fetch(`${API}/api/context?tab_id=${TAB_ID}`)).json();
+        const response = await fetch(`${API}/api/context?tab_id=${TAB_ID}`,
+          contextController ? { signal: contextController.signal } : undefined);
+        const data = await response.json();
+        if (contextSeq !== contextRequestSeq) return;
         if (!data.available) {
           // lastProbe says what the panel itself sees; without it a detection
           // failure is indistinguishable from "nothing is playing yet".
@@ -3757,11 +4028,24 @@
         contextBar.textContent =
           `▶ ${p.title} — ${fmt(p.position_ms)}/${fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
       } catch (e) {
+        if (e.name === "AbortError" || contextSeq !== contextRequestSeq) return;
         contextBar.textContent = "读取播放状态失败（后端 app.py 没启动？）";
+      } finally {
+        if (contextSeq === contextRequestSeq) contextRequestController = null;
       }
     }
 
     let difficultyFetchInFlight = false;
+    let difficultyFetchSeq = 0;
+    let difficultyFetchController = null;
+
+    function invalidateDifficultyBadge() {
+      difficultyFetchSeq++;
+      if (difficultyFetchController) difficultyFetchController.abort();
+      difficultyFetchController = null;
+      difficultyFetchInFlight = false;
+      difficultyBadge.hidden = true;
+    }
     // Same three colors/thresholds as extension/grid-badges.js's card
     // badges (see .lc-ok/.lc-mid/.lc-bad in panel.css) -- one system, two
     // surfaces.
@@ -3805,17 +4089,21 @@
         return;  // already showing a confirmed result for this exact video
       }
       if (difficultyFetchInFlight) return;
+      const requestSeq = ++difficultyFetchSeq;
+      if (difficultyFetchController) difficultyFetchController.abort();
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      difficultyFetchController = controller;
       difficultyFetchInFlight = true;
       try {
         const url = isYouTube
           ? `${API}/api/difficulty/${encodeURIComponent(key)}`
           : `${API}/api/difficulty-local?tab_id=${TAB_ID}`;
-        const res = await fetch(url);
+        const res = await fetch(url, controller ? { signal: controller.signal } : undefined);
         const data = await res.json();
         // Stale (moved on before this resolved) or not ready yet (subtitles
         // still fetching) -- either way, leave hidden and let the next 4s
         // tick try again rather than treating this as a final no.
-        if (key !== lastDifficultyKey || data.status !== "ok") return;
+        if (requestSeq !== difficultyFetchSeq || key !== lastDifficultyKey || data.status !== "ok") return;
         difficultyBadge.hidden = false;
         difficultyBadge.className = `difficulty-badge ${DIFFICULTY_LABEL_CLASS[data.label] || ""}`;
         difficultyBadge.textContent = `${data.label} · ${data.density_per_min}/分钟${data.personalized ? " · 个性化" : ""}`;
@@ -3825,7 +4113,10 @@
       } catch (e) {
         // Network hiccup -- next tick retries.
       } finally {
-        difficultyFetchInFlight = false;
+        if (requestSeq === difficultyFetchSeq) {
+          difficultyFetchInFlight = false;
+          difficultyFetchController = null;
+        }
       }
     }
 
@@ -4004,13 +4295,34 @@
     function advancePreviewCard(action) {
       const s = previewSession;
       const c = s.cards[s.index];
-      fetch(`${API}/api/preview/result`, {
+      const resultRequest = fetch(`${API}/api/preview/result`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lemma: c.lemma, action }),
       }).catch(() => {});
       (c.forms && c.forms.length ? c.forms : [c.lemma]).forEach((f) => previewedWordForms.add(f));
       applyPreviewHighlight();
+      if (action === "known") {
+        // The previous vocab-highlight response may still have this word in
+        // its unknown set. Remove that stale underline immediately, then let
+        // the server-backed refresh reconcile every mounted cue.
+        for (const index of mountedCueIndices) {
+          const spans = cueWordSpans[index];
+          if (!spans) continue;
+          spans.forEach((span) => {
+            const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
+            if (previewedWordForms.has(norm)) span.classList.remove("sub-word-unknown");
+          });
+        }
+        // Wait for the evidence write before re-reading the server-side
+        // knowledge map; otherwise the highlight request can win the race
+        // and briefly restore the old unknown underline.
+        resultRequest.then(() => {
+          refreshVocabHighlight();
+          invalidateDifficultyBadge();
+          updateDifficultyBadge();
+        });
+      }
       s.index++;
       if (s.index < s.cards.length) {
         renderPreviewCard();
@@ -4049,6 +4361,7 @@
         const res = await fetch(
           `${API}/api/preview/${encodeURIComponent(s.videoId)}?exclude=${encodeURIComponent(seen)}`);
         const data = await res.json();
+        if (previewSession !== s) return;
         if (!data.should_show || !data.cards.length) {
           finishPreviewSession();
           return;
@@ -4058,7 +4371,7 @@
         s.index = s.cards.length - data.cards.length;  // resume at the first new card
         renderPreviewCard();
       } catch (e) {
-        finishPreviewSession();
+        if (previewSession === s) finishPreviewSession();
       }
     }
 
@@ -4076,9 +4389,7 @@
      *  marked wherever it appears, not looked up by cue index. */
     function applyPreviewHighlight() {
       if (previewedWordForms.size === 0) return;
-      cueWordSpans.forEach((spans, index) => {
-        if (spans !== null) applyPreviewHighlightToCard(index);
-      });
+      for (const index of mountedCueIndices) applyPreviewHighlightToCard(index);
     }
 
     function applyPreviewHighlightToCard(index) {

@@ -50,7 +50,9 @@
     var badge = document.createElement("span");
     badge.className = BADGE_CLASS + " " + (LABEL_CLASS[data.label] || "");
     badge.textContent = data.label + " · " + data.density_per_min + "/分钟";
-    if (data.source === "channel") badge.title = "按该频道其他视频估计";
+    badge.title = data.personalized
+      ? "已根据你的词汇量和个人掌握记录计算"
+      : (data.source === "channel" ? "按该频道其他视频估计" : "当前使用词频估算");
     if (anchorEl) {
       (anchorEl.parentElement || anchorEl).insertAdjacentElement("afterend", badge);
     } else {

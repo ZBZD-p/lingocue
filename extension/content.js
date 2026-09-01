@@ -174,6 +174,7 @@
       // exactly that), each call superseding the last token's guard.
       begin: function (vid) {
         var myEpoch = ++epoch;
+        source = null;
         return {
           videoId: vid,
           isCurrent: function () { return myEpoch === epoch; },
