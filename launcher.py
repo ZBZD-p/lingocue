@@ -112,6 +112,66 @@ def set_install_dir(path: Path) -> None:
         winreg.SetValueEx(k, "InstallDir", 0, winreg.REG_SZ, str(path))
 
 
+def launched_from_install() -> bool:
+    """Whether this frozen process is the copy installed by LingoCue.
+
+    A freshly downloaded exe is an installer even when an older installation
+    already exists. The installed copy, identified by its exact path, opens
+    the normal launcher UI instead.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    installed = install_dir()
+    if installed is None:
+        return False
+    try:
+        return Path(sys.executable).resolve() == (installed / "LingoCue.exe").resolve()
+    except OSError:
+        return False
+
+
+def desktop_dir() -> Path:
+    """Pick the usual Windows desktop, including a common OneDrive layout."""
+    home = Path.home()
+    candidates = [home / "Desktop"]
+    onedrive = os.environ.get("OneDrive")
+    if onedrive:
+        candidates.append(Path(onedrive) / "Desktop")
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
+
+
+def create_desktop_shortcut(target: Path) -> Path:
+    """Create a .lnk through Windows' built-in WScript.Shell COM object."""
+    desktop = desktop_dir()
+    desktop.mkdir(parents=True, exist_ok=True)
+    shortcut = desktop / "LingoCue.lnk"
+
+    def ps_quote(value: Path | str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    script = "\n".join([
+        "$ws = New-Object -ComObject WScript.Shell",
+        f"$s = $ws.CreateShortcut({ps_quote(shortcut)})",
+        f"$s.TargetPath = {ps_quote(target)}",
+        f"$s.WorkingDirectory = {ps_quote(target.parent)}",
+        f"$s.IconLocation = {ps_quote(str(target) + ',0')}",
+        "$s.Save()",
+    ])
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=_CREATE_NO_WINDOW,
+    )
+    if result.returncode != 0 or not shortcut.exists():
+        detail = result.stderr.strip() or result.stdout.strip() or "未知错误"
+        raise RuntimeError(detail[:500])
+    return shortcut
+
+
 def default_install_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA") or str(Path.home())
     return Path(base) / "Programs" / "LingoCue"
@@ -137,7 +197,7 @@ PRESERVE = {"data", "runtime", "ffmpeg", "config.json",
             "jellyfin_config.json", "deepseek_config.json"}
 
 
-def install_payload(dest: Path, log) -> bool:
+def install_payload(dest: Path, log, cancel_event=None) -> bool:
     """Unpack the bundled project into dest, leaving user files alone.
 
     Also used to refresh an existing install when the exe is newer than what
@@ -152,6 +212,8 @@ def install_payload(dest: Path, log) -> bool:
         dest.mkdir(parents=True, exist_ok=True)
         count = 0
         for item in sorted(payload.iterdir()):
+            if cancel_event and cancel_event.is_set():
+                raise InstallCancelled()
             if item.name in PRESERVE and (dest / item.name).exists():
                 log(f"  保留已有的 {item.name}")
                 continue
@@ -170,6 +232,8 @@ def install_payload(dest: Path, log) -> bool:
         # present, since a rebuilt dictionary is still the user's.
         bundled_db = payload / "data" / "dictionary.db"
         target_db = dest / "data" / "dictionary.db"
+        if cancel_event and cancel_event.is_set():
+            raise InstallCancelled()
         if bundled_db.exists() and not target_db.exists():
             target_db.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(bundled_db, target_db)
@@ -178,6 +242,8 @@ def install_payload(dest: Path, log) -> bool:
 
         log(f"  已解压 {count} 个文件")
         return True
+    except InstallCancelled:
+        raise
     except OSError as e:
         log(f"解压失败：{e}")
         return False
@@ -317,6 +383,10 @@ RUN_VALUE = "LingoCue"
 _CREATE_NO_WINDOW = 0x08000000
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 
+
+class InstallCancelled(Exception):
+    """Raised when the user cancels the installer workflow."""
+
 # ---- palette (static/panel.css, dark theme) -----------------------------
 BG = "#14110f"
 SURFACE = "#221d19"
@@ -395,6 +465,22 @@ print(json.dumps({"version": list(sys.version_info[:3]),
 
 CORE_MODULES = ["fastapi", "uvicorn", "pydantic", "requests", "youtube_transcript_api"]
 PUNCT_MODULES = ["funasr", "torch", "torchaudio"]
+
+
+def runtime_core_ready(python: Path) -> bool:
+    """Return whether an existing embedded interpreter has core packages."""
+    try:
+        out = subprocess.run(
+            [str(python), "-c", PROBE_SRC], capture_output=True, text=True,
+            timeout=30, creationflags=_CREATE_NO_WINDOW,
+        )
+        if out.returncode != 0:
+            return False
+        info = json.loads(out.stdout.strip().splitlines()[-1])
+        modules = info.get("modules", {})
+        return all(modules.get(name) for name in CORE_MODULES)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return False
 
 
 def find_python() -> str | None:
@@ -497,7 +583,13 @@ def punct_model_size() -> int:
     models = model_cache_dir() / "models"
     if not models.is_dir():
         return 0
-    for d in models.glob("*punc_ct-transformer*"):
+    # ModelScope normally nests the checkpoint under a vendor directory:
+    # models/iic/punc_ct-transformer_... . Search recursively so the actual
+    # cache layout is recognized instead of treating an installed model as
+    # missing.
+    for d in models.rglob("*punc_ct-transformer*"):
+        if not d.is_dir():
+            continue
         size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
         if size > 100e6:      # a partial/aborted download is not "present"
             return size
@@ -573,29 +665,42 @@ def ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
 
-def download_to(url: str, dest: Path, label: str, log) -> None:
-    """Fetch a file, reporting progress through `log` about every 5%.
+def download_to(url: str, dest: Path, label: str, log, cancel_event=None) -> None:
+    """Fetch a file with bounded waits and retries, reporting every 5%."""
+    part = dest.with_name(dest.name + ".part")
+    last_error = None
+    for attempt in range(1, 4):
+        if cancel_event and cancel_event.is_set():
+            raise InstallCancelled()
+        try:
+            suffix = f"（第 {attempt}/3 次）" if attempt > 1 else ""
+            log(f"下载 {label}...{suffix}")
+            with urllib.request.urlopen(url, context=ssl_context(), timeout=30) as r, open(part, "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0)
+                got, step = 0, max(int(total * 0.05), 1)
+                nxt = step
+                while chunk := r.read(262144):
+                    if cancel_event and cancel_event.is_set():
+                        raise InstallCancelled()
+                    f.write(chunk)
+                    got += len(chunk)
+                    if got >= nxt:
+                        pct = f" ({got*100//total}%)" if total else ""
+                        log(f"  {got/1e6:.0f}MB / {total/1e6:.0f}MB{pct}")
+                        nxt += step
+            os.replace(part, dest)
+            log(f"  下载完成：{dest.name}")
+            return
+        except (OSError, TimeoutError) as exc:
+            last_error = exc
+            part.unlink(missing_ok=True)
+            if attempt < 3:
+                log(f"  下载失败，2 秒后重试：{exc}")
+                time.sleep(2)
+    raise RuntimeError(f"下载失败（已重试 3 次）：{last_error}")
 
-    Progress matters more than it looks: the two things this downloads are
-    11MB and 100MB, and a launcher that sits silent for a minute during a
-    fresh install is indistinguishable from one that has hung.
-    """
-    log(f"下载 {label}...")
-    with urllib.request.urlopen(url, context=ssl_context()) as r, open(dest, "wb") as f:
-        total = int(r.headers.get("Content-Length") or 0)
-        got, step = 0, max(int(total * 0.05), 1)
-        nxt = step
-        while chunk := r.read(262144):
-            f.write(chunk)
-            got += len(chunk)
-            if got >= nxt:
-                pct = f" ({got*100//total}%)" if total else ""
-                log(f"  {got/1e6:.0f}MB / {total/1e6:.0f}MB{pct}")
-                nxt += step
-    log(f"  下载完成：{dest.name}")
 
-
-def run_streamed(argv, log, cwd=None) -> bool:
+def run_streamed(argv, log, cwd=None, cancel_event=None) -> bool:
     """Run one command with its output going to `log`. Returns success."""
     log("$ " + " ".join(str(a) for a in argv))
     env = dict(os.environ)
@@ -607,7 +712,19 @@ def run_streamed(argv, log, cwd=None) -> bool:
                              text=True, encoding="utf-8", errors="replace",
                              creationflags=_CREATE_NO_WINDOW)
         for line in p.stdout:
+            if cancel_event and cancel_event.is_set():
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                raise InstallCancelled()
             log(line.rstrip())
+        if cancel_event and cancel_event.is_set():
+            if p.poll() is None:
+                p.terminate()
+                p.wait(timeout=5)
+            raise InstallCancelled()
         if p.wait() != 0:
             log(f"[失败，返回码 {p.returncode}]")
             return False
@@ -618,7 +735,7 @@ def run_streamed(argv, log, cwd=None) -> bool:
 
 
 def bootstrap_runtime(runtime_dir: Path, project_root: Path, log,
-                      workdir: Path | None = None) -> bool:
+                      workdir: Path | None = None, cancel_event=None) -> bool:
     """Unpack a private Python into `runtime_dir` and make it usable.
 
     Module-level, and taking its logging as a callback, so this can be
@@ -633,7 +750,9 @@ def bootstrap_runtime(runtime_dir: Path, project_root: Path, log,
     zip_path = workdir / "python-embed.zip"
     get_pip = workdir / "get-pip.py"
     try:
-        download_to(PYTHON_EMBED_URL, zip_path, f"Python {PYTHON_VERSION} (11MB)", log)
+        download_to(PYTHON_EMBED_URL, zip_path, f"Python {PYTHON_VERSION} (11MB)", log, cancel_event)
+        if cancel_event and cancel_event.is_set():
+            raise InstallCancelled()
         log(f"解压到 {runtime_dir.name}/ ...")
         runtime_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path) as z:
@@ -658,7 +777,7 @@ def bootstrap_runtime(runtime_dir: Path, project_root: Path, log,
         log(f"  已启用 site、site-packages 和项目根目录（{pth.name}）")
 
         python = runtime_dir / "python.exe"
-        download_to(GET_PIP_URL, get_pip, "get-pip.py", log)
+        download_to(GET_PIP_URL, get_pip, "get-pip.py", log, cancel_event)
         # --retries on every pip call below, not just the big one: a mirror
         # that returns a truncated response is the single most common way
         # this fails on a real machine (hit repeatedly against a configured
@@ -666,7 +785,7 @@ def bootstrap_runtime(runtime_dir: Path, project_root: Path, log,
         # steps just as easily as the long one.
         if not run_streamed([str(python), str(get_pip), "--no-warn-script-location",
                              "--retries", "5", "--no-cache-dir"],
-                            log, cwd=project_root):
+                            log, cwd=project_root, cancel_event=cancel_event):
             raise RuntimeError("装 pip 失败")
         # setuptools before the requirements: the embeddable build ships
         # without it, and any dependency that still builds through the PEP
@@ -674,7 +793,8 @@ def bootstrap_runtime(runtime_dir: Path, project_root: Path, log,
         # that says nothing about what is actually missing.
         if not run_streamed([str(python), "-m", "pip", "install", "setuptools", "wheel",
                              "--no-warn-script-location", "--retries", "5",
-                             "--no-cache-dir"], log, cwd=project_root):
+                             "--no-cache-dir"], log, cwd=project_root,
+                            cancel_event=cancel_event):
             raise RuntimeError("装 setuptools 失败")
         # --no-cache-dir: pip's cache is shared with every other Python on
         # the machine, and one truncated wheel in it makes every retry fail
@@ -682,10 +802,13 @@ def bootstrap_runtime(runtime_dir: Path, project_root: Path, log,
         # three times running until the cache was bypassed).
         if not run_streamed([str(python), "-m", "pip", "install", "-r", "requirements.txt",
                              "--no-cache-dir", "--retries", "5",
-                             "--no-warn-script-location"], log, cwd=project_root):
+                             "--no-warn-script-location"], log, cwd=project_root,
+                            cancel_event=cancel_event):
             raise RuntimeError("装依赖失败")
         log(f"── 完成，后端以后会用 {python} ──")
         return True
+    except InstallCancelled:
+        raise
     except Exception as exc:
         log(f"── 失败：{exc} ──")
         return False
@@ -931,19 +1054,22 @@ def label(parent, text, size=10, color=INK, bold=False, bg=None):
 # ======================================================================
 
 class Installer:
-    """First-run window: pick a folder, unpack the project into it.
+    """Installer window: copy the payload and create the installed launcher.
 
-    Separate from App rather than a fourth view inside it, because until
-    this finishes there is no project directory for any of App's views to
-    describe -- no config to read, no app.py to start, no dependency tree to
-    check. Once it succeeds it hands off to App in the same window.
+    This is intentionally a separate flow from App. The downloaded exe is
+    only the installer; the copy placed in the selected folder is the exe
+    users launch afterwards.
     """
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("LingoCue 安装")
-        root.geometry(f"{px(620)}x{px(400)}")
-        root.minsize(px(560), px(360))
+        self.installing = False
+        self.cancel_event = threading.Event()
+        self.source_exe = (Path(sys.executable).resolve()
+                           if getattr(sys, "frozen", False) else None)
+        root.title("LingoCue 安装程序")
+        root.geometry(f"{px(620)}x{px(460)}")
+        root.minsize(px(560), px(400))
         root.configure(bg=BG)
 
         wrap = tk.Frame(root, bg=BG)
@@ -963,20 +1089,31 @@ class Installer:
                               relief="flat", bd=0, font=("Consolas", 10),
                               highlightthickness=1, highlightbackground=LINE,
                               highlightcolor=ACCENT)
-        self.entry.insert(0, str(default_install_dir()))
+        self.entry.insert(0, str(install_dir() or default_install_dir()))
         self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=px(7), ipadx=px(8))
         Button(row, "浏览", command=self.browse, width=74).pack(side=tk.LEFT, padx=(px(8), 0))
 
+        self.shortcut_var = tk.BooleanVar(value=True)
+        self.shortcut_control = tk.Checkbutton(
+            wrap, text="创建桌面快捷方式", variable=self.shortcut_var,
+            bg=BG, fg=INK, activebackground=BG, activeforeground=INK,
+            selectcolor=SURFACE, highlightthickness=0, bd=0,
+            font=tkfont.nametofont("TkDefaultFont"), anchor="w",
+        )
+        self.shortcut_control.pack(anchor="w", pady=(px(12), 0))
+
         payload = payload_dir()
         size = sum(f.stat().st_size for f in payload.rglob("*") if f.is_file()) if payload else 0
-        label(wrap, f"需要约 {size/1e6:.0f}MB，装依赖后共约 400MB。"
+        label(wrap, f"程序约 {size/1e6:.0f}MB，安装时会自动准备 Python 和依赖。"
                     "已经内置了词典，不用再下 63MB 的词表。",
-              size=8, color=DIM).pack(anchor="w", pady=(px(10), px(16)))
+              size=8, color=DIM).pack(anchor="w", pady=(px(4), px(16)))
 
         actions = tk.Frame(wrap, bg=BG)
         actions.pack(fill=tk.X)
         self.go = Button(actions, "安装", command=self.install, variant="accent", width=110)
         self.go.pack(side=tk.LEFT)
+        self.cancel_btn = Button(actions, "取消", command=self.cancel_install, width=90)
+        self.cancel_btn.pack(side=tk.LEFT, padx=(px(8), 0))
         self.hint = label(actions, "", size=9, color=MUTED)
         self.hint.pack(side=tk.LEFT, padx=(px(12), 0))
 
@@ -986,6 +1123,7 @@ class Installer:
                            relief="flat", bd=0, wrap="word", padx=px(12), pady=px(10),
                            state=tk.DISABLED)
         self.log.pack(fill=tk.BOTH, expand=True)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def write(self, line):
         self.log.configure(state=tk.NORMAL)
@@ -1014,22 +1152,122 @@ class Installer:
             return
 
         self.go.set_enabled(False)
+        self.installing = True
+        self.cancel_event.clear()
+        self.shortcut_control.configure(state=tk.DISABLED)
+        self.cancel_btn.set_enabled(True)
         self.hint.configure(text="")
-        self.write(f"安装到 {dest}")
-        if not install_payload(dest, self.write):
-            self.go.set_enabled(True)
-            self.hint.configure(text="安装失败，看下面的日志", fg=BAD)
-            return
-        try:
-            set_install_dir(dest)
-        except OSError as e:
-            self.write(f"（记不住安装位置：{e}）")
-        set_root(dest)
-        self.write("完成，正在打开主界面...")
+        self.hint.configure(text="正在安装，可随时点击取消...", fg=MUTED)
+        shortcut_requested = self.shortcut_var.get()
+        threading.Thread(target=self._install_worker,
+                         args=(dest, shortcut_requested), daemon=True).start()
 
+    def _install_worker(self, dest: Path, shortcut_requested: bool):
+        try:
+            self.write(f"安装到 {dest}")
+            if not install_payload(dest, self.write, self.cancel_event):
+                raise RuntimeError("程序文件复制失败")
+
+            runtime_dir = dest / "runtime"
+            runtime_python = runtime_dir / "python.exe"
+            if runtime_python.exists() and runtime_core_ready(runtime_python):
+                self.write("检测到内置 Python 和核心依赖，跳过重复安装。")
+            else:
+                self.write("正在准备内置 Python 和核心依赖（首次安装需要几分钟）...")
+                if not bootstrap_runtime(runtime_dir, dest, self.write,
+                                         cancel_event=self.cancel_event):
+                    raise RuntimeError("Python 或核心依赖安装失败")
+
+            target_exe = dest / "LingoCue.exe"
+            if self.source_exe is not None and self.source_exe != target_exe.resolve():
+                try:
+                    shutil.copy2(self.source_exe, target_exe)
+                    self.write(f"已安装启动器：{target_exe}")
+                except OSError as e:
+                    raise RuntimeError(f"启动器复制失败：{e}") from e
+
+            try:
+                set_install_dir(dest)
+            except OSError as e:
+                self.write(f"（记不住安装位置：{e}）")
+
+            shortcut_ok = False
+            if shortcut_requested:
+                try:
+                    shortcut = create_desktop_shortcut(target_exe)
+                    shortcut_ok = True
+                    self.write(f"已创建桌面快捷方式：{shortcut}")
+                except (OSError, RuntimeError) as e:
+                    self.write(f"桌面快捷方式创建失败（程序已安装）：{e}")
+
+            self.root.after(0, lambda: self.show_complete(dest, shortcut_ok))
+        except Exception as e:
+            self.root.after(0, lambda: self.install_failed(str(e)))
+
+    def cancel_install(self):
+        if not self.installing:
+            self.root.destroy()
+            return
+        if self.cancel_event.is_set():
+            return
+        if not messagebox.askyesno(
+                "取消安装", "安装还没有完成，确定取消吗？\n\n下次可以重新点击安装继续。",
+                default="no", parent=self.root):
+            return
+        self.cancel_event.set()
+        self.cancel_btn.set_enabled(False)
+        self.hint.configure(text="正在取消，请等待当前步骤结束...", fg=MUTED)
+        self.write("正在取消安装...")
+
+    def install_failed(self, message: str):
+        self.installing = False
+        self.shortcut_control.configure(state=tk.NORMAL)
+        self.cancel_btn.set_enabled(True)
+        self.go.set_enabled(True)
+        if self.cancel_event.is_set():
+            self.hint.configure(text="安装已取消，可以重新点击安装继续。", fg=MUTED)
+            self.write("安装已取消。已写入的文件会保留，重新安装时可以继续。")
+        else:
+            self.hint.configure(text="安装失败，请查看下方日志后重试。", fg=BAD)
+            self.write(f"安装失败：{message}")
+
+    def on_close(self):
+        if self.installing:
+            self.cancel_install()
+            return
+        self.root.destroy()
+
+    def show_complete(self, dest: Path, shortcut_ok: bool):
+        self.installing = False
         for child in self.root.winfo_children():
             child.destroy()
-        App(self.root)
+        self.root.title("LingoCue 安装完成")
+
+        wrap = tk.Frame(self.root, bg=BG)
+        wrap.pack(fill=tk.BOTH, expand=True, padx=px(32), pady=px(30))
+        label(wrap, "安装完成", size=20, bold=True).pack(anchor="w")
+        label(wrap, "以后请从安装目录或桌面快捷方式启动 LingoCue。",
+              size=10, color=MUTED).pack(anchor="w", pady=(px(8), px(22)))
+        label(wrap, f"安装位置\n{dest}", size=10, color=INK).pack(anchor="w")
+        shortcut_text = ("桌面快捷方式已创建。" if shortcut_ok
+                         else "未创建桌面快捷方式，你仍可直接运行安装目录里的 LingoCue.exe。")
+        label(wrap, shortcut_text, size=9, color=MUTED).pack(anchor="w", pady=(px(16), 0))
+
+        actions = tk.Frame(wrap, bg=BG)
+        actions.pack(side=tk.BOTTOM, fill=tk.X, pady=(px(22), 0))
+        Button(actions, "立即启动", command=lambda: self.launch_installed(dest),
+               variant="accent", width=110).pack(side=tk.RIGHT)
+        Button(actions, "关闭", command=self.root.destroy, width=100).pack(side=tk.RIGHT, padx=(0, px(8)))
+
+    def launch_installed(self, dest: Path):
+        target = dest / "LingoCue.exe"
+        try:
+            subprocess.Popen([str(target)], cwd=str(dest),
+                             creationflags=_CREATE_NO_WINDOW)
+        except OSError as e:
+            messagebox.showerror("启动失败", f"安装已经完成，但启动器打开失败：\n{e}", parent=self.root)
+            return
+        self.root.destroy()
 
 
 class App:
@@ -1057,6 +1295,10 @@ class App:
         self._build_nav()
         self.body = tk.Frame(root, bg=BG)
         self.body.pack(fill=tk.BOTH, expand=True, padx=px(18), pady=(0, px(16)))
+        # Views are built once and then shown/hidden. Rebuilding the status
+        # view used to replay up to 500 log lines synchronously on every tab
+        # switch, which made returning from 环境 feel like a hang.
+        self.pages = {}
 
         # Before the first show(): building a view calls refresh(), which
         # reads self.external to decide what the status line says.
@@ -1108,25 +1350,35 @@ class App:
             self.tabs[name] = b
 
     def show(self, name):
-        for child in self.body.winfo_children():
-            child.destroy()
+        for page in self.pages.values():
+            page.pack_forget()
         for tab_name, b in getattr(self, "tabs", {}).items():
             b.variant = "accent" if tab_name == name else "ghost"
             b._paint()
         self.current = name
-        {"状态": self._view_status, "环境": self._view_env, "设置": self._view_settings}[name]()
+        page = self.pages.get(name)
+        if page is None:
+            page = tk.Frame(self.body, bg=BG)
+            self.pages[name] = page
+            self._view_parent = page
+            {"状态": self._view_status, "环境": self._view_env, "设置": self._view_settings}[name]()
+        page.pack(fill=tk.BOTH, expand=True)
+        if name == "环境":
+            self._render_env()
+        self.refresh()
 
     # ---- 状态 ----------------------------------------------------------
 
     def _view_status(self):
-        bar = tk.Frame(self.body, bg=BG)
+        parent = self._view_parent
+        bar = tk.Frame(parent, bg=BG)
         bar.pack(fill=tk.X, pady=(0, px(12)))
         self.toggle_btn = Button(bar, "启动", command=self.toggle, variant="accent", width=110)
         self.toggle_btn.pack(side=tk.LEFT)
         self.panel_btn = Button(bar, "打开面板", command=self.open_panel, width=110)
         self.panel_btn.pack(side=tk.LEFT, padx=(px(8), 0))
 
-        prog = tk.Frame(self.body, bg=BG)
+        prog = tk.Frame(parent, bg=BG)
         prog.pack(fill=tk.X, pady=(0, px(10)))
         self.progress_label = label(prog, "", size=9, color=MUTED, bg=BG)
         self.progress_label.pack(anchor="w")
@@ -1134,7 +1386,7 @@ class App:
         self.progress_bar.pack(anchor="w", pady=(px(4), 0))
         self._render_progress()
 
-        wrap = card(self.body)
+        wrap = card(parent)
         wrap.pack(fill=tk.BOTH, expand=True)
         self.log = tk.Text(wrap, bg=SURFACE, fg=MUTED, insertbackground=INK,
                            font=("Consolas", 9), relief="flat", bd=0, wrap="word",
@@ -1147,12 +1399,12 @@ class App:
         self.log.pack(fill=tk.BOTH, expand=True)
         self.log.tag_configure("ink", foreground=INK)
         self._replay_log()
-        self.refresh()
 
     # ---- 环境 ----------------------------------------------------------
 
     def _view_env(self):
-        top = tk.Frame(self.body, bg=BG)
+        parent = self._view_parent
+        top = tk.Frame(parent, bg=BG)
         top.pack(fill=tk.X, pady=(0, px(12)))
         self.recheck_btn = Button(top, "重新检测", command=self.refresh_env, width=104)
         self.recheck_btn.pack(side=tk.LEFT)
@@ -1160,7 +1412,7 @@ class App:
                                  variant="accent", width=160)
         self.fixall_btn.pack(side=tk.LEFT, padx=(px(8), 0))
 
-        outer = card(self.body)
+        outer = card(parent)
         outer.pack(fill=tk.BOTH, expand=True)
         scroll = Scroll(outer, bg=SURFACE)
         scroll.pack(fill=tk.BOTH, expand=True)
@@ -1238,7 +1490,8 @@ class App:
     # ---- 设置 ----------------------------------------------------------
 
     def _view_settings(self):
-        outer = card(self.body)
+        parent = self._view_parent
+        outer = card(parent)
         outer.pack(fill=tk.BOTH, expand=True)
         scroll = Scroll(outer, bg=SURFACE)
         scroll.pack(fill=tk.BOTH, expand=True)
@@ -1733,13 +1986,19 @@ class App:
             self._render_progress()
 
     def _replay_log(self):
-        for line in getattr(self, "_history", []):
-            self._append(line)
+        self._append_many(getattr(self, "_history", []), scroll=False)
 
     def _append(self, line):
+        self._append_many([line])
+
+    def _append_many(self, lines, scroll=True):
+        if not lines or not hasattr(self, "log") or not self.log.winfo_exists():
+            return
         self.log.configure(state=tk.NORMAL)
-        self.log.insert(tk.END, line + "\n", "ink" if line.startswith("──") else "")
-        self.log.see(tk.END)
+        for line in lines:
+            self.log.insert(tk.END, line + "\n", "ink" if line.startswith("──") else "")
+        if scroll:
+            self.log.see(tk.END)
         self.log.configure(state=tk.DISABLED)
 
     def _drain_log(self):
@@ -1753,12 +2012,11 @@ class App:
         except queue.Empty:
             pass
         if lines:
-            # Kept so switching tabs and coming back doesn't lose the log --
-            # the Text widget is destroyed and rebuilt with the view.
+            # Keep a bounded history for the status view. The visible widget
+            # is updated in one batch so a burst of subprocess output cannot
+            # make Tkinter redraw once per line.
             self._history = (getattr(self, "_history", []) + lines)[-500:]
-            if hasattr(self, "log") and self.log.winfo_exists():
-                for line in lines:
-                    self._append(line)
+            self._append_many(lines)
         self.root.after(100, self._drain_log)
 
     def on_close(self):
@@ -1814,9 +2072,9 @@ def main():
     # factor is applied to pixel measurements only.
     SCALE = root.winfo_fpixels("1i") / 96.0
 
-    if getattr(sys, "frozen", False) and install_dir() is None:
-        # Nothing is installed yet, so there is no project directory for the
-        # main window's views to describe. Ask where it should go first.
+    if getattr(sys, "frozen", False) and not launched_from_install():
+        # A downloaded exe is always an installer. The installed copy is
+        # identified by its path and opens the normal launcher UI instead.
         Installer(root)
     else:
         App(root)

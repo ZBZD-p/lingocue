@@ -786,12 +786,12 @@ button:focus-visible {
      updateSpokenWords() in tutor-panel.js rely on for the *current* card, so
      nothing about the JS logic changes, only how much of the other ~99% of
      the list the browser bothers rendering at any given moment.
-     The `auto` prefix on contain-intrinsic-size means this 40px is only the
+    The `auto` prefix on contain-intrinsic-size means this 24px is only the
      very first guess -- once a card has actually been laid out, the browser
      remembers its real height and reuses that instead the next time it goes
      off-screen, so this only matters for cards never yet visited. Picked
-     close to a single unwrapped line's real height (most cards are exactly
-     that -- see the comment above) rather than generous: overshooting
+    close to a single unwrapped line's real content height (24px; the card's
+    26px bottom margin is separate) rather than generous: overshooting
      inflates .subs-scroll's total scrollHeight for every one of the
      potentially thousands of not-yet-visited cards, which is what was
      making the scrollbar thumb barely move relative to how far you'd
@@ -802,7 +802,7 @@ button:focus-visible {
      to go together: smooth scrolling was what turned this into a runaway
      oscillation, not content-visibility by itself. */
   content-visibility: auto;
-  contain-intrinsic-size: auto 40px;
+  contain-intrinsic-size: auto 24px;
 }
 .sub-card:last-child { margin-bottom: 0; }
 .sub-card:nth-child(odd) { color: var(--ctx-far); }

@@ -25,6 +25,7 @@ deepseek_config.json
 # build_launcher.py 打出来的 exe 和 PyInstaller 的中间产物。二进制不进仓库，
 # 谁要谁自己跑一次 build_launcher.py。
 LingoCue.exe
+LingoCue-Setup.exe
 dist/
 build/
 

@@ -1385,7 +1385,7 @@
     let cueEstimatedHeights = [];
     let cueOffsets = [];
     const VIRTUAL_BUFFER_CUES = 72;
-    const DEFAULT_CUE_HEIGHT = 52;
+    const DEFAULT_CUE_HEIGHT = 50;
     let lastUserScrollAt = 0;
     // Separate from lastUserScrollAt above (which only fires on mousedown --
     // see that listener's own comment for why wheel/trackpad scrolling was
@@ -1407,9 +1407,10 @@
     let smoothScrollToken = 0;
     let smoothScrollVelocity = 0;
     let virtualRecycleTimer = 0;
+    let virtualMeasureRaf = 0;
     let extractPollTimer = null;
     const USER_SCROLL_QUIET_MS = 4000;
-    const EXTRACT_POLL_MS = 3000;
+    const EXTRACT_POLL_MS = 1000;
     // Punctuation restoration takes much longer than an extraction tick
     // (40-60s+, it's a whole local model pass), so checking back that often
     // would just be wasted requests -- this is purely a "did it finish yet"
@@ -1475,7 +1476,10 @@
           // Let the final scroll event observe the programmatic flag before
           // user-scroll suppression is re-enabled.
           requestAnimationFrame(() => {
-            if (token === smoothScrollToken) programmaticScroll = false;
+            if (token === smoothScrollToken) {
+              programmaticScroll = false;
+              scheduleVirtualMeasure();
+            }
           });
         }
       };
@@ -1733,7 +1737,86 @@
     function estimateCueHeight(cue) {
       const text = String(cue && cue.text || "");
       const lines = Math.max(1, Math.ceil(text.length / 42));
-      return DEFAULT_CUE_HEIGHT + (lines - 1) * 24 + (cue && cue.text2 ? 22 : 0);
+      return DEFAULT_CUE_HEIGHT + (lines - 1) * 24 + (cue && cue.text2 ? 25 : 0);
+    }
+
+    function rebuildCueOffsets() {
+      cueOffsets[0] = 0;
+      for (let i = 0; i < subtitleCues.length; i++) {
+        cueOffsets[i + 1] = cueOffsets[i] + cueEstimatedHeights[i];
+      }
+    }
+
+    function updateVirtualSpacers() {
+      if (!virtualTopSpacer || !virtualBottomSpacer || !subtitleCues.length) return;
+      const start = Math.max(0, virtualRangeStart);
+      const end = Math.min(subtitleCues.length - 1, virtualRangeEnd);
+      virtualTopSpacer.style.height = `${cueOffsets[start] || 0}px`;
+      virtualBottomSpacer.style.height = `${Math.max(
+        0, cueOffsets[subtitleCues.length] - (cueOffsets[end + 1] || cueOffsets[subtitleCues.length])
+      )}px`;
+    }
+
+    // content-visibility:auto reports its intrinsic placeholder height for
+    // cards outside the activation range. Only measure cards close to the
+    // real viewport, where the browser has laid out their actual text.
+    function measureMountedCueHeight(card) {
+      if (!card || !card.isConnected) return NaN;
+      const rect = card.getBoundingClientRect();
+      const margin = parseFloat(getComputedStyle(card).marginBottom) || 0;
+      const height = rect.height + margin;
+      return Number.isFinite(height) && height > 0 ? height : NaN;
+    }
+
+    function scheduleVirtualMeasure() {
+      if (virtualMeasureRaf) return;
+      virtualMeasureRaf = requestAnimationFrame(() => {
+        virtualMeasureRaf = 0;
+        if (programmaticScroll) return;
+        if (subtitleCues.length && virtualRangeEnd >= virtualRangeStart) {
+          measureVirtualWindow();
+        }
+      });
+    }
+
+    function measureVirtualWindow() {
+      const rootRect = subsScroll.getBoundingClientRect();
+      const activationMargin = 900;
+      let anchorCard = null;
+      let anchorTop = NaN;
+      let changed = false;
+
+      for (let i = virtualRangeStart; i <= virtualRangeEnd; i++) {
+        const card = subtitleCardEls[i];
+        if (!card || !card.isConnected) continue;
+        const rect = card.getBoundingClientRect();
+        if (!anchorCard && rect.bottom > rootRect.top) {
+          anchorCard = card;
+          anchorTop = rect.top;
+        }
+        if (rect.bottom < rootRect.top - activationMargin ||
+            rect.top > rootRect.bottom + activationMargin) continue;
+        const measured = measureMountedCueHeight(card);
+        if (!Number.isFinite(measured) || Math.abs(measured - cueEstimatedHeights[i]) < 1) continue;
+        cueEstimatedHeights[i] = measured;
+        changed = true;
+      }
+      if (!changed) return;
+
+      rebuildCueOffsets();
+      updateVirtualSpacers();
+      // Height corrections before the visible anchor must not move the line
+      // the user is reading. Mark this write as internal so the scroll
+      // listener does not immediately recycle the window a second time.
+      if (anchorCard && Number.isFinite(anchorTop)) {
+        const newTop = anchorCard.getBoundingClientRect().top;
+        const correction = newTop - anchorTop;
+        if (Number.isFinite(correction) && Math.abs(correction) > 0.5) {
+          programmaticScroll = true;
+          subsScroll.scrollTop += correction;
+          requestAnimationFrame(() => { programmaticScroll = false; });
+        }
+      }
     }
 
     function virtualIndexAtOffset(offset) {
@@ -1831,8 +1914,9 @@
         const card = subtitleCardEls[i] || createVirtualCueCard(i);
         if (!card.isConnected) frag.appendChild(card);
       }
-      virtualTopSpacer.style.height = `${cueOffsets[start] || 0}px`;
-      virtualBottomSpacer.style.height = `${Math.max(0, cueOffsets[subtitleCues.length] - (cueOffsets[end + 1] || cueOffsets[subtitleCues.length]))}px`;
+      virtualRangeStart = start;
+      virtualRangeEnd = end;
+      updateVirtualSpacers();
       subsScroll.insertBefore(frag, virtualBottomSpacer);
       if (preserveIndex >= start && preserveIndex <= end && Number.isFinite(preserveTop)) {
         const newAnchor = subtitleCardEls[preserveIndex];
@@ -1841,8 +1925,6 @@
           if (Number.isFinite(newTop)) subsScroll.scrollTop += newTop - preserveTop;
         }
       }
-      virtualRangeStart = start;
-      virtualRangeEnd = end;
       if (typeof IntersectionObserver === "function") {
         wordObserver = new IntersectionObserver((entries) => {
           entries.forEach((entry) => {
@@ -1876,10 +1958,12 @@
         spokenWordCount = -1;
       }
       renderLoopState();
+      scheduleVirtualMeasure();
     }
 
     function renderSubtitleCards() {
       if (virtualRecycleTimer) { clearTimeout(virtualRecycleTimer); virtualRecycleTimer = 0; }
+      if (virtualMeasureRaf) { cancelAnimationFrame(virtualMeasureRaf); virtualMeasureRaf = 0; }
       subtitleCardEls = new Array(subtitleCues.length);
       cueWordSpans = new Array(subtitleCues.length).fill(null);
       cueTextEls = new Array(subtitleCues.length);
@@ -1887,8 +1971,7 @@
       cueVisible = new Array(subtitleCues.length).fill(false);
       cueEstimatedHeights = subtitleCues.map(estimateCueHeight);
       cueOffsets = new Array(subtitleCues.length + 1);
-      cueOffsets[0] = 0;
-      for (let i = 0; i < subtitleCues.length; i++) cueOffsets[i + 1] = cueOffsets[i] + cueEstimatedHeights[i];
+      rebuildCueOffsets();
       if (wordObserver) wordObserver.disconnect();
       wordObserver = null;
       currentCardEl = null;
@@ -2392,6 +2475,7 @@
         smoothCenterCard(card);
         lastAutoScrollAt = Date.now();
       }
+      scheduleVirtualMeasure();
     }
 
     // ---- Line loop (A-B repeat) ----
@@ -3635,7 +3719,7 @@
     // knows how to fetch a YouTube video's own caption tracks.
 
     const PREVIEW_SHOWN_KEY = "english-tutor-preview-shown";        // { [videoId]: shownAtMs }
-    const PREVIEW_DISMISSED_KEY = "english-tutor-preview-dismissed-at";
+    const PREVIEW_DISMISSED_KEY = "english-tutor-preview-dismissed-at"; // { [videoId]: dismissedAtMs }
     const PREVIEW_SHOWN_TTL_MS = 10 * 60 * 1000;        // 同一视频 10 分钟内不重复
     const PREVIEW_DISMISS_COOLDOWN_MS = 60 * 60 * 1000; // 上次点了"直接看" < 1h 不显示
 
@@ -3656,11 +3740,22 @@
       const t = loadPreviewShownMap()[videoId];
       return !!t && (Date.now() - t) < PREVIEW_SHOWN_TTL_MS;
     }
-    function markPreviewDismissed() {
-      try { localStorage.setItem(PREVIEW_DISMISSED_KEY, String(Date.now())); } catch (e) {}
+    function loadPreviewDismissedMap() {
+      try {
+        const value = JSON.parse(localStorage.getItem(PREVIEW_DISMISSED_KEY) || "{}");
+        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      } catch (e) { return {}; }
     }
-    function previewRecentlyDismissed() {
-      const t = parseFloat(localStorage.getItem(PREVIEW_DISMISSED_KEY) || "0");
+    function markPreviewDismissed(videoId) {
+      if (!videoId) return;
+      const m = loadPreviewDismissedMap();
+      m[videoId] = Date.now();
+      const trimmed = Object.fromEntries(
+        Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 50));
+      try { localStorage.setItem(PREVIEW_DISMISSED_KEY, JSON.stringify(trimmed)); } catch (e) {}
+    }
+    function previewRecentlyDismissed(videoId) {
+      const t = loadPreviewDismissedMap()[videoId];
       return (Date.now() - t) < PREVIEW_DISMISS_COOLDOWN_MS;
     }
 
@@ -3671,7 +3766,7 @@
      *  the word list is ready, not some fixed delay after that. */
     function previewGateOpen(videoId) {
       if (previewRecentlyShown(videoId)) return false;
-      if (previewRecentlyDismissed()) return false;
+      if (previewRecentlyDismissed(videoId)) return false;
       return true;
     }
 
@@ -3739,7 +3834,7 @@
 
     previewSkipBtn.addEventListener("click", () => {
       previewBar.hidden = true;
-      markPreviewDismissed();
+      markPreviewDismissed(previewLastVideoId);
     });
 
     previewStartBtn.addEventListener("click", () => {

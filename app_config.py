@@ -167,7 +167,13 @@ def punct_model_downloaded() -> bool:
     models = model_cache_dir() / "models"
     if not models.is_dir():
         return False
-    for d in models.glob("*punc_ct-transformer*"):
+    # ModelScope normally nests the checkpoint under a vendor directory:
+    # models/iic/punc_ct-transformer_... . Search recursively so the actual
+    # cache layout is recognized instead of treating an installed model as
+    # missing.
+    for d in models.rglob("*punc_ct-transformer*"):
+        if not d.is_dir():
+            continue
         size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
         if size > 100e6:      # a partial/aborted download is not "present"
             return True

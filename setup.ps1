@@ -7,7 +7,7 @@
 # printed as next steps instead: loading the Chrome extension (Chrome
 # deliberately refuses to let anything but a person click through that,
 # same reason it won't let a script install a signed extension either) and
-# logging into the Claude Code CLI (interactive OAuth).
+# and, if desired, logging into the Claude Code CLI (interactive OAuth).
 #
 # -WithPunctuation additionally installs funasr + torch/torchaudio, for the
 # optional feature that restores punctuation on YouTube auto-captions that
@@ -129,6 +129,6 @@ if (-not $ffmpegReady) {
 Write-Host ''
 Write-Host '能自动装的都装完了。还剩两步，脚本没法替你做：' -ForegroundColor Cyan
 Write-Host '  1. YouTube 扩展：chrome://extensions 开开发者模式 -> 加载已解压的扩展程序 -> 选 extension 文件夹' -ForegroundColor Cyan
-Write-Host '  2. 对话引擎二选一：装 Claude Code CLI 并登录 (claude.com/claude-code)，或者启动后在设置页填 DeepSeek API key' -ForegroundColor Cyan
+Write-Host '  2. 对话引擎：启动后在设置页填 DeepSeek API key（默认）；Claude Code CLI 为可选引擎' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '都弄好之后：python app.py，然后打开 http://127.0.0.1:8420' -ForegroundColor Green

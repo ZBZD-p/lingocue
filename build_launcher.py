@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Freeze launcher.py into LingoCue.exe, with the whole project inside it.
+Freeze launcher.py into LingoCue-Setup.exe, with the whole project inside it.
 
 The point of freezing is that the launcher has to run on a machine with no
 Python at all -- it is the thing that installs Python (see
@@ -122,7 +122,7 @@ def main() -> int:
         "--noconfirm",
         "--onefile",
         "--windowed",              # no console window behind the GUI
-        "--name", "LingoCue",
+        "--name", "LingoCue-Setup",
         "--distpath", str(DIST),
         "--workpath", str(BUILD / "work"),
         "--specpath", str(BUILD),
@@ -143,12 +143,12 @@ def main() -> int:
     if code != 0:
         return code
 
-    exe = DIST / "LingoCue.exe"
+    exe = DIST / "LingoCue-Setup.exe"
     if not exe.exists():
         print("打包命令成功了但没找到产物，检查上面的输出")
         return 1
 
-    target = ROOT / "LingoCue.exe"
+    target = ROOT / "LingoCue-Setup.exe"
     shutil.copy2(exe, target)
     print(f"\n完成：{target}  ({target.stat().st_size/1e6:.1f}MB)")
     print("dist/ 和 build/ 是 PyInstaller 的中间产物，可以删。")
