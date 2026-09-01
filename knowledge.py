@@ -36,7 +36,7 @@ VOCAB_FILE = app_config.VOCAB_FILE
 # constant essentially never changes.
 MASTERED_STREAK = 6
 
-DEFAULT_VOCAB_SIZE = 6000  # roughly CET-6, a reasonable bootstrap guess
+DEFAULT_VOCAB_SIZE = 3500  # roughly CET-4, a reasonable bootstrap guess
 
 DELTA = {
     "srs_graduated": 2.5,   # a word's review streak hit MASTERED_STREAK

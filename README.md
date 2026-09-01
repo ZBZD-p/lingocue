@@ -154,9 +154,9 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
 
 设置页里可以切换，两种各有取舍：
 
-**Claude Code CLI**（默认）— 需要装 [Claude Code](https://claude.com/claude-code) 并登录。质量好，但每次对话有约 13 秒的固定启动开销（进程启动 + 加载，跟生成内容无关）。
+**DeepSeek API**（默认）— 需要自己申请 [DeepSeek](https://platform.deepseek.com/) 的 key，填在设置页里。直接 HTTP 调用，没有 CLI 启动开销，响应更快。思考模式默认开着（回答前先想一遍，能在设置页关掉换取更快的响应），思考程度这个设置两边引擎共用。
 
-**DeepSeek API** — 需要自己申请 [DeepSeek](https://platform.deepseek.com/) 的 key，填在设置页里。直接 HTTP 调用，没有上面那层启动开销，明显更快。思考模式默认开着（回答前先想一遍，能在设置页关掉换取更快的响应），思考程度这个设置两边引擎共用。
+**Claude Code CLI** — 可选，需要装 [Claude Code](https://claude.com/claude-code) 并登录。质量好，但每次对话有约 13 秒的固定启动开销（进程启动 + 加载，跟生成内容无关）。
 
 两个引擎用的是同一套工具（查播放状态、查字幕、搜台词、推荐短语收藏），但各自记各自的对话历史，切换不会互相污染。
 

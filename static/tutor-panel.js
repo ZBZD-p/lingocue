@@ -160,8 +160,8 @@
   // has to take effect the moment it changes (rather than being read when
   // it's next needed) also needs an entry in SETTING_HANDLERS inside boot().
   const ENGINE_OPTIONS = [
-    { value: "", label: "Claude Code（默认）" },
-    { value: "deepseek", label: "DeepSeek（更快，需要在下面配置 key）" },
+    { value: "deepseek", label: "DeepSeek（默认，更快，需要在下面配置 key）", default: true },
+    { value: "claude", label: "Claude Code（需要安装并登录 CLI）" },
   ];
 
   const SETTINGS = [

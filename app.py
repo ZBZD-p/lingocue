@@ -100,9 +100,8 @@ import youtube  # noqa: E402
 # On Windows `claude` resolves to claude.cmd; subprocess.run() with a plain
 # argv list won't find .cmd files via CreateProcess (no shell, no PATHEXT
 # lookup), so resolve the real executable path up front via shutil.which.
+# Claude is optional: DeepSeek is the default engine and does not need it.
 CLAUDE_BIN = shutil.which("claude")
-if not CLAUDE_BIN:
-    raise RuntimeError("找不到 claude 命令，确认 Claude Code CLI 已安装并在 PATH 里。")
 
 # The agent reaches playback and subtitles exclusively through the MCP tools
 # in mcp_server.py -- not by us stuffing subtitle text into the prompt, and
@@ -203,8 +202,8 @@ class ChatRequest(BaseModel):
     # DeepSeek-only: "on" (default)/"off" for its thinking mode. Claude's
     # extended thinking has no equivalent off switch exposed by the CLI.
     thinking: str | None = None
-    # "claude" (default, unset) or "deepseek".
-    engine: str | None = None
+    # "deepseek" (default) or "claude".
+    engine: str | None = "deepseek"
     # User-authored addition to TUTOR_SYSTEM_PROMPT, from the settings page.
     # Appended, not substituted -- the tool-use instructions there aren't
     # something a free-text field should be able to silently drop.
@@ -1327,6 +1326,8 @@ def _system_prompt(req: ChatRequest) -> str:
 
 
 def build_claude_command(req: ChatRequest, system_prompt: str) -> list[str]:
+    if not CLAUDE_BIN:
+        raise RuntimeError("Claude Code CLI 未安装或不在 PATH 中。请切换到 DeepSeek，或先安装 Claude Code CLI。")
     # The prompt is NOT passed here -- it goes over stdin (see chat()).
     # claude on Windows resolves to claude.CMD, and cmd.exe's argument
     # handling mangles/truncates a single argv value that contains embedded
@@ -1507,7 +1508,7 @@ def stream_claude_events(cmd: list[str], prompt: str):
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     system_prompt = _system_prompt(req)
-    if req.engine == "deepseek":
+    if req.engine != "claude":
         # A raw HTTP call, not a claude subprocess: no ~13s CLI-startup
         # overhead, no per-turn mcp_server.py spawn. Same tool functions
         # either way (tutor_tools.py), same NDJSON event shape out, so the
