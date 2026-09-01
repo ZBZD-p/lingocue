@@ -149,7 +149,7 @@ def preview_words(cues: list[tuple[int, int, str]], db, lex: indexer.LemmaRanks,
         p = known.get(lemma)
         if p is None:
             p = knowledge.prior_p_known(rank, v)
-        if p > KNOWN_THRESHOLD:
+        if p >= KNOWN_THRESHOLD:
             continue
         # A lemma _tokenize counted but _first_occurrences somehow missed
         # (shouldn't happen -- same normalization -- but not worth a crash

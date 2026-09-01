@@ -254,6 +254,11 @@ class PlaybackState(BaseModel):
     # keeps two tabs watching different videos from overwriting each other's
     # playback_state.json entry. See playback.py's module docstring.
     tab_id: str
+    # A fresh panel instance gets a new session id; samples within that
+    # instance are ordered by client_seq so delayed HTTP responses cannot move
+    # the state backward.
+    client_session: str | None = None
+    client_seq: int | None = None
 
 
 class YouTubeWatch(BaseModel):
@@ -670,6 +675,7 @@ def get_difficulty_batch(body: DifficultyBatchRequest):
     try:
         v = knowledge.vocab_size(db)
         known = knowledge.known_map(db)
+        lex = _lex()
         placeholders = ",".join("?" * len(ids)) if ids else "''"
         video_rows = db.execute(
             f"SELECT video_id, band_dist, speech_rate, duration_sec, lemma_counts FROM video_profile "
@@ -696,7 +702,7 @@ def get_difficulty_batch(body: DifficultyBatchRequest):
                 band_dist, speech_rate, duration_sec, lemma_counts = by_video[vid]
                 personalized = bool(lemma_counts)
                 density = (scoring.personalized_unknown_per_min(
-                    lemma_counts, lex=_lex(), known_map=known, vocab_size=v,
+                    lemma_counts, lex=lex, known_map=known, vocab_size=v,
                     duration_sec=duration_sec)
                     if personalized else scoring.unknown_per_min(band_dist, speech_rate, v))
                 result[vid] = {"status": "ok", "source": "video",
@@ -1042,7 +1048,8 @@ def report_playback_state(state: PlaybackState):
         path = Path(state.source)
         if not youtube.is_cached_path(path) or not path.exists():
             raise HTTPException(400, "source 不是已添加的 YouTube 视频")
-        playback.write(state.tab_id, str(path), state.position_ms, state.duration_ms, state.status)
+        playback.write(state.tab_id, str(path), state.position_ms, state.duration_ms,
+                       state.status, state.client_session, state.client_seq)
         return {"ok": True, "path": str(path), "play_method": "YouTube"}
 
     try:
@@ -1052,7 +1059,8 @@ def report_playback_state(state: PlaybackState):
     if not playing or not playing.get("path"):
         raise HTTPException(409, "Jellyfin 当前没有在播放任何内容")
 
-    playback.write(state.tab_id, playing["path"], state.position_ms, state.duration_ms, state.status)
+    playback.write(state.tab_id, playing["path"], state.position_ms, state.duration_ms,
+                   state.status, state.client_session, state.client_seq)
     return {"ok": True, "path": playing["path"], "play_method": playing.get("play_method")}
 
 

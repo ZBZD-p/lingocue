@@ -289,7 +289,15 @@ def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | N
     if counted == 0:
         return None
 
-    duration_sec = max(1.0, _spoken_seconds(cues))
+    spoken_sec = _spoken_seconds(cues)
+    if spoken_sec <= 0:
+        # A malformed or single-point cue can leave the merged speaking
+        # intervals empty even though its timestamp still gives us a useful
+        # runtime estimate. Keep personalized density from silently using a
+        # one-minute denominator in that case.
+        last_end_ms = max((end for _start, end, _text in cues if end > 0), default=0)
+        spoken_sec = last_end_ms / 1000.0
+    duration_sec = max(1.0, spoken_sec)
 
     return {
         "total_tokens": counted,

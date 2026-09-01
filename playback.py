@@ -24,6 +24,7 @@ change when playback moved to Jellyfin.
 """
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -41,6 +42,7 @@ STALE_AFTER_SECONDS = 30.0
 # _entry() -- just tidied up opportunistically so the file doesn't grow
 # without bound over weeks of use.
 TAB_RETENTION_SECONDS = 6 * 3600.0
+_WRITE_LOCK = threading.Lock()
 
 
 def _load() -> dict:
@@ -58,18 +60,37 @@ def _load() -> dict:
     return data
 
 
-def write(tab_id: str, path: str, position_ms: int, duration_ms: int, status: str) -> None:
-    tabs = _load()
-    now = time.time()
-    tabs[tab_id] = {
-        "path": path,
-        "position_ms": position_ms,
-        "duration_ms": duration_ms,
-        "status": status,
-        "updated_at": now,
-    }
-    tabs = {t: e for t, e in tabs.items() if now - e["updated_at"] < TAB_RETENTION_SECONDS}
-    STATE_FILE.write_text(json.dumps(tabs), encoding="utf-8")
+def write(tab_id: str, path: str, position_ms: int, duration_ms: int, status: str,
+          client_session: str | None = None, client_seq: int | None = None) -> bool:
+    """Persist a playback sample, rejecting an older sample from this panel.
+
+    HTTP requests can complete out of order on a busy local server. A session
+    id resets the sequence after a page reload, while the monotonically
+    increasing sequence prevents a delayed request from moving a tab backward.
+    """
+    with _WRITE_LOCK:
+        tabs = _load()
+        previous = tabs.get(tab_id)
+        if (client_session is not None and client_seq is not None and previous and
+                previous.get("client_session") == client_session and
+                isinstance(previous.get("client_seq"), int) and
+                client_seq < previous["client_seq"]):
+            return False
+        now = time.time()
+        tabs[tab_id] = {
+            "path": path,
+            "position_ms": position_ms,
+            "duration_ms": duration_ms,
+            "status": status,
+            "updated_at": now,
+            "client_session": client_session,
+            "client_seq": client_seq,
+        }
+        tabs = {t: e for t, e in tabs.items() if now - e["updated_at"] < TAB_RETENTION_SECONDS}
+        tmp = STATE_FILE.with_name(f"{STATE_FILE.name}.tmp")
+        tmp.write_text(json.dumps(tabs), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+        return True
 
 
 def _entry(tab_id: str | None) -> dict:
