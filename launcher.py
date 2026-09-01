@@ -1386,6 +1386,36 @@ class App:
         self.progress_bar.pack(anchor="w", pady=(px(4), 0))
         self._render_progress()
 
+        # First-run guidance for the browser extension. Keep this in the
+        # status view because it is the first screen users see after launch.
+        guide = card(parent)
+        guide.pack(fill=tk.X, pady=(0, px(12)))
+        guide_head = tk.Frame(guide, bg=SURFACE)
+        guide_head.pack(fill=tk.X, padx=px(14), pady=(px(12), px(4)))
+        label(guide_head, "Chrome 扩展", bold=True, bg=SURFACE).pack(side=tk.LEFT)
+        label(guide_head, "YouTube 侧边栏需要手动加载一次", size=8,
+              color=DIM, bg=SURFACE).pack(side=tk.LEFT, padx=(px(10), 0))
+        notice = tk.Frame(guide, bg=ACCENT_SOFT)
+        notice.pack(fill=tk.X, padx=px(14), pady=(px(4), px(10)))
+        Dot(notice, ACCENT, size=9).pack(side=tk.LEFT, padx=(px(10), px(8)), pady=px(8))
+        label(notice, "首次使用必做：扩展不会自动安装，请先完成下面的手动加载。",
+              size=9, color=ACCENT, bold=True, bg=ACCENT_SOFT).pack(
+                  side=tk.LEFT, pady=px(7))
+        label(guide, "1  在 Chrome 顶部地址栏输入 chrome://extensions/ 并回车\n"
+                    "2  开启右上角「开发者模式」\n"
+                    "3  点击「加载已解压的扩展程序」（有些版本显示为「加载未打包的扩展程序」）\n"
+                    "4  选择下面的 extension 文件夹（选择文件夹，不要选里面的文件）",
+              size=9, color=INK, bg=SURFACE).pack(anchor="w",
+              padx=px(14), pady=(0, px(8)))
+        path_row = tk.Frame(guide, bg=SURFACE)
+        path_row.pack(fill=tk.X, padx=px(14), pady=(0, px(12)))
+        label(path_row, str(ROOT / "extension"), size=8, color=MUTED,
+              bg=SURFACE).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        Button(path_row, "复制路径", command=self.copy_extension_path,
+               width=78).pack(side=tk.RIGHT, padx=(px(8), 0))
+        Button(path_row, "复制地址", command=self.copy_chrome_extensions_url,
+               variant="accent", width=100).pack(side=tk.RIGHT)
+
         wrap = card(parent)
         wrap.pack(fill=tk.BOTH, expand=True)
         self.log = tk.Text(wrap, bg=SURFACE, fg=MUTED, insertbackground=INK,
@@ -1565,6 +1595,22 @@ class App:
     def open_extension(self):
         target = ROOT / "extension"
         os.startfile(target if target.is_dir() else ROOT)
+
+    def copy_extension_path(self):
+        """Put the exact folder to select in the clipboard."""
+        path = str(ROOT / "extension")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(path)
+        self.root.update()  # keep clipboard contents after this window closes
+        self.write(f"已复制扩展文件夹路径：{path}")
+
+    def copy_chrome_extensions_url(self):
+        """Copy the browser-internal URL users should enter in Chrome."""
+        url = "chrome://extensions/"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(url)
+        self.root.update()
+        self.write(f"已复制 Chrome 扩展管理页地址：{url}")
 
     def do_uninstall(self):
         data = data_dir()
