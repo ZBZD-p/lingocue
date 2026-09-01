@@ -1433,7 +1433,7 @@
       }, 180);
     }
 
-    function smoothCenterCard(card) {
+    function smoothCenterCard(card, immediate = false) {
       if (!card || !card.isConnected) return;
       const rootRect = subsScroll.getBoundingClientRect();
       const cardRect = card.getBoundingClientRect();
@@ -1443,6 +1443,37 @@
       const start = subsScroll.scrollTop;
       const target = Math.max(0, Math.min(maxScroll, start + delta));
       if (Math.abs(target - start) < 3) return;
+      if (immediate) {
+        cancelSmoothScroll();
+        programmaticScroll = true;
+        subsScroll.scrollTop = target;
+        // The target may have been outside content-visibility's activation
+        // range, and adding .current also reveals its timestamp/actions. Both
+        // can change its real height after this first write. Re-center for a
+        // couple of layout frames while the internal-scroll guard is active,
+        // so one seek still lands exactly once from the user's perspective.
+        const token = smoothScrollToken;
+        let settleFrames = 0;
+        const settle = () => {
+          if (token !== smoothScrollToken || !card.isConnected) return;
+          const nextRootRect = subsScroll.getBoundingClientRect();
+          const nextCardRect = card.getBoundingClientRect();
+          const correction = ((nextCardRect.top + nextCardRect.bottom) -
+            (nextRootRect.top + nextRootRect.bottom)) / 2;
+          if (Number.isFinite(correction) && Math.abs(correction) > 0.5) {
+            const nextMax = Math.max(0, subsScroll.scrollHeight - subsScroll.clientHeight);
+            subsScroll.scrollTop = Math.max(0, Math.min(nextMax, subsScroll.scrollTop + correction));
+          }
+          if (settleFrames++ < 2) {
+            requestAnimationFrame(settle);
+          } else {
+            programmaticScroll = false;
+            scheduleVirtualMeasure();
+          }
+        };
+        requestAnimationFrame(settle);
+        return;
+      }
       // Keep the current velocity when a new cue retargets the center. That
       // continuity is what gives native lyrics views their gentle "drag"
       // instead of restarting every transition from a dead stop.
@@ -2342,7 +2373,7 @@
       };
     }
 
-    function updateCurrentCue(positionMs) {
+    function updateCurrentCue(positionMs, immediate = false) {
       if (subtitleCues.length === 0) return;
       let idx = currentCueIndex;
       // During normal playback timestamps only move forward, so advance the
@@ -2373,7 +2404,9 @@
       if (loopActive() && idx < loopStartIdx) idx = loopStartIdx;
       if (idx !== currentCueIndex) {
         const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
-        highlightCue(idx, quietFor >= USER_SCROLL_QUIET_MS);
+        // A committed progress-bar seek is an explicit navigation command;
+        // it must override the temporary "user is reading" follow-off window.
+        highlightCue(idx, immediate || quietFor >= USER_SCROLL_QUIET_MS, immediate);
       }
       // Outside the cue-changed check on purpose: the whole point is to keep
       // moving *within* one line, which is exactly the case that check skips.
@@ -2406,7 +2439,7 @@
       spokenWordCount = lit;
     }
 
-    function highlightCue(idx, autoScroll) {
+    function highlightCue(idx, autoScroll, immediate = false) {
       const prev = currentCardEl;
       if (prev) prev.classList.remove("current");
       if (currentCueIndex >= 0 && cueActionEls[currentCueIndex]) {
@@ -2443,18 +2476,12 @@
         ? (cueWordSpans[idx] || []) : [];
       ensureCardActions(idx);
       card.classList.add("current");
-      // Instant, not "smooth": .sub-card has content-visibility: auto (see
-      // panel.css), so most of this list is sized off a placeholder height
-      // until a card is actually near the viewport. A multi-frame smooth
-      // scroll animation gives content-visibility time to "unlock" cards
-      // mid-flight as they cross into relevance, swapping their placeholder
-      // height for their real one -- which shifts the total scroll height
-      // out from under the animation's target, so it keeps chasing a moving
-      // target and never settles (confirmed for real: runaway back-and-forth
-      // scrolling). An instant jump computes the target once, synchronously,
-      // against correctly-unlocked geometry (the one thing content-visibility
-      // guarantees for scrollIntoView per spec) -- there's no animation
-      // window left for the target to drift during.
+      // Seek jumps use an immediate scroll rather than the normal spring:
+      // .sub-card has content-visibility:auto (see panel.css), so an
+      // offscreen target can switch from its placeholder height to real
+      // layout as it enters the viewport. smoothCenterCard() performs a
+      // short, guarded post-layout recenter for that transition; a long
+      // spring would keep chasing the moving virtual-list geometry.
       // Every cue change gets its own exact center target, like a lyrics view.
       // There is no viewport tolerance here: even a short line-to-line height
       // difference should be corrected so the new active line lands on the
@@ -2467,12 +2494,13 @@
         const cardCenter = (cardRect.top + cardRect.bottom) / 2;
         needsCenter = !Number.isFinite(cardCenter) || Math.abs(cardCenter - rootCenter) > 1;
       }
-      if (autoScroll && needsCenter && Date.now() - lastAutoScrollAt >= 180) {
+      if (autoScroll && needsCenter &&
+          (immediate || Date.now() - lastAutoScrollAt >= 180)) {
         // Animate scrollTop ourselves instead of using native smooth
         // scrollIntoView. The virtualized list can recycle cards while a
         // native animation is running; an explicit target plus cancellation
         // on user input keeps the lyric-style motion stable.
-        smoothCenterCard(card);
+        smoothCenterCard(card, immediate);
         lastAutoScrollAt = Date.now();
       }
       scheduleVirtualMeasure();
@@ -3530,6 +3558,7 @@
           subtitleIsPartial = false;
           currentCueIndex = -1;
           lastPositionMs = NaN;
+          detachSeekVideo();
           // Loop bounds are indices into the cue list that just went away.
           clearLoop();
           subsNote.hidden = true;
@@ -3551,6 +3580,7 @@
       subtitleIsPartial = false;
       currentCueIndex = -1;
       lastPositionMs = NaN;
+      detachSeekVideo();
       currentItemId = null;
       subsNote.hidden = true;
       if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
@@ -3573,32 +3603,74 @@
     const POSITION_POLL_WORD_MS = 100;
     let positionTimer = null;
     let seekVideo = null;
+    let seekInProgress = false;
+    let seekCommitTimer = 0;
+    let lastSeekProbeAt = 0;
 
-    function handleVideoSeeking() {
-      cancelSmoothScroll();
-      // A progress-bar drag can emit several intermediate currentTime values.
-      // Force the next cue lookup down the binary-search path instead of
-      // advancing from the old playback position.
-      lastPositionMs = NaN;
+    function resetSeekTransaction() {
+      if (seekCommitTimer) clearTimeout(seekCommitTimer);
+      seekCommitTimer = 0;
+      seekInProgress = false;
     }
 
-    function handleVideoSeeked() {
+    function detachSeekVideo() {
+      if (seekVideo) {
+        seekVideo.removeEventListener("seeking", handleVideoSeeking);
+        seekVideo.removeEventListener("seeked", handleVideoSeeked);
+      }
+      seekVideo = null;
+      lastSeekProbeAt = 0;
+      resetSeekTransaction();
+    }
+
+    function commitVideoSeek() {
+      seekCommitTimer = 0;
+      seekInProgress = false;
       const p = player();
       if (!p) return;
       const nowMs = p.currentTimeMs();
       if (!Number.isFinite(nowMs)) return;
       lastPositionMs = NaN;
-      updateCurrentCue(nowMs);
+      updateCurrentCue(nowMs, true);
+    }
+
+    function handleVideoSeeking() {
+      if (seekCommitTimer) { clearTimeout(seekCommitTimer); seekCommitTimer = 0; }
+      seekInProgress = true;
+      cancelSmoothScroll();
+      // A progress-bar drag emits several intermediate currentTime values.
+      // Do not render each one as a separate jump; seeked will commit the
+      // final position once the player has settled.
+      lastPositionMs = NaN;
+    }
+
+    function handleVideoSeeked() {
+      if (seekCommitTimer) clearTimeout(seekCommitTimer);
+      // Dragging a progress bar can produce several seeked events. Wait for
+      // the burst to settle, then read the player's final position once.
+      seekCommitTimer = setTimeout(commitVideoSeek, 80);
     }
 
     function bindSeekEvents() {
-      const video = document.querySelector("video");
+      // findVideo() also walks open shadow roots, which is where some
+      // Jellyfin builds mount their player. Missing that element meant seek
+      // events were never seen there and the polling path processed every
+      // intermediate drag position instead.
+      // Once attached, keep the listener until that element leaves the DOM.
+      // Scanning every element in the page at the position-poll frequency
+      // made YouTube drags compete with the player on the main thread.
+      if (seekVideo && seekVideo.isConnected) return;
+      const now = Date.now();
+      if (now - lastSeekProbeAt < 500) return;
+      lastSeekProbeAt = now;
+      const video = findVideo();
       if (video === seekVideo) return;
       if (seekVideo) {
         seekVideo.removeEventListener("seeking", handleVideoSeeking);
         seekVideo.removeEventListener("seeked", handleVideoSeeked);
       }
       seekVideo = video || null;
+      resetSeekTransaction();
       if (seekVideo) {
         seekVideo.addEventListener("seeking", handleVideoSeeking, { passive: true });
         seekVideo.addEventListener("seeked", handleVideoSeeked, { passive: true });
@@ -3609,10 +3681,19 @@
       clearInterval(positionTimer);
       positionTimer = setInterval(() => {
         bindSeekEvents();
+        // A native media element can briefly miss a seeked event while its
+        // source is being replaced. The property check is a fallback so a
+        // stale seek transaction cannot suppress subtitle updates forever.
+        let commitSeek = false;
+        if (seekInProgress) {
+          if (!seekVideo || seekVideo.seeking || seekCommitTimer) return;
+          seekInProgress = false;
+          commitSeek = true;
+        }
         const p = player();
         if (!p) return;
         const nowMs = p.currentTimeMs();
-        if (!isNaN(nowMs)) updateCurrentCue(nowMs);
+        if (!isNaN(nowMs)) updateCurrentCue(nowMs, commitSeek);
       }, wordHighlightOn() ? POSITION_POLL_WORD_MS : POSITION_POLL_MS);
     }
     startPositionPolling();
