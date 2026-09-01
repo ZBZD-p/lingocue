@@ -1,271 +1,187 @@
 # LingoCue
 
+> 面向中文用户的 YouTube 字幕英语学习助手
+
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
-![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
 [![YouTube extension](https://img.shields.io/badge/YouTube-Chrome%20extension-red.svg)](extension)
-[![Jellyfin](https://img.shields.io/badge/Jellyfin-injectable-8a5cf6.svg)](https://jellyfin.org/)
 
-看剧、看 YouTube 学英语的辅助面板。它不负责播放视频，只负责在播放器**旁边**给你一条侧边栏：跟 AI 聊当前剧情、按时间轴翻字幕卡片、悬停查词、循环某句话、记生词。
+LingoCue 是一个面向中文用户的 Windows 英语学习工具，通过 YouTube 字幕帮助你进行听力练习、单词积累和语境学习。
+它会跟随视频播放自动高亮字幕，支持单词查询、生词本、难度标记和 AI 对话。
+视频仍然由 YouTube 播放，LingoCue 只在旁边提供学习工具。
 
-配合 [Jellyfin](https://jellyfin.org/) 看自己的媒体库，或者装个 Chrome 扩展直接在 youtube.com 官网用。
+LingoCue is a Windows desktop app and Chrome extension for learning English
+with YouTube subtitles, vocabulary lookup, and personalized video difficulty analysis.
 
-> **目前仅支持 Windows**
-
-<p align="center"><sub>电脑浏览器访问 youtube.com</sub></p>
+> 目前仅支持 Windows。
 
 <p align="center">
-  <img src="docs/demo.gif" alt="LingoCue 侧边栏注入在 youtube.com 页面里，字幕卡片跟随播放自动高亮切换，点单词弹出词典释义、发音、存生词" width="820">
+  <img src="docs/demo.gif" alt="LingoCue YouTube 字幕学习侧边栏演示" width="820">
 </p>
 
-<p align="center"><sub>手机浏览器访问 Jellyfin</sub></p>
+## 主要功能
 
-https://github.com/user-attachments/assets/dd743a49-2c15-4c71-824c-329899140c09
+- 跟随 YouTube 播放进度自动高亮字幕
+- 点击单词查看释义、发音和词性
+- 保存单词和短语到生词本
+- 显示字幕难度和考试词汇标签
+- 根据视频难度和你的词汇掌握情况，智能判断当前视频是否适合学习
+- 循环播放单句或一段字幕
+- 使用 AI 解释当前字幕和短语
+- 支持中英字幕对照
+- 支持独立面板和 Jellyfin 本地媒体库
+- 只下载字幕，不下载 YouTube 视频
 
----
+## 智能学习适配
 
-## 目录
+LingoCue 不只是统计视频里有多少生词，还会把视频内容难度和你的个人词汇掌握情况结合起来分析。
 
-- [它能做什么](#它能做什么)
-- [装之前需要什么](#装之前需要什么)
-- [安装](#安装)
-- [三种用法](#三种用法)
-- [对话引擎](#对话引擎)
-- [配置文件](#配置文件)
-- [它是怎么工作的](#它是怎么工作的)
-- [已知的坑](#已知的坑)
-- [第三方资源](#第三方资源)
+<p align="center">
+  <img src="docs/learning-fit.png" alt="LingoCue 根据视频难度和用户词汇量给出学习建议" width="820">
+</p>
 
----
+它会综合以下信息：
 
-## 它能做什么
+- 视频字幕中的词汇难度和生词数量
+- 生词在视频中重复出现的次数
+- 你已经掌握、正在学习和还不熟悉的词汇
+- 视频的整体语速和每分钟的学习挑战度
 
-- **字幕卡片** — 整集字幕按时间切成卡片，跟着播放进度自动高亮，点一下跳到那一句
-- **循环单句 / 一段** — 点卡片上的循环按钮反复听同一句；再点另一句就变成 A–B 段落循环
-- **悬停查词** — 鼠标放到单词上立刻出中文释义（本地词典，不走网络也不花钱），认得出 `went → go` 这类变形，还带着四六级/考研/雅思/托福/GRE 这些考试大纲标签
-- **发音** — 查词气泡、生词本列表都能点喇叭听读音，抽查时还会自动读一次；优先用在线词典的真人/高质量语音，网络不通时自动降级成浏览器内置朗读
-- **问 AI** — 结合当前播放位置提问，比如「刚才那句 brace yourself 什么意思」。AI 有工具可以自己查当前播放位置和字幕，不需要你复制粘贴
-- **生词本** — 查到的词一键存下来，之后可以再让 AI 详细解释
-- **短语收藏本** — 跟 AI 聊字幕的时候，它觉得有值得记的短语会主动推荐，点一下就收藏进这个独立的本子（不跟单词生词本混在一起）
-- **生词本抽查** — 闪卡自测「认识/不认识」，答对了用间隔重复（Leitner 分箱）安排下次复习时间，连续答对几次自动"毕业"退出抽查池；能按四六级/考研/雅思/托福/GRE 这些大纲勾选只抽某个范围，也能设置一次抽查几个
-- **中英对照** — 有中文字幕轨的话，可以在每句英文下面显示对应中文
-- **深色 / 浅色外观** — 设置页一键切换，跟着喜好来
-- **YouTube** — 装个 Chrome 扩展，直接在 youtube.com 官网打开任意视频就有侧边栏，**只下载字幕，不下载视频**（一个视频占几十 KB）
+启动视频后，LingoCue 会给出当前视频的学习提示。例如：视频中有 `34` 个可能不认识的词，其中 `4` 个会重复出现，当前挑战度为每分钟 `14.6` 个词。重复出现的词更适合通过上下文反复巩固；如果陌生词太密集，系统会提示这个视频可能更适合先直接观看，或换一个难度更合适的内容。
 
----
+这个判断不是简单的“适合 / 不适合”二选一，而是帮助你决定应该怎样看：
 
-## 装之前需要什么
+- **花 30 秒过一遍**：先快速熟悉重点词汇，再开始播放
+- **直接看**：当前难度在可接受范围内，直接进入学习
 
-**必须的：**
+随着你在 LingoCue 中查词、保存生词和完成复习，后续视频的建议会越来越贴近你的实际水平。
 
-| 依赖 | 说明 |
-|------|------|
-| Python 3.10+ | 代码里用了 `X \| None` 这类新语法，3.9 跑不了 |
-| [ffmpeg / ffprobe](https://ffmpeg.org/download.html) | 从视频文件里提取内嵌字幕用。装完加进 PATH，或在 `config.json` 里指定目录 |
+## 快速安装
 
-**按需要的：**
+### Windows 用户
 
-| 依赖 | 什么时候需要 |
-|------|-------------|
-| [Jellyfin](https://jellyfin.org/) | 想看自己媒体库里的片子时 |
-| [Claude Code CLI](https://claude.com/claude-code) 或 DeepSeek API key | 对话功能二选一，见下面「对话引擎」 |
-| [funasr](https://github.com/modelscope/FunASR)（连 `torch`/`torchaudio`） | 想让完全没标点的 YouTube 自动字幕自动补标点时，见 `requirements.txt` 里的装法说明——**这一项单独就要下载约 1.4GB、占用约 2.4GB**（torch 534MB + funasr 的依赖 626MB + ct-punc 模型 1.2GB），是这个项目里迄今为止最占地方的一块——作为对比，其余必需依赖加起来只有 19MB |
+从 [Releases](../../releases) 下载最新的 `LingoCue-Setup.exe`，双击运行即可。
 
----
+安装程序会自动准备内置 Python、核心依赖、ffmpeg 和英语词典。安装完成后启动 `LingoCue.exe`。
 
-## 安装
-
-```bash
-git clone https://github.com/ZBZD-p/lingocue.git
-cd lingocue
-```
-
-**一键装依赖**（推荐）：
+### 从源码运行
 
 ```powershell
+git clone https://github.com/ZBZD-p/lingocue.git
+cd lingocue
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-这一步会自动装好 Python 依赖、ffmpeg（直接下载解压进项目里，不用配 PATH），再生成本地词典。想要标点优化功能（约再加 2.4GB）的话加个参数：`.\setup.ps1 -WithPunctuation`。重复跑是安全的，已经装好的东西会自动跳过。
+启动后端：
 
-脚本自动不了的只剩两步：装 [Chrome 扩展](#2-看-youtube)（浏览器出于安全考虑不允许脚本代劳），以及对话引擎二选一（装 [Claude Code CLI](https://claude.com/claude-code) 并登录，或者在设置页填 DeepSeek API key）。
-
-**不想用脚本、想自己手动装**也可以，就是 `pip install -r requirements.txt` 之外把上面表格里那几样按需要的依赖自己装一遍。
-
-**生成本地词典**（`setup.ps1` 已经做了这一步，手动装的话单独跑一下）：
-
-```bash
-python build_dict.py
-```
-
-这会下载 [ECDICT](https://github.com/skywind3000/ECDICT) 的词表并压成一个约 9MB 的 SQLite 文件（5.8 万词条 + 4 万条词形映射）。原始 CSV 有 63MB / 77 万词，脚本只保留词频前 5 万名左右的部分——剩下的绝大多数是专有名词和生僻词，字幕里根本不会出现。
-
-**启动：**
-
-```bash
+```powershell
 python app.py
 ```
 
-然后打开 <http://127.0.0.1:8420> 就能用了（没有视频时只有对话和生词本可用）。
+然后打开 <http://127.0.0.1:8420>。
 
-### Windows 安装版
+## Chrome 扩展安装
 
-普通用户不需要安装 Python，也不需要运行命令。请前往项目的 [Releases](https://github.com/ZBZD-p/lingocue/releases) 页面，下载最新版本的 `LingoCue-Setup.exe`，然后双击运行。
+Chrome 不允许普通程序静默安装本地扩展，因此**首次使用必须手动加载一次**。
 
-安装器会依次完成这些事情：
+1. 打开 Chrome。
+2. 在顶部地址栏输入 `chrome://extensions/` 并回车。
+3. 开启右上角的“开发者模式”。
+4. 点击“加载已解压的扩展程序”。某些 Chrome 版本会显示为“加载未打包的扩展程序”。
+5. 选择 LingoCue 安装目录下的 `extension` 文件夹。请选择整个文件夹，不要选择其中的单个文件。
+6. 保持 LingoCue 后端运行，打开任意 YouTube 视频。
 
-1. 选择安装目录；默认目录可以直接使用，也可以点击“浏览”更改。
-2. 选择是否创建桌面快捷方式。
-3. 自动准备内置 Python、核心依赖和程序文件。第一次安装需要联网，可能需要等待几分钟。
-4. 安装完成后，在安装目录生成真正的 `LingoCue.exe` 启动器。
+默认安装目录通常是：
 
-安装过程中可以点击“取消”。已经完成的步骤会保留，下次重新运行安装器可以继续。以后从安装目录或桌面快捷方式启动 `LingoCue.exe` 即可。
+```text
+%LOCALAPPDATA%\Programs\LingoCue\extension
+```
 
-重新下载并运行更新版本的 `LingoCue-Setup.exe` 可以刷新已有安装；用户的学习数据、配置文件和运行时环境不会被覆盖。
+扩展只需加载一次。更新 LingoCue 后，如果 Chrome 提示扩展文件发生变化，请回到 `chrome://extensions/`，点击扩展卡片上的刷新按钮，再刷新 YouTube 页面。
 
-### 安装完成后的首次使用
+## 使用方式
 
-给不想接触 Python 的用户，推荐按下面顺序操作：
+### YouTube
 
-1. 双击 `LingoCue-Setup.exe`，选择安装目录，按需要勾选“创建桌面快捷方式”，等待安装完成。
-2. 点击“立即启动”，或者从安装目录/桌面快捷方式运行 `LingoCue.exe`。
-3. 在启动器的“状态”页点击“启动后端”，看到状态变成“运行中”后，点击“打开面板”确认程序正常工作。
-4. 如果要在 YouTube 使用，再按下面的 [YouTube 扩展安装](#youtube-扩展安装) 操作；只用独立面板或 Jellyfin 的用户可以跳过这一步。
+启动 LingoCue 后打开 YouTube 视频。扩展会自动识别当前视频并加载字幕，侧边栏会跟随播放位置高亮。
 
-> Chrome 和 Edge 不允许普通 `.exe` 在后台静默安装本地扩展，所以安装器只能准备好扩展文件，最后的“加载扩展”需要用户在浏览器里确认一次。这是浏览器的安全限制，不是安装失败。
+### 独立面板
 
----
+打开 <http://127.0.0.1:8420>，可以使用查词、生词本和 AI 对话功能。独立面板不需要浏览器扩展。
 
-## 三种用法
+### Jellyfin
 
-### 1. 只用面板（最简单）
+先复制并编辑配置文件：
 
-<http://127.0.0.1:8420> —— 对话、生词本能用，但没有视频进度，所以「刚才那句」这类功能用不了。
+```powershell
+Copy-Item .\jellyfin_config.example.json .\jellyfin_config.json
+```
 
-### 2. 看 YouTube
-
-#### YouTube 扩展安装
-
-安装器安装完成后，扩展目录在安装目录下的 `extension` 文件夹中。Chrome 和 Edge 都可以按下面的步骤加载：
-
-1. 打开 Chrome 或 Edge，在地址栏输入 `chrome://extensions`（Edge 也可以输入 `edge://extensions`）。
-2. 打开右上角的“开发者模式”。
-3. 点击“加载已解压的扩展程序”。
-4. 选择 LingoCue 安装目录里的 `extension` 文件夹，不要选择它里面的某一个文件。
-5. 保持 LingoCue 后端运行，然后打开 `youtube.com` 的任意视频。
-
-扩展只需要加载一次，之后一直有效。安装器不会自动替你完成这一步，因为浏览器会阻止普通安装程序静默安装未经过商店分发的扩展。
-
-后端跟扩展不在同一台机器时，打开扩展的选项页把后端地址改成那台机器的局域网 IP（默认 `http://127.0.0.1:8420`，本机跑就不用改）。
-
-装好之后直接在 `youtube.com` 打开任意视频，侧边栏会自动出现、自动识别当前视频并抓字幕（**不下载视频**）。第一次抓某个视频的字幕要十几秒，期间视频可以先看，字幕好了会自动出现；换到别的视频也会自动重新识别，不用手动操作。
-
-> 改了 [`static/tutor-panel.js`](static/tutor-panel.js) 之后，这个扩展不会自动读到最新版本——它打包的是单独一份 [`extension/tutor-panel.js`](extension/tutor-panel.js)，需要手动 `cp static/tutor-panel.js extension/tutor-panel.js` 重新同步，再去 `chrome://extensions` 点一下刷新。独立页面和 Jellyfin 注入这两种用法不受影响，改完刷新页面就是最新的。
-
-更新 LingoCue 后，如果浏览器提示扩展文件发生变化，回到扩展管理页点击扩展卡片上的刷新按钮，然后刷新 YouTube 页面即可。只更新主程序、不使用 YouTube 的用户不需要操作扩展。
-
-### 3. 注入到 Jellyfin（本地媒体库）
-
-面板会以侧边栏形式出现在 Jellyfin 自己的播放页面旁边。
-
-先在 `jellyfin_config.json` 里填好地址和 API key（复制 `jellyfin_config.example.json` 改），然后**用管理员权限**的 PowerShell 跑：
+填入 Jellyfin 地址和 API key 后，以管理员权限运行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\inject.ps1
 ```
 
-这个脚本会在 Jellyfin 自带的 `index.html` 里加一行 `<script>`，并开一条 8420 端口的防火墙入站规则（仅专用网络，为了手机能访问）。
-
-要撤销：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\inject.ps1 -Remove
-```
-
-> Jellyfin 每次升级都会覆盖 `index.html`，注入会失效，重跑一次即可（脚本会先清掉旧的，重复跑是安全的）。
-
-**手机访问**：跟电脑连同一个 Wi-Fi，浏览器打开 `http://<电脑局域网IP>:8096`（IP 用 `ipconfig` 查）。
-
----
+Jellyfin 升级后可能需要重新运行一次注入脚本。
 
 ## 对话引擎
 
-设置页里可以切换，两种各有取舍：
+设置页支持两种对话引擎，二选一即可：
 
-**DeepSeek API**（默认）— 需要自己申请 [DeepSeek](https://platform.deepseek.com/) 的 key，填在设置页里。直接 HTTP 调用，没有 CLI 启动开销，响应更快。思考模式默认开着（回答前先想一遍，能在设置页关掉换取更快的响应），思考程度这个设置两边引擎共用。
+- **DeepSeek API**：在设置页填写 API key，响应速度更快。
+- **Claude Code CLI**：安装并登录 [Claude Code](https://claude.com/claude-code)。
 
-**Claude Code CLI** — 可选，需要装 [Claude Code](https://claude.com/claude-code) 并登录。质量好，但每次对话有约 13 秒的固定启动开销（进程启动 + 加载，跟生成内容无关）。
+字幕、查词、生词本和难度标记不依赖 AI 引擎。
 
-两个引擎用的是同一套工具（查播放状态、查字幕、搜台词、推荐短语收藏），但各自记各自的对话历史，切换不会互相污染。
+## 依赖和可选功能
 
----
+源码运行需要 Python 3.10+。本地媒体字幕提取需要 ffmpeg，安装脚本会自动准备。
+
+如果希望为完全没有标点的 YouTube 自动字幕补标点，可以运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -WithPunctuation
+```
+
+该功能会额外下载约 1.4GB，安装后约占用 2.4GB 磁盘空间。
 
 ## 配置文件
 
-带 `.example` 后缀的是模板，复制一份去掉 `.example` 再改。**真实的配置文件都在 `.gitignore` 里，不会被提交。**
+复制对应的 `.example` 文件后再修改：
 
-| 文件 | 干什么的 |
-|------|---------|
-| `config.json` | 文件路径类配置。`data_dir` 是下面那些数据存哪（默认项目下的 `data/`），`youtube_cache_dir` 是 YouTube 字幕存哪（默认 `data/youtube/`），`ffmpeg_dir` 是 ffmpeg 不在 PATH 时的兜底目录，`model_cache_dir` 是标点优化的 ct-punc 模型（约 1.2GB）下载到哪（默认数据目录下的 `model_cache/`）|
-| `jellyfin_config.json` | Jellyfin 地址和 API key（在 Jellyfin 控制台 → API 密钥里生成） |
-| `deepseek_config.json` | DeepSeek 的 key 和模型。也可以直接在设置页里填，会自动写到这里 |
+| 文件 | 用途 |
+| --- | --- |
+| `config.json` | 数据目录、字幕缓存、ffmpeg 和模型缓存位置 |
+| `jellyfin_config.json` | Jellyfin 地址和 API key |
+| `deepseek_config.json` | DeepSeek API key 和模型设置 |
 
-这三个是**你手写的**，所以放在项目根目录、跟各自的 `.example` 模板挨着。
+用户数据默认保存在项目下的 `data/` 目录，包括生词本、短语本、词典和字幕缓存。
 
-## `data/`
+## 常见问题
 
-程序自己写出来的东西全在这里，整个目录都不进仓库：
+### 扩展已经加载，但 YouTube 上没有侧边栏
 
-| 文件 | 哪来的 |
-|------|--------|
-| `dictionary.db` | `build_dict.py` 从 ECDICT 现下现建，约 9MB |
-| `difficulty.db` | `indexer.py` 扫字幕缓存生成的视频/频道难度画像，以及你的词汇量估计 |
-| `vocab.json` / `phrases.json` | 生词本、短语收藏本 |
-| `playback_state.json` | 播放状态 |
-| `mcp_config.json` | 每次启动按本机路径重新生成，不用管 |
-| `youtube/` | YouTube 字幕缓存的默认位置（`config.json` 可以改到别处） |
+请确认 LingoCue 后端正在运行、扩展已启用，并且当前打开的是 `youtube.com`。部分隐私或广告拦截扩展可能会阻止侧边栏注入。
 
-**这个目录可以整个备份走**——项目目录删掉重新 clone 也不会丢生词本。想放到别处（比如 `%LOCALAPPDATA%`）就在 `config.json` 里设 `data_dir`。
+### 修改代码后扩展没有更新
 
----
+如果修改的是 `static/tutor-panel.js`，请同步到扩展目录：
 
-## 它是怎么工作的
+```powershell
+Copy-Item .\static\tutor-panel.js .\extension\tutor-panel.js
+```
 
-**播放不归它管。** Jellyfin 负责浏览媒体库和串流，YouTube 就是 youtube.com 官网自己的播放器。这个项目只做旁边那条侧边栏。
+然后在 `chrome://extensions/` 页面刷新扩展，并刷新 YouTube 页面。
 
-**面板跑在播放器所在的页面里**，而不是 iframe 里 —— 这样才能直接读到 `<video>` 元素的播放进度。所有功能（字幕高亮、循环、问 AI）都建立在这个进度之上。YouTube 那边靠 Chrome 扩展把面板注入进官网页面本身，同时监听 YouTube 单页应用内部的换视频事件，换视频不用刷新页面就能识别。
+### 字幕抓取失败
 
-**字幕来源有三层**：优先找视频旁边的外挂字幕文件，其次找之前提取过的缓存，最后才从视频容器里现提。
+YouTube 字幕接口可能会临时限流或发生变化。等待一段时间后重试，不要连续快速请求同一个视频。
 
-提取内嵌字幕这一步比想象中慢——字幕数据和视频数据在文件里是交错存放的，ffmpeg 为了拿到那 30KB 字幕得把整个文件读一遍（7.5GB 的 4K 视频实测约 84 秒）。所以 [`mkv_subs.py`](mkv_subs.py) 自己走了一遍 MKV 的 EBML 结构，看到视频块的头就直接跳过去不读那些字节，同样的文件降到约 24 秒，输出逐字节一致。
+## 项目状态
 
-**提取永远不在请求里做** —— 后台线程边提取边发布，字幕页从头开始逐段填充，同时预取下一集。所以切集时通常已经准备好了。
+LingoCue 目前主要面向 Windows 用户。YouTube 字幕接口、Chrome 扩展行为和第三方 AI 服务可能随平台更新而变化。
 
-**AI 不是被灌字幕的。** 它有工具可以自己查当前播放位置、查最近这一段字幕、按时间段查、全集搜关键词。这样每次提问不用为整集字幕付费，它也能自己决定要不要往前翻。
+## License
 
-**YouTube 自动字幕完全没标点时**，会在后台用本地的 [FunASR](https://github.com/modelscope/FunASR) `ct-punc` 模型悄悄补一遍标点再重新切句，不阻塞字幕先出来。这是个逐词分类模型，不是生成式改写，所以不会漏词/加词/改写内容——失败了就原样保留没改，不会比不加标点更糟。装了 `funasr` 并且模型已经下载好才会用到——两者都在启动器「环境」页的「安装标点优化」按钮里一起完成，见下面「装之前需要什么」。
-
-**本地词典还带着考试大纲标签**（四六级、中考高考、考研、雅思托福、GRE），来自 [ECDICT](https://github.com/skywind3000/ECDICT) 原始数据——`build_dict.py` 之前只拿这个标签决定要不要收进词典，标签本身没存下来，现在存进去了，用来给生词本抽查按范围筛选。查词时如果这个词是另一个词的语法变形（比如 `engaging` 对应 `engage`），会把词根的标签并进来：ECDICT 是按每个拼写形式各自的语料库词频独立标注的，同一词根的不同变形经常标签对不齐，光看这个词自己的标签会漏掉不少。
-
----
-
-## 已知的坑
-
-- **YouTube 自动字幕质量参差** —— 没标点的会自动补（见上面），但个别单词本身识别错是 YouTube 自己转录的问题，改不了
-- **字幕接口是逆向来的，YouTube 改了就会坏** —— `youtube-transcript-api` 用的是 YouTube 没有公开文档的字幕接口。这是所有同类工具（包括 yt-dlp）的共同处境，不存在"官方稳定"的选项，只能等上游跟进更新。
-- **短时间大量请求会被判定成机器人** —— 表现是抓字幕失败。这是按 IP 算的信誉问题，跟视频无关，等一阵子会自己恢复。别对着同一个视频反复重试——每次重试都是真实请求，只会让恢复更慢（代码里已经加了 10 分钟的失败冷却，但手动切视频仍会触发新的抓取）。
-- **少数浏览器扩展会给页面加固 CSP（Trusted Types）**，如果侧边栏在 youtube.com 上完全不出现，先查一下是不是装了这类隐私/广告拦截扩展
-- **图形字幕（PGS/VobSub）不支持** —— 那种字幕是图片，需要 OCR，不在范围内
-- **后端没有鉴权**，默认监听 `0.0.0.0` 是为了手机能访问。请只在信任的局域网里用
-
----
-
-## 第三方资源
-
-- 词典数据来自 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT）—— 不随仓库分发，`build_dict.py` 运行时下载
-- [marked](https://github.com/markedjs/marked)（MIT）—— `static/marked.min.js`，渲染 AI 回复里的 Markdown
-- [FunASR](https://github.com/modelscope/FunASR)（MIT）的 `ct-punc` 模型 —— 不随仓库分发，从 ModelScope 下载；只有在启动器「环境」页点了「安装标点优化」之后才会下，不会在看视频时自动触发下载
-
-## 协议
-
-[GPL-3.0](LICENSE)
+GPL-3.0，详见 [LICENSE](LICENSE)。
