@@ -3026,34 +3026,40 @@
     //
     // Two-stage adaptive test (see vocab_test.py): stage 1 samples 5 widely-
     // spaced frequency ranks to get a rough estimate, stage 2 re-samples 5
-    // ranks around that estimate to refine it, plus a handful of made-up
-    // words mixed in to catch a click-through-everything run. Reuses
+    // ranks around that estimate to refine it. Reuses
     // .quiz-card/.quiz-topbar from the review quiz above -- it's the same
     // "one word, one decision" shape, just without an answer to reveal.
 
     function exitVocabTest() {
+      previewOverlay.hidden = true;
+      previewOverlay.innerHTML = "";
+      vocabTestInOverlay = false;
       renderQuizStart();
     }
 
+    let vocabTestInOverlay = false;
+    const vocabTestHost = () => vocabTestInOverlay ? previewOverlay : vocabQuiz;
+
     async function startVocabTest() {
-      vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">准备题目中…</div></div>`;
+      vocabTestInOverlay = true;
+      previewOverlay.hidden = false;
+      const host = vocabTestHost();
+      host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-count">准备题目中…</div></div></div>`;
       vocabTestAnswers = [];
       vocabTestStage = 1;
       try {
         const data = await (await fetch(`${API}/api/vocab-test/stage1`, { method: "POST" })).json();
         vocabTestItems = data.items;
+        vocabTestTotal = vocabTestItems.length;
       } catch (e) {
-        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestIndex = 0;
       renderVocabTestCard();
     }
 
-    // Rough total for the progress display -- stage 2's real length isn't
-    // known until stage 1 finishes (it's generated from stage 1's result),
-    // so this is an estimate (20 + 20 real + 5 fake ≈ 45), not a promise.
-    const VOCAB_TEST_ESTIMATED_TOTAL = 45;
+    let vocabTestTotal = null;
 
     function renderVocabTestCard() {
       if (vocabTestIndex >= vocabTestItems.length) {
@@ -3063,32 +3069,55 @@
       }
       const item = vocabTestItems[vocabTestIndex];
       const doneSoFar = vocabTestAnswers.length;
-      vocabQuiz.innerHTML = `
+      const meaning = Array.isArray(item.meaning_options) && item.meaning_options.length === 6;
+      const host = vocabTestHost();
+      host.innerHTML = `
+        <div class="vocab-test-modal">
         <div class="quiz-topbar">
-          <div class="quiz-progress">第 ${doneSoFar + 1} 题（约 ${VOCAB_TEST_ESTIMATED_TOTAL} 题）</div>
+          <div class="quiz-progress">第 ${doneSoFar + 1} 题${vocabTestTotal ? `（共 ${vocabTestTotal} 题）` : ""}</div>
           <button class="quiz-exit-btn" title="退出测试" aria-label="退出测试">${icon("close")}</button>
         </div>
         <div class="quiz-card">
+          <div class="vocab-test-kicker">${meaning ? "选择最接近的中文释义" : "凭第一反应回答，不确定就选“模糊”"}</div>
           <div class="quiz-word">${escapeHtml(item.lemma)}</div>
-          <div class="quiz-grade-row">
-            <button class="quiz-grade-btn quiz-grade-unknown">${icon("close")} 不认识</button>
-            <button class="quiz-grade-btn quiz-grade-known">${icon("check")} 认识</button>
-          </div>
+          ${meaning
+            ? `<div class="vocab-meaning-options">${item.meaning_options.map((option, i) =>
+                `<button class="vocab-meaning-option" data-option="${i}">${escapeHtml(option)}</button>`).join("")}
+                <button class="vocab-meaning-unknown">${icon("close")} 不认识，不做猜测</button></div>`
+            : `<div class="quiz-grade-row">
+                <button class="quiz-grade-btn quiz-grade-unknown">${icon("close")} 不认识</button>
+                <button class="quiz-grade-btn quiz-grade-unsure">模糊</button>
+                <button class="quiz-grade-btn quiz-grade-known">${icon("check")} 认识</button>
+              </div>`}
+        </div>
         </div>
       `;
-      vocabQuiz.querySelector(".quiz-exit-btn").addEventListener("click", exitVocabTest);
-      vocabQuiz.querySelector(".quiz-grade-unknown").addEventListener("click", () => submitVocabTestAnswer(item, false));
-      vocabQuiz.querySelector(".quiz-grade-known").addEventListener("click", () => submitVocabTestAnswer(item, true));
+      host.querySelector(".quiz-exit-btn").addEventListener("click", exitVocabTest);
+      const meaningOptions = host.querySelectorAll(".vocab-meaning-option");
+      if (meaningOptions.length) meaningOptions.forEach((button) => button.addEventListener("click", () => {
+        const selected = Number(button.dataset.option);
+        submitVocabTestAnswer(item, selected === item.correct_option ? 2 : 0);
+      }));
+      const meaningUnknown = host.querySelector(".vocab-meaning-unknown");
+      if (meaningUnknown) meaningUnknown.addEventListener("click", () => submitVocabTestAnswer(item, 0));
+      const unknown = host.querySelector(".quiz-grade-unknown");
+      const unsure = host.querySelector(".quiz-grade-unsure");
+      const known = host.querySelector(".quiz-grade-known");
+      if (unknown) unknown.addEventListener("click", () => submitVocabTestAnswer(item, 0));
+      if (unsure) unsure.addEventListener("click", () => submitVocabTestAnswer(item, 1));
+      if (known) known.addEventListener("click", () => submitVocabTestAnswer(item, 2));
     }
 
-    function submitVocabTestAnswer(item, known) {
-      vocabTestAnswers.push({ lemma: item.lemma, rank: item.rank, known, is_fake: !!item.is_fake });
+    function submitVocabTestAnswer(item, rating) {
+      vocabTestAnswers.push({ lemma: item.lemma, rank: item.rank, rating,
+        known: rating === 2, is_fake: !!item.is_fake });
       vocabTestIndex++;
       renderVocabTestCard();
     }
 
     async function advanceVocabTestToStage2() {
-      vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">准备第二阶段…</div></div>`;
+      const host = vocabTestHost();
+      host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-count">准备第二阶段…</div></div></div>`;
       try {
         const data = await (await fetch(`${API}/api/vocab-test/stage2`, {
           method: "POST",
@@ -3096,8 +3125,9 @@
           body: JSON.stringify({ answers: vocabTestAnswers }),
         })).json();
         vocabTestItems = data.items;
+        vocabTestTotal = vocabTestAnswers.length + vocabTestItems.length;
       } catch (e) {
-        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestStage = 2;
@@ -3106,7 +3136,8 @@
     }
 
     async function finishVocabTest() {
-      vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">算分中…</div></div>`;
+      const host = vocabTestHost();
+      host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-count">算分中…</div></div></div>`;
       let result;
       try {
         result = await (await fetch(`${API}/api/vocab-test/finish`, {
@@ -3115,17 +3146,19 @@
           body: JSON.stringify({ answers: vocabTestAnswers }),
         })).json();
       } catch (e) {
-        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">提交失败：${escapeHtml(e.message)}</div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">提交失败：${escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestStatus = { vocab_size: result.vocab_size, level_label: result.level_label, is_default: false };
-      vocabQuiz.innerHTML = `
+      host.innerHTML = `
+        <div class="vocab-test-modal">
         <div class="quiz-topbar">
           <div class="quiz-progress">完成</div>
           <button class="quiz-exit-btn" title="退出测试" aria-label="退出测试">${icon("close")}</button>
         </div>
         <div class="vocab-test-result">
           <div class="vocab-test-result-size">约 ${result.vocab_size} 词</div>
+          <div class="vocab-test-result-range">合理范围 ${result.vocab_size_low} - ${result.vocab_size_high} 词</div>
           <div class="vocab-test-result-label">${escapeHtml(result.level_label)}</div>
           ${result.retake_suggested
             ? `<div class="vocab-test-retake-warning">这次答题里有 ${result.fake_known} 个"认识"给了不存在的词，结果可能不准，建议重新测一次。</div>`
@@ -3135,10 +3168,11 @@
             <button class="quiz-exit-summary-btn">完成</button>
           </div>
         </div>
+        </div>
       `;
-      vocabQuiz.querySelector(".quiz-exit-btn").addEventListener("click", exitVocabTest);
-      vocabQuiz.querySelector(".quiz-exit-summary-btn").addEventListener("click", exitVocabTest);
-      const retryBtn = vocabQuiz.querySelector(".quiz-retry-missed-btn");
+      host.querySelector(".quiz-exit-btn").addEventListener("click", exitVocabTest);
+      host.querySelector(".quiz-exit-summary-btn").addEventListener("click", exitVocabTest);
+      const retryBtn = host.querySelector(".quiz-retry-missed-btn");
       if (retryBtn) retryBtn.addEventListener("click", startVocabTest);
     }
 
@@ -3784,8 +3818,10 @@
         if (key !== lastDifficultyKey || data.status !== "ok") return;
         difficultyBadge.hidden = false;
         difficultyBadge.className = `difficulty-badge ${DIFFICULTY_LABEL_CLASS[data.label] || ""}`;
-        difficultyBadge.textContent = `${data.label} · ${data.density_per_min}/分钟`;
-        difficultyBadge.title = `按你当前词汇量估计（约 ${data.vocab_size} 词），这条视频每分钟大约有多少生词`;
+        difficultyBadge.textContent = `${data.label} · ${data.density_per_min}/分钟${data.personalized ? " · 个性化" : ""}`;
+        difficultyBadge.title = data.personalized
+          ? `已根据你的词汇量和个人掌握记录计算（${data.known_words_used || 0} 个已记录词）`
+          : `当前使用词频估算；完成词汇测试后会更准确（约 ${data.vocab_size} 词）`;
       } catch (e) {
         // Network hiccup -- next tick retries.
       } finally {

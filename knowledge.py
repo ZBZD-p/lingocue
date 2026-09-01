@@ -43,10 +43,9 @@ DELTA = {
     "srs_pass": 0.6,        # one successful review, not yet mastered
     "collected": -2.0,      # saved into the vocab book -- explicit "don't know"
     # Preview-cards "我认识这个" -- stronger than a single quiz pass (this
-    # word was never even saved, so there's no prior "didn't know it" signal
-    # to overcome) but short of graduated (one self-report, not six verified
-    # reviews).
-    "self_known": 1.2,
+    # kept as a named event for callers; self-reported knowledge is applied as
+    # a direct +0.5 probability step in apply_evidence below.
+    "self_known": 0.5,
 }
 LOGIT_CLAMP = 4.0
 
@@ -108,7 +107,8 @@ def open_db() -> sqlite3.Connection:
             proper_ratio  REAL,
             indexed_at    INTEGER,
             source        TEXT,
-            channel_id    TEXT
+            channel_id    TEXT,
+            lemma_counts  TEXT
         );
         -- Aggregated from video_profile (see indexer.recompute_channel_profiles),
         -- not written to directly: a channel-wide estimate for videos this
@@ -133,6 +133,10 @@ def open_db() -> sqlite3.Connection:
         db.execute("ALTER TABLE video_profile ADD COLUMN channel_id TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        db.execute("ALTER TABLE video_profile ADD COLUMN lemma_counts TEXT")
+    except sqlite3.OperationalError:
+        pass
     db.execute("INSERT OR IGNORE INTO user_profile (id, vocab_size) VALUES (1, ?)",
                (DEFAULT_VOCAB_SIZE,))
     db.commit()
@@ -154,8 +158,16 @@ def apply_evidence(db: sqlite3.Connection, lemma: str, rank: int, kind: str) -> 
     is the first evidence ever seen for it. Returns the resulting p_known."""
     row = db.execute("SELECT logit FROM word_knowledge WHERE lemma = ?", (lemma,)).fetchone()
     lo = row[0] if row else _logit(prior_p_known(rank, vocab_size(db)))
-    lo = max(-LOGIT_CLAMP, min(LOGIT_CLAMP, lo + DELTA[kind]))
-    p = _sigmoid(lo)
+    if kind == "self_known":
+        # An explicit "I know this" is a probability statement, not a small
+        # piece of indirect evidence. Add 0.5 directly so even a rare word
+        # crosses the subtitle unknown threshold after one confirmation.
+        p = min(1.0, _sigmoid(lo) + 0.5)
+        lo = min(LOGIT_CLAMP, _logit(p))
+        p = _sigmoid(lo)
+    else:
+        lo = max(-LOGIT_CLAMP, min(LOGIT_CLAMP, lo + DELTA[kind]))
+        p = _sigmoid(lo)
     db.execute(
         """INSERT INTO word_knowledge (lemma, logit, p_known, updated_at) VALUES (?,?,?,?)
            ON CONFLICT(lemma) DO UPDATE SET

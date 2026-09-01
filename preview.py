@@ -39,12 +39,10 @@ def vocab_book_lemmas(vocab_entries: list[dict], lex: indexer.LemmaRanks) -> set
     return lemmas
 
 
-# p_known above this is "basically already knows it" -- not worth a preview
-# slot. Higher than app.py's VOCAB_HIGHLIGHT_THRESHOLD (0.5, a passive
-# underline) on purpose: a preview slot costs the user actual seconds of
-# attention, so the bar for "worth spending one" is higher than "worth a
-# highlight".
-KNOWN_THRESHOLD = 0.75
+# Keep this aligned with app.py's subtitle unknown threshold. An explicit
+# "I know this" click raises p_known by 0.5; using a higher preview threshold
+# would make the same confirmed word reappear in the next preview round.
+KNOWN_THRESHOLD = 0.5
 
 # Center and width of the "difficulty sweet spot" bonus -- a word right at
 # the edge of what the user's vocab-size estimate says they know is where a

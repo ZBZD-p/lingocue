@@ -34,7 +34,7 @@ DIFFICULTY_DB = app_config.DIFFICULTY_DB
 # that got cut across two cues still gets exactly one "sentence-initial"
 # token instead of two.
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-WORD_RE = re.compile(r"[A-Za-z']+")
+WORD_RE = re.compile(r"[A-Za-z0-9']+")
 
 # Capitalized but not a proper noun regardless of position -- the one
 # extremely common word that's always a single capital letter.
@@ -112,6 +112,11 @@ def _tokenize(text: str):
     for sentence in SENTENCE_SPLIT_RE.split(text):
         words = WORD_RE.findall(sentence)
         for i, w in enumerate(words):
+            # Reject numeric and mixed alphanumeric tokens as a unit (e.g.
+            # "3D", "COVID19") instead of letting the letter fragment look
+            # like an obscure dictionary word.
+            if any(ch.isdigit() for ch in w):
+                continue
             raw_lower = w.lower()
             lower = NEGATIVE_CONTRACTIONS.get(raw_lower) or dictionary.CLITIC_RE.sub("", raw_lower)
             if lower and (len(lower) > 1 or lower in _REAL_SINGLE_LETTER_WORDS):
@@ -263,6 +268,7 @@ def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | N
     rare = Counter()
     proper_count = 0
     counted = 0
+    lemma_counts = Counter()
     proper_lemmas = _always_capitalized_lemmas(tokens, lex)
 
     for lower, is_cap, is_initial in tokens:
@@ -276,6 +282,7 @@ def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | N
         _rank, band = lex.rank_band(lemma)
         band_counts[band] += 1
         counted += 1
+        lemma_counts[lemma] += 1
         if band >= 6:
             rare[lemma] += 1
 
@@ -291,6 +298,7 @@ def profile_video(cues: list[tuple[int, int, str]], lex: LemmaRanks) -> dict | N
         "speech_rate": counted / (duration_sec / 60),
         "proper_ratio": proper_count / len(tokens),
         "duration_sec": int(duration_sec),
+        "lemma_counts": dict(lemma_counts),
     }
 
 
@@ -339,13 +347,22 @@ def backfill(cache_dir: Path, lex: LemmaRanks, db: sqlite3.Connection, verbose: 
             continue
 
         db.execute(
-            """INSERT OR REPLACE INTO video_profile
+            """INSERT INTO video_profile
                (video_id, title, duration_sec, total_tokens, band_dist,
-                rare_words, speech_rate, proper_ratio, indexed_at, source, channel_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                rare_words, speech_rate, proper_ratio, indexed_at, source, channel_id,
+                lemma_counts)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(video_id) DO UPDATE SET
+                 title=excluded.title, duration_sec=excluded.duration_sec,
+                 total_tokens=excluded.total_tokens, band_dist=excluded.band_dist,
+                 rare_words=excluded.rare_words, speech_rate=excluded.speech_rate,
+                 proper_ratio=excluded.proper_ratio, indexed_at=excluded.indexed_at,
+                 source=excluded.source, channel_id=excluded.channel_id,
+                 lemma_counts=excluded.lemma_counts""",
             (video_id, title, profile["duration_sec"], profile["total_tokens"],
              json.dumps(profile["band_dist"]), json.dumps(profile["rare_words"]),
-             profile["speech_rate"], profile["proper_ratio"], int(time.time()), "cache", channel_id),
+             profile["speech_rate"], profile["proper_ratio"], int(time.time()), "cache", channel_id,
+             json.dumps(profile["lemma_counts"])),
         )
         indexed += 1
         if verbose and indexed % 50 == 0:

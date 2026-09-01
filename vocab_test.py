@@ -20,6 +20,7 @@ import math
 import random
 import re
 
+import dictionary
 import knowledge
 
 # Rank anchors for stage 1 -- deliberately spans from "almost certainly
@@ -28,15 +29,8 @@ import knowledge
 COARSE_RANKS = [700, 2000, 5000, 11000, 25000]
 QUESTIONS_PER_RANK = 4
 
-# Words that look like plausible English morphology but don't exist --
-# mixed in to catch someone clicking "known" on everything without reading.
-# Not fed into fit_vocab_size; only used for the attention check.
-FAKE_WORDS = [
-    "flimbate", "morgated", "clenthy", "brastule", "vindorly",
-    "quintiform", "drathenous", "plindsome",
-]
-FAKE_WORD_COUNT = 5
-MAX_FAKE_KNOWN_BEFORE_RETAKE = 2
+MEANING_QUESTION_COUNT = 8
+_GLOSS_CACHE: dict[str, str | None] = {}
 
 _WORD_RE = re.compile(r"^[a-z]+$")
 
@@ -82,27 +76,127 @@ def generate_stage(lex, ranks: list[int], used: set[str], with_fakes: bool = Fal
     items = []
     for r in ranks:
         items.extend(_pick_words(lex, r, QUESTIONS_PER_RANK, used))
+    # A narrow frequency neighborhood can be sparse after stage one has
+    # consumed some words. Fill the shortfall from the nearest remaining
+    # exam-tagged words so the test length does not silently change between
+    # users or runs.
+    target_total = len(ranks) * QUESTIONS_PER_RANK
+    if len(items) < target_total:
+        remaining = [w for w in lex.exam_taggable if w not in used and w in lex.rank
+                     and _WORD_RE.match(w)]
+        random.shuffle(remaining)
+        remaining.sort(key=lambda w: min(abs(lex.rank[w][0] - r) for r in ranks))
+        for word in remaining[:target_total - len(items)]:
+            used.add(word)
+            items.append({"lemma": word, "rank": lex.rank[word][0]})
     items.sort(key=lambda it: it["rank"])
-    if with_fakes:
-        fakes = random.sample(FAKE_WORDS, min(FAKE_WORD_COUNT, len(FAKE_WORDS)))
-        for w in fakes:
-            items.insert(random.randint(0, len(items)), {"lemma": w, "rank": 0, "is_fake": True})
     return items
 
 
-def fit_vocab_size(answers: list[tuple[int, bool]], lo: int = 500, hi: int = 40000, step: int = 250) -> int:
-    """answers: [(rank, known), ...], fake-word answers already excluded.
+def _short_gloss(word: str) -> str | None:
+    """Compact first dictionary sense suitable for a multiple-choice row."""
+    if word in _GLOSS_CACHE:
+        return _GLOSS_CACHE[word]
+    entry = dictionary.define(word)
+    if not entry:
+        _GLOSS_CACHE[word] = None
+        return None
+    lines = [line.strip() for line in entry["translation"].splitlines() if line.strip()]
+    if not lines:
+        _GLOSS_CACHE[word] = None
+        return None
+    gloss = lines[0]
+    result = gloss[:72] + ("..." if len(gloss) > 72 else "")
+    _GLOSS_CACHE[word] = result
+    return result
+
+
+def add_meaning_questions(items: list[dict], lex, count: int | None = None,
+                          option_count: int = 6) -> None:
+    """Turn real words into six-choice meaning checks.
+
+    Distractors come from roughly the same frequency neighborhood as the
+    target so the correct option is not exposed merely by being simpler.
+    Mutates items in place; items without four usable unique glosses remain
+    ordinary familiarity questions.
+    """
+    real_indices = [i for i, item in enumerate(items) if not item.get("is_fake")]
+    if not real_indices:
+        return
+    count = len(real_indices) if count is None else min(count, len(real_indices))
+    # Spread checks across the whole difficulty ladder rather than taking a
+    # random clump that might all land at one end of the estimate.
+    chosen = sorted({real_indices[round(j * (len(real_indices) - 1) / max(1, count - 1))]
+                     for j in range(min(count, len(real_indices)))})
+    all_words = list(lex.rank)
+    for idx in chosen:
+        item = items[idx]
+        correct = _short_gloss(item["lemma"])
+        if not correct:
+            continue
+        nearby = [word for word in all_words
+                  if word != item["lemma"] and word in lex.exam_taggable
+                  and abs(lex.rank[word][0] - item["rank"]) <= 1500]
+        if len(nearby) < option_count * 4:
+            nearby = [word for word in all_words
+                      if word != item["lemma"] and word in lex.exam_taggable]
+        random.shuffle(nearby)
+        distractors = []
+        for word in nearby:
+            gloss = _short_gloss(word)
+            if gloss and gloss != correct and gloss not in distractors:
+                distractors.append(gloss)
+            if len(distractors) == option_count - 1:
+                break
+        if len(distractors) != option_count - 1:
+            continue
+        options = distractors + [correct]
+        random.shuffle(options)
+        item["meaning_options"] = options
+        item["correct_option"] = options.index(correct)
+
+
+def fit_vocab_size(answers: list[tuple[int, float]], lo: int = 500, hi: int = 40000, step: int = 250) -> int:
+    """answers: [(rank, familiarity), ...], fake-word answers excluded.
+
+    Familiarity is 0 for unknown, 0.5 for unsure and 1 for known. The
+    fractional observation contributes the expected Bernoulli log
+    likelihood, so an honest "模糊" answer carries less directional weight
+    than either confident endpoint.
+
     Grid search for the V that makes the observed known/unknown pattern
     most likely under knowledge.prior_p_known."""
     best_v, best_ll = lo, float("-inf")
     for v in range(lo, hi + 1, step):
         ll = 0.0
-        for rank, known in answers:
+        for rank, familiarity in answers:
             p = min(max(knowledge.prior_p_known(rank, v), 1e-6), 1 - 1e-6)
-            ll += math.log(p) if known else math.log(1 - p)
+            ll += familiarity * math.log(p) + (1 - familiarity) * math.log(1 - p)
         if ll > best_ll:
             best_ll, best_v = ll, v
     return best_v
+
+
+def fit_vocab_range(answers: list[tuple[int, float]], lo: int = 500,
+                    hi: int = 40000, step: int = 250) -> tuple[int, int, int]:
+    """Return (best, lower, upper) on a likelihood-based uncertainty band.
+
+    The interval contains grid candidates within two log-likelihood points
+    of the best fit, which is intentionally presented as an estimate rather
+    than false precision from a short self-report test.
+    """
+    scores = []
+    for v in range(lo, hi + 1, step):
+        ll = 0.0
+        for rank, familiarity in answers:
+            p = min(max(knowledge.prior_p_known(rank, v), 1e-6), 1 - 1e-6)
+            ll += familiarity * math.log(p) + (1 - familiarity) * math.log(1 - p)
+        scores.append((ll, v))
+    if not scores:
+        return lo, lo, hi
+    best_ll, best_v = max(scores)
+    accepted = [v for ll, v in scores if ll >= best_ll - 2.0]
+    return best_v, min(accepted), max(accepted)
 
 
 # (upper bound exclusive, label) -- first bucket the fitted V falls under.

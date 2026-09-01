@@ -390,16 +390,25 @@ def _index_on_demand(db, video_id: str):
     if profile is None:
         return None
     db.execute(
-        """INSERT OR REPLACE INTO video_profile
+        """INSERT INTO video_profile
            (video_id, title, duration_sec, total_tokens, band_dist, rare_words,
-            speech_rate, proper_ratio, indexed_at, source, channel_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            speech_rate, proper_ratio, indexed_at, source, channel_id, lemma_counts)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(video_id) DO UPDATE SET
+             title=excluded.title, duration_sec=excluded.duration_sec,
+             total_tokens=excluded.total_tokens, band_dist=excluded.band_dist,
+             rare_words=excluded.rare_words, speech_rate=excluded.speech_rate,
+             proper_ratio=excluded.proper_ratio, indexed_at=excluded.indexed_at,
+             source=excluded.source, channel_id=excluded.channel_id,
+             lemma_counts=excluded.lemma_counts""",
         (video_id, title, profile["duration_sec"], profile["total_tokens"],
          json.dumps(profile["band_dist"]), json.dumps(profile["rare_words"]),
-         profile["speech_rate"], profile["proper_ratio"], int(time.time()), "live", channel_id),
+         profile["speech_rate"], profile["proper_ratio"], int(time.time()), "live", channel_id,
+         json.dumps(profile["lemma_counts"])),
     )
     db.commit()
-    return profile["total_tokens"], profile["band_dist"], profile["speech_rate"]
+    return (profile["total_tokens"], profile["band_dist"], profile["speech_rate"],
+            profile["duration_sec"], profile["lemma_counts"])
 
 
 def _local_video_id(video: Path) -> str:
@@ -438,16 +447,35 @@ def _index_local_on_demand(db, video: Path, video_id: str):
     if profile is None:
         return None
     db.execute(
-        """INSERT OR REPLACE INTO video_profile
+        """INSERT INTO video_profile
            (video_id, title, duration_sec, total_tokens, band_dist, rare_words,
-            speech_rate, proper_ratio, indexed_at, source, channel_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            speech_rate, proper_ratio, indexed_at, source, channel_id, lemma_counts)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(video_id) DO UPDATE SET
+             title=excluded.title, duration_sec=excluded.duration_sec,
+             total_tokens=excluded.total_tokens, band_dist=excluded.band_dist,
+             rare_words=excluded.rare_words, speech_rate=excluded.speech_rate,
+             proper_ratio=excluded.proper_ratio, indexed_at=excluded.indexed_at,
+             source=excluded.source, channel_id=excluded.channel_id,
+             lemma_counts=excluded.lemma_counts""",
         (video_id, video.name, profile["duration_sec"], profile["total_tokens"],
          json.dumps(profile["band_dist"]), json.dumps(profile["rare_words"]),
-         profile["speech_rate"], profile["proper_ratio"], int(time.time()), "local", None),
+         profile["speech_rate"], profile["proper_ratio"], int(time.time()), "local", None,
+         json.dumps(profile["lemma_counts"])),
     )
     db.commit()
-    return profile["total_tokens"], profile["band_dist"], profile["speech_rate"]
+    return (profile["total_tokens"], profile["band_dist"], profile["speech_rate"],
+            profile["duration_sec"], profile["lemma_counts"])
+
+
+def _decode_lemma_counts(value) -> dict[str, int]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 @app.get("/api/difficulty-local")
@@ -474,26 +502,34 @@ def get_difficulty_local(tab_id: str | None = None):
     db = knowledge.open_db()
     try:
         row = db.execute(
-            "SELECT total_tokens, band_dist, speech_rate FROM video_profile WHERE video_id = ?",
+            "SELECT total_tokens, band_dist, speech_rate, duration_sec, lemma_counts FROM video_profile WHERE video_id = ?",
             (video_id,),
         ).fetchone()
         if row is None:
             live = _index_local_on_demand(db, video, video_id)
-            row = live and (live[0], json.dumps(live[1]), live[2])
+            row = live and (live[0], json.dumps(live[1]), live[2], live[3], json.dumps(live[4]))
         if row is None:
             return {"status": "unindexed"}
-        _total_tokens, band_dist_json, speech_rate = row
+        _total_tokens, band_dist_json, speech_rate, duration_sec, lemma_counts_json = row
         band_dist = json.loads(band_dist_json)
         v = knowledge.vocab_size(db)
+        known = knowledge.known_map(db)
+        lemma_counts = _decode_lemma_counts(lemma_counts_json)
     finally:
         db.close()
 
-    density = scoring.unknown_per_min(band_dist, speech_rate, v)
+    personalized = bool(lemma_counts)
+    density = (scoring.personalized_unknown_per_min(
+        lemma_counts, lex=_lex(), known_map=known, vocab_size=v, duration_sec=duration_sec)
+        if personalized else scoring.unknown_per_min(band_dist, speech_rate, v))
     return {
         "status": "ok",
         "density_per_min": round(density, 1),
         "label": scoring.label_for(density),
         "vocab_size": v,
+        "personalized": personalized,
+        "known_words_used": sum(1 for lemma in lemma_counts if lemma in known),
+        "unique_lemmas": len(lemma_counts),
     }
 
 
@@ -570,26 +606,34 @@ def get_difficulty(video_id: str):
     db = knowledge.open_db()
     try:
         row = db.execute(
-            "SELECT total_tokens, band_dist, speech_rate FROM video_profile WHERE video_id = ?",
+            "SELECT total_tokens, band_dist, speech_rate, duration_sec, lemma_counts FROM video_profile WHERE video_id = ?",
             (video_id,),
         ).fetchone()
         if row is None:
             live = _index_on_demand(db, video_id)
-            row = live and (live[0], json.dumps(live[1]), live[2])
+            row = live and (live[0], json.dumps(live[1]), live[2], live[3], json.dumps(live[4]))
         if row is None:
             return {"status": "unindexed"}
-        _total_tokens, band_dist_json, speech_rate = row
+        _total_tokens, band_dist_json, speech_rate, duration_sec, lemma_counts_json = row
         band_dist = json.loads(band_dist_json)
         v = knowledge.vocab_size(db)
+        known = knowledge.known_map(db)
+        lemma_counts = _decode_lemma_counts(lemma_counts_json)
     finally:
         db.close()
 
-    density = scoring.unknown_per_min(band_dist, speech_rate, v)
+    personalized = bool(lemma_counts)
+    density = (scoring.personalized_unknown_per_min(
+        lemma_counts, lex=_lex(), known_map=known, vocab_size=v, duration_sec=duration_sec)
+        if personalized else scoring.unknown_per_min(band_dist, speech_rate, v))
     return {
         "status": "ok",
         "density_per_min": round(density, 1),
         "label": scoring.label_for(density),
         "vocab_size": v,
+        "personalized": personalized,
+        "known_words_used": sum(1 for lemma in lemma_counts if lemma in known),
+        "unique_lemmas": len(lemma_counts),
     }
 
 
@@ -625,12 +669,14 @@ def get_difficulty_batch(body: DifficultyBatchRequest):
     db = knowledge.open_db()
     try:
         v = knowledge.vocab_size(db)
+        known = knowledge.known_map(db)
         placeholders = ",".join("?" * len(ids)) if ids else "''"
         video_rows = db.execute(
-            f"SELECT video_id, band_dist, speech_rate FROM video_profile "
+            f"SELECT video_id, band_dist, speech_rate, duration_sec, lemma_counts FROM video_profile "
             f"WHERE video_id IN ({placeholders})", ids,
         ).fetchall() if ids else []
-        by_video = {vid: (json.loads(bd), sr) for vid, bd, sr in video_rows}
+        by_video = {vid: (json.loads(bd), sr, duration, _decode_lemma_counts(lc))
+                    for vid, bd, sr, duration, lc in video_rows}
 
         wanted_channels = list({channel_by_id[vid] for vid in ids
                                  if vid not in by_video and vid in channel_by_id})
@@ -647,17 +693,25 @@ def get_difficulty_batch(body: DifficultyBatchRequest):
         result = {}
         for vid in ids:
             if vid in by_video:
-                band_dist, speech_rate = by_video[vid]
-                density = scoring.unknown_per_min(band_dist, speech_rate, v)
+                band_dist, speech_rate, duration_sec, lemma_counts = by_video[vid]
+                personalized = bool(lemma_counts)
+                density = (scoring.personalized_unknown_per_min(
+                    lemma_counts, lex=_lex(), known_map=known, vocab_size=v,
+                    duration_sec=duration_sec)
+                    if personalized else scoring.unknown_per_min(band_dist, speech_rate, v))
                 result[vid] = {"status": "ok", "source": "video",
-                                "density_per_min": round(density, 1), "label": scoring.label_for(density)}
+                                "density_per_min": round(density, 1), "label": scoring.label_for(density),
+                                "personalized": personalized,
+                                "known_words_used": sum(1 for lemma in lemma_counts if lemma in known),
+                                "unique_lemmas": len(lemma_counts)}
                 continue
             channel_hit = channel_by_channel_id.get(channel_by_id.get(vid))
             if channel_hit:
                 band_dist, speech_rate = channel_hit
                 density = scoring.unknown_per_min(band_dist, speech_rate, v)
                 result[vid] = {"status": "ok", "source": "channel",
-                                "density_per_min": round(density, 1), "label": scoring.label_for(density)}
+                                "density_per_min": round(density, 1), "label": scoring.label_for(density),
+                                "personalized": False}
                 continue
             result[vid] = {"status": "unassessed"}
         return {"result": result, "vocab_size": v}
@@ -749,7 +803,10 @@ def preview_result(body: PreviewResult):
 class VocabTestAnswer(BaseModel):
     lemma: str
     rank: int
-    known: bool
+    known: bool | None = None
+    # 0 = unknown, 1 = unsure, 2 = known. `known` remains accepted so
+    # clients from older launcher/extension builds can still finish a test.
+    rating: int | None = None
     is_fake: bool = False
 
 
@@ -761,8 +818,17 @@ class VocabTestFinishRequest(BaseModel):
     answers: list[VocabTestAnswer]  # every answer from both stages, fakes included
 
 
-def _to_pairs(answers: list[VocabTestAnswer]) -> list[tuple[int, bool]]:
-    return [(a.rank, a.known) for a in answers if not a.is_fake]
+def _to_pairs(answers: list[VocabTestAnswer]) -> list[tuple[int, float]]:
+    pairs = []
+    for a in answers:
+        if a.is_fake:
+            continue
+        if a.rating is not None:
+            familiarity = (0.0, 0.5, 1.0)[max(0, min(2, a.rating))]
+        else:
+            familiarity = 1.0 if a.known else 0.0
+        pairs.append((a.rank, familiarity))
+    return pairs
 
 
 @app.get("/api/vocab-test/status")
@@ -780,6 +846,7 @@ def vocab_test_status():
 def vocab_test_stage1():
     used: set[str] = set()
     items = vocab_test.generate_stage(_lex(), vocab_test.COARSE_RANKS, used, with_fakes=False)
+    vocab_test.add_meaning_questions(items, _lex())
     return {"items": items}
 
 
@@ -788,15 +855,18 @@ def vocab_test_stage2(body: VocabTestStage2Request):
     v1 = vocab_test.fit_vocab_size(_to_pairs(body.answers))
     used = {a.lemma for a in body.answers}
     ranks = vocab_test.stage_two_ranks(v1)
-    items = vocab_test.generate_stage(_lex(), ranks, used, with_fakes=True)
+    items = vocab_test.generate_stage(_lex(), ranks, used, with_fakes=False)
+    vocab_test.add_meaning_questions(items, _lex())
     return {"items": items, "stage1_estimate": v1}
 
 
 @app.post("/api/vocab-test/finish")
 def vocab_test_finish(body: VocabTestFinishRequest):
-    fake_known = sum(1 for a in body.answers if a.is_fake and a.known)
-    retake_suggested = fake_known > vocab_test.MAX_FAKE_KNOWN_BEFORE_RETAKE
-    v = vocab_test.fit_vocab_size(_to_pairs(body.answers))
+    # Pseudo-words were removed in favor of six-choice meaning questions.
+    # Keep these response fields for older extension builds.
+    fake_known = 0
+    retake_suggested = False
+    v, v_lo, v_hi = vocab_test.fit_vocab_range(_to_pairs(body.answers))
 
     db = knowledge.open_db()
     try:
@@ -806,6 +876,8 @@ def vocab_test_finish(body: VocabTestFinishRequest):
 
     return {
         "vocab_size": v,
+        "vocab_size_low": v_lo,
+        "vocab_size_high": v_hi,
         "level_label": vocab_test.level_label(v),
         "retake_suggested": retake_suggested,
         "fake_known": fake_known,
