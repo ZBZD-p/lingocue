@@ -1400,6 +1400,7 @@
     let cueEstimatedHeights = [];
     let cueOffsets = [];
     const VIRTUAL_BUFFER_CUES = 72;
+    const VIRTUAL_RECYCLE_MARGIN_CUES = 30;
     const DEFAULT_CUE_HEIGHT = 50;
     let lastUserScrollAt = 0;
     // Separate from lastUserScrollAt above (which only fires on mousedown --
@@ -2002,7 +2003,8 @@
       const revealKey = cueRevealIdentity(cue);
       const boundaryReveal = subtitleBoundaryRevealOrder && subtitleBoundaryRevealOrder.get(i);
       if (boundaryReveal) {
-        card.classList.add("subtitle-reveal");
+        card.classList.add(typeof IntersectionObserver === "function"
+          ? "subtitle-reveal-armed" : "subtitle-reveal");
         card.style.setProperty(
           "--subtitle-reveal-delay",
           `${Math.min(boundaryReveal.order * 54, 720)}ms`
@@ -2012,16 +2014,14 @@
           `${boundaryReveal.direction * 7}px`
         );
       } else if (revealKey && subtitleRevealPending.has(revealKey)) {
-        card.classList.add("subtitle-reveal");
+        card.classList.add(typeof IntersectionObserver === "function"
+          ? "subtitle-reveal-armed" : "subtitle-reveal");
         card.style.setProperty(
           "--subtitle-reveal-delay",
           `${Math.min(subtitleRevealCursor * 54, 1800)}ms`
         );
         subtitleRevealPending.delete(revealKey);
         subtitleRevealCursor++;
-      }
-      if (card.classList.contains("subtitle-reveal") && typeof IntersectionObserver === "function") {
-        card.classList.add("subtitle-reveal-waiting");
       }
       if (i === subtitleCues.length - 1) card.classList.add("sub-card-last");
       card.dataset.index = String(i);
@@ -2053,7 +2053,7 @@
       return card;
     }
 
-    function renderVirtualWindow(anchorIndex = -1) {
+    function renderVirtualWindow(anchorIndex = -1, keepExistingRange = false) {
       if (!subtitleCues.length || !virtualTopSpacer || !virtualBottomSpacer) return;
       const firstVisible = virtualIndexAtOffset(subsScroll.scrollTop);
       const previousFirstVisible = lastVirtualFirstVisible;
@@ -2069,10 +2069,18 @@
       // and also defeats the point of virtualization. Explicit playback
       // jumps still re-center immediately via anchorIndex.
       if (anchorIndex < 0 && virtualRangeEnd >= virtualRangeStart &&
-          firstVisible >= virtualRangeStart + 12 &&
-          firstVisible <= virtualRangeEnd - 12) return;
-      const start = Math.max(0, center - VIRTUAL_BUFFER_CUES);
-      const end = Math.min(subtitleCues.length - 1, center + VIRTUAL_BUFFER_CUES);
+          firstVisible >= virtualRangeStart + VIRTUAL_RECYCLE_MARGIN_CUES &&
+          firstVisible <= virtualRangeEnd - VIRTUAL_RECYCLE_MARGIN_CUES) return;
+      const oldRangeStart = virtualRangeStart;
+      const oldRangeEnd = virtualRangeEnd;
+      let start = Math.max(0, center - VIRTUAL_BUFFER_CUES);
+      let end = Math.min(subtitleCues.length - 1, center + VIRTUAL_BUFFER_CUES);
+      if (keepExistingRange && oldRangeEnd >= oldRangeStart) {
+        // Preloading during playback should expand the window without
+        // throwing away already-mounted context on the opposite side.
+        start = Math.min(start, oldRangeStart);
+        end = Math.max(end, oldRangeEnd);
+      }
       if (start === virtualRangeStart && end === virtualRangeEnd &&
           subtitleCardEls[anchor] && subtitleCardEls[anchor].isConnected) return;
       // When recycling because of user scrolling, preserve the current
@@ -2157,13 +2165,14 @@
         subtitleRevealObserver = new IntersectionObserver((entries, observer) => {
           entries.forEach((entry) => {
             if (!entry.isIntersecting) return;
-            entry.target.classList.remove("subtitle-reveal-waiting");
+            entry.target.classList.remove("subtitle-reveal-armed");
+            entry.target.classList.add("subtitle-reveal");
             observer.unobserve(entry.target);
           });
         }, { root: subsScroll, rootMargin: "0px", threshold: 0.01 });
         for (let i = start; i <= end; i++) {
           const card = subtitleCardEls[i];
-          if (card && card.classList.contains("subtitle-reveal")) {
+          if (card && card.classList.contains("subtitle-reveal-armed")) {
             subtitleRevealObserver.observe(card);
           }
         }
@@ -2201,6 +2210,20 @@
       }
       renderLoopState();
       scheduleVirtualMeasure();
+    }
+
+    function ensureVirtualCueWindow(index) {
+      if (!subtitleCues.length || index < 0) return;
+      const outside = index < virtualRangeStart || index > virtualRangeEnd;
+      const canExpandTop = virtualRangeStart > 0 &&
+        index < virtualRangeStart + VIRTUAL_RECYCLE_MARGIN_CUES;
+      const canExpandBottom = virtualRangeEnd < subtitleCues.length - 1 &&
+        index > virtualRangeEnd - VIRTUAL_RECYCLE_MARGIN_CUES;
+      if (!outside && !canExpandTop && !canExpandBottom &&
+          subtitleCardEls[index] && subtitleCardEls[index].isConnected) return;
+      const anchor = captureVirtualAnchor();
+      renderVirtualWindow(index, !outside);
+      restoreVirtualAnchor(anchor);
     }
 
     function renderSubtitleCards(anchor = null) {
@@ -2708,7 +2731,7 @@
       }
       // Playback can jump several minutes ahead of the mounted window. Bring
       // that cue into the small virtualized range before touching its DOM.
-      if (!subtitleCardEls[idx] || !subtitleCardEls[idx].isConnected) renderVirtualWindow(idx);
+      ensureVirtualCueWindow(idx);
       const card = subtitleCardEls[idx];
       if (!card) {
         currentCardEl = null;

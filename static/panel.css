@@ -820,9 +820,6 @@ button:focus-visible {
   animation: subtitle-load-reveal 0.42s var(--ease-soft) both;
   animation-delay: var(--subtitle-reveal-delay, 0ms);
 }
-.sub-card.subtitle-reveal-waiting {
-  animation-play-state: paused;
-}
 .sub-card:last-child { margin-bottom: 0; }
 .sub-card-last { margin-bottom: 0; }
 .sub-card:nth-child(odd) { color: var(--ctx-far); }
