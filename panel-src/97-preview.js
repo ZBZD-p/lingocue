@@ -153,15 +153,15 @@
       previewOverlay.innerHTML = `
         <div class="preview-card">
           <div class="pc-row1">
-            <span class="pc-word">${escapeHtml(c.lemma)}</span>
+            <span class="pc-word">${ctx.fns.escapeHtml(c.lemma)}</span>
             <span class="pc-idx">${s.index + 1} / ${s.cards.length}</span>
           </div>
           <div class="pc-phon">
             <button class="pc-speak" type="button" title="发音" aria-label="发音">${icon("speaker", 12)}</button>
-            <span>${escapeHtml(c.phonetic || "")}</span>
+            <span>${ctx.fns.escapeHtml(c.phonetic || "")}</span>
           </div>
-          <p class="pc-def">${escapeHtml(c.definition || "词典里没查到这个词")}</p>
-          ${c.sentence ? `<p class="pc-quote">${escapeHtml(c.sentence)}</p>` : ""}
+          <p class="pc-def">${ctx.fns.escapeHtml(c.definition || "词典里没查到这个词")}</p>
+          ${c.sentence ? `<p class="pc-quote">${ctx.fns.escapeHtml(c.sentence)}</p>` : ""}
           <div class="pc-facts">本视频出现 ${c.hits} 次${c.in_wordbook ? " · 已在生词本" : ""}${tagsText}</div>
           <div class="pc-acts">
             <button class="preview-btn" id="pcKnownBtn" type="button">我认识这个</button>
@@ -199,7 +199,7 @@
         // knowledge map; otherwise the highlight request can win the race
         // and briefly restore the old unknown underline.
         resultRequest.then(() => {
-          refreshVocabHighlight();
+          ctx.fns.refreshVocabHighlight();
           invalidateDifficultyBadge();
           updateDifficultyBadge();
         });

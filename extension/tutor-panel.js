@@ -588,7 +588,19 @@
       fns: Object.create(null),
     };
     ctx.state.currentItemId = null;
+    ctx.state.currentPage = "chat";
+    // What the last detection attempt actually saw. Surfaced in the context
+    // bar when there's no playback record, so a failure to find the player
+    // reads as a specific reason instead of a blank "还没开始播放".
     ctx.state.lastProbe = "尚未检测";
+    // Parallel to subtitleCues -- cueUnknownWords[i] is a Set of the
+    // lowercased words in subtitleCues[i].text flagged likely-unknown, or
+    // undefined until /api/vocab-highlight has answered for this render.
+    ctx.state.cueUnknownWords = [];
+    // Parallel to cueUnknownWords -- cueWordScores[i] is a Map keyed by the
+    // lowercased surface word, populated only when the developer diagnostic
+    // setting asks the backend for p_known details.
+    ctx.state.cueWordScores = [];
 
     const $ = (id) => root.getElementById(id);
     const chatEl = $("chat");
@@ -629,7 +641,6 @@
     };
 
     let sessionId = null;
-    let currentPage = "chat";
     let lastKnownVideoTitle = null;
     let lastDifficultyKey = null;
     let previewLastVideoId = null;
@@ -740,36 +751,44 @@
 
     // ---- helpers ----
 
-    function fmt(ms) {
-      if (ms == null || ms < 0) return "?";
-      const total = Math.floor(ms / 1000);
-      const h = Math.floor(total / 3600);
-      const m = Math.floor((total % 3600) / 60);
-      const s = total % 60;
-      const pad = (n) => String(n).padStart(2, "0");
-      return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
-    }
-
-    function escapeHtml(s) {
-      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    }
-
-    function renderMarkdown(text) {
-      if (!window.marked) return escapeHtml(text || "");
-      try {
-        return marked.parse(text || "");
-      } catch (e) {
-        return escapeHtml(text || "");
+    function installHelpers(ctx) {
+      function fmt(ms) {
+        if (ms == null || ms < 0) return "?";
+        const total = Math.floor(ms / 1000);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        const pad = (n) => String(n).padStart(2, "0");
+        return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
       }
-    }
 
-    function fmtElapsed(ms) {
-      const total = Math.floor(ms / 1000);
-      const m = Math.floor(total / 60);
-      const s = total % 60;
-      return m > 0 ? `${m}m ${s}s` : `${s}s`;
+      function escapeHtml(s) {
+        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+
+      function renderMarkdown(text) {
+        if (!window.marked) return escapeHtml(text || "");
+        try {
+          return marked.parse(text || "");
+        } catch (e) {
+          return escapeHtml(text || "");
+        }
+      }
+
+      function fmtElapsed(ms) {
+        const total = Math.floor(ms / 1000);
+        const m = Math.floor(total / 60);
+        const s = total % 60;
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+      }
+
+      ctx.fns.fmt = fmt;
+      ctx.fns.escapeHtml = escapeHtml;
+      ctx.fns.renderMarkdown = renderMarkdown;
+      ctx.fns.fmtElapsed = fmtElapsed;
     }
+    installHelpers(ctx);
 
     // ---- dropdowns ----
     // Hand-rolled rather than <select>, because a native popup renders
@@ -894,7 +913,7 @@
       if (!isUserChange) return;
       resetSubtitleSession();
       subsNote.hidden = true;
-      if (currentPage === "subs") loadSubtitleCues();
+      if (ctx.state.currentPage === "subs") loadSubtitleCues();
     }
 
     const wordHighlightOn = () => settingValue("wordHighlight") !== "off";
@@ -911,7 +930,7 @@
       if (!isUserChange) return;
       startPositionPolling();
       resetSubtitleSession();
-      if (currentPage === "subs") loadSubtitleCues();
+      if (ctx.state.currentPage === "subs") loadSubtitleCues();
     }
 
     // No reload needed -- the cue text already loaded didn't change, only
@@ -931,15 +950,15 @@
     function toggleVocabHighlight(value, isUserChange) {
       if (!isUserChange) return;
       if (value === "on") {
-        refreshVocabHighlight();
+        ctx.fns.refreshVocabHighlight();
       } else {
-        abortVocabHighlight();
-        cueUnknownWords = [];
-        applyVocabHighlight();
+        ctx.fns.abortVocabHighlight();
+        ctx.state.cueUnknownWords = [];
+        ctx.fns.applyVocabHighlight();
         if (showPKnownOn()) {
-          refreshVocabHighlight();
+          ctx.fns.refreshVocabHighlight();
         } else {
-          cueWordScores = [];
+          ctx.state.cueWordScores = [];
           updateWordPopupPKnown();
         }
       }
@@ -948,9 +967,9 @@
     function toggleDeveloperDiagnostics(value, isUserChange) {
       if (!isUserChange) return;
       if (showPKnownOn()) {
-        refreshVocabHighlight();
+        ctx.fns.refreshVocabHighlight();
       } else {
-        cueWordScores = [];
+        ctx.state.cueWordScores = [];
         updateWordPopupPKnown();
       }
     }
@@ -1209,9 +1228,9 @@
       card.dataset.videoUrl = video_url || "";
       card.dataset.timestampSeconds = timestamp_seconds == null ? "" : String(timestamp_seconds);
       card.innerHTML = `
-        <div class="phrase-suggestion-phrase">${escapeHtml(evt.phrase || "")}</div>
-        ${evt.meaning ? `<div class="phrase-suggestion-meaning">${escapeHtml(evt.meaning)}</div>` : ""}
-        ${evt.subtitle_text ? `<div class="phrase-suggestion-subtitle">"${escapeHtml(evt.subtitle_text)}"</div>` : ""}
+        <div class="phrase-suggestion-phrase">${ctx.fns.escapeHtml(evt.phrase || "")}</div>
+        ${evt.meaning ? `<div class="phrase-suggestion-meaning">${ctx.fns.escapeHtml(evt.meaning)}</div>` : ""}
+        ${evt.subtitle_text ? `<div class="phrase-suggestion-subtitle">"${ctx.fns.escapeHtml(evt.subtitle_text)}"</div>` : ""}
         <div class="phrase-suggestion-actions">
           <button class="phrase-suggestion-decline">不用了</button>
           <button class="phrase-suggestion-accept">${icon("star")} 收藏</button>
@@ -1301,7 +1320,7 @@
       let rawAnswer = "";
 
       function statusText() {
-        const elapsed = fmtElapsed(performance.now() - startTime);
+        const elapsed = ctx.fns.fmtElapsed(performance.now() - startTime);
         const n = latestTokens != null ? latestTokens : Math.round(charCount / 4);
         const tokens = n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
         return `${THINKING_VERBS[verbIndex]}… (${elapsed} · ↓ ${tokens} tokens` +
@@ -1328,7 +1347,7 @@
           rawAnswer += text;
           if (!answerStarted) {
             answerStarted = true;
-            const elapsed = fmtElapsed(performance.now() - startTime);
+            const elapsed = ctx.fns.fmtElapsed(performance.now() - startTime);
             status.innerHTML =
               `<span class="pulse-icon done">${icon("check")}</span><span class="status-text">Thought for ${elapsed}</span>`;
             if (thinkingBox.querySelector(".thinking-content").textContent) {
@@ -1341,7 +1360,7 @@
           // in the chat -- rawAnswer keeps accumulating regardless, so the
           // next delta (or finalize, which always flushes) catches it up.
           if (Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS) {
-            content.innerHTML = renderMarkdown(rawAnswer);
+            content.innerHTML = ctx.fns.renderMarkdown(rawAnswer);
           }
         },
         onPhraseSuggestion(evt) {
@@ -1369,7 +1388,7 @@
           // Unconditional: onTextDelta may have skipped its own render while
           // the user was selecting text, so content.innerHTML can't be
           // trusted to already match rawAnswer here.
-          content.innerHTML = renderMarkdown(rawAnswer);
+          content.innerHTML = ctx.fns.renderMarkdown(rawAnswer);
           if (evt.cost_usd != null) {
             const m = document.createElement("span");
             m.className = "meta";
@@ -1508,21 +1527,25 @@
 
     // ---- pages ----
 
-    function switchPage(name) {
-      currentPage = name;
-      tabBtns.forEach((b) => b.classList.toggle("active", b.dataset.page === name));
-      Object.entries(pages).forEach(([k, el]) => el.classList.toggle("active", k === name));
-      composerEl.hidden = name !== "chat";
-      if (name === "subs" && subtitleCues.length === 0) loadSubtitleCues();
-      if (name === "vocab") loadVocabList();
-      if (name === "phrases") loadPhraseList();
-      // Own tab now (not a mode switched into from the vocab list), so
-      // entering it always starts fresh at the "开始抽查" prompt rather than
-      // trying to resume whatever card a previous visit left off on --
-      // same "just reload" philosophy as the vocab list above.
-      if (name === "quiz") loadQuizStart();
+    function installPages(ctx) {
+      function switchPage(name) {
+        ctx.state.currentPage = name;
+        tabBtns.forEach((b) => b.classList.toggle("active", b.dataset.page === name));
+        Object.entries(pages).forEach(([k, el]) => el.classList.toggle("active", k === name));
+        composerEl.hidden = name !== "chat";
+        if (name === "subs" && subtitleCues.length === 0) loadSubtitleCues();
+        if (name === "vocab") loadVocabList();
+        if (name === "phrases") ctx.fns.loadPhraseList();
+        // Own tab now (not a mode switched into from the vocab list), so
+        // entering it always starts fresh at the "开始抽查" prompt rather than
+        // trying to resume whatever card a previous visit left off on --
+        // same "just reload" philosophy as the vocab list above.
+        if (name === "quiz") loadQuizStart();
+      }
+      tabBtns.forEach((b) => b.addEventListener("click", () => switchPage(b.dataset.page)));
+      ctx.fns.switchPage = switchPage;
     }
-    tabBtns.forEach((b) => b.addEventListener("click", () => switchPage(b.dataset.page)));
+    installPages(ctx);
 
     // ---- subtitle cards ----
 
@@ -1542,14 +1565,6 @@
     let currentWordSpans = [];
     let lastPositionMs = NaN;
     let lastAutoScrollAt = 0;
-    // Parallel to subtitleCues -- cueUnknownWords[i] is a Set of the
-    // lowercased words in subtitleCues[i].text flagged likely-unknown, or
-    // undefined until /api/vocab-highlight has answered for this render.
-    let cueUnknownWords = [];
-    // Parallel to cueUnknownWords -- cueWordScores[i] is a Map keyed by the
-    // lowercased surface word, populated only when the developer diagnostic
-    // setting asks the backend for p_known details.
-    let cueWordScores = [];
     let currentCueIndex = -1;
     // Card-level virtualization: keep the cue data in memory, but only mount
     // a bounded window of cards around the viewport/current line. The old
@@ -1597,8 +1612,6 @@
     let subtitleModelVersion = 0;
     let pendingSubtitleCommit = null;
     let pendingSubtitleCommitTimer = null;
-    let vocabHighlightSeq = 0;
-    let vocabHighlightController = null;
     let subtitleResizeObserver = null;
     const USER_SCROLL_QUIET_MS = 4000;
     const EXTRACT_POLL_MS = 1000;
@@ -1608,12 +1621,6 @@
     // poll, not something with real progress to report more granularly.
     const POLISH_POLL_MS = 5000;
 
-    function abortVocabHighlight() {
-      vocabHighlightSeq++;
-      if (vocabHighlightController) vocabHighlightController.abort();
-      vocabHighlightController = null;
-    }
-
     function invalidateSubtitleSession() {
       subtitleGeneration++;
       subtitleRequestSeq++;
@@ -1621,7 +1628,7 @@
       subtitleRequestController = null;
       pendingSubtitleCommit = null;
       if (pendingSubtitleCommitTimer) { clearTimeout(pendingSubtitleCommitTimer); pendingSubtitleCommitTimer = null; }
-      abortVocabHighlight();
+      ctx.fns.abortVocabHighlight();
       if (virtualRecycleRaf) { cancelAnimationFrame(virtualRecycleRaf); virtualRecycleRaf = 0; }
       if (virtualMeasureRaf) { cancelAnimationFrame(virtualMeasureRaf); virtualMeasureRaf = 0; }
       if (virtualResizeRaf) { cancelAnimationFrame(virtualResizeRaf); virtualResizeRaf = 0; }
@@ -1635,7 +1642,7 @@
       subtitleIsPartial = false;
       subtitleCueSignature = "";
       subtitleModelVersion++;
-      abortVocabHighlight();
+      ctx.fns.abortVocabHighlight();
       subtitleCardEls = [];
       cueWordSpans = [];
       cueTextEls = [];
@@ -1653,8 +1660,8 @@
       currentCueIndex = -1;
       lastPositionMs = NaN;
       spokenWordCount = -1;
-      cueUnknownWords = [];
-      cueWordScores = [];
+      ctx.state.cueUnknownWords = [];
+      ctx.state.cueWordScores = [];
       if (subsScroll) subsScroll.innerHTML = "";
     }
 
@@ -1745,8 +1752,8 @@
       subtitleIsPartial = !!isPartial;
       subtitleCueSignature = nextSignature;
       subtitleModelVersion++;
-      cueUnknownWords = [];
-      cueWordScores = [];
+      ctx.state.cueUnknownWords = [];
+      ctx.state.cueWordScores = [];
       currentCueIndex = findCueByIdentity(subtitleCues, oldCurrentKey, -1);
       lastPositionMs = NaN;
 
@@ -1762,7 +1769,7 @@
       }
 
       renderSubtitleCards(savedAnchor);
-      refreshVocabHighlight();
+      ctx.fns.refreshVocabHighlight();
       applyPreviewHighlight();
       return true;
     }
@@ -2225,7 +2232,7 @@
       time.className = "sub-time";
       const timeText = document.createElement("span");
       timeText.className = "sub-time-text";
-      timeText.textContent = fmt(cue.start_ms);
+      timeText.textContent = ctx.fns.fmt(cue.start_ms);
       time.appendChild(timeText);
       card.appendChild(time);
       const text = document.createElement("div");
@@ -2520,7 +2527,7 @@
       if (target && target.closest && target.closest(".sub-word")) {
         const related = event.relatedTarget;
         if (!related || !related.closest || !related.closest(".sub-word")) {
-          scheduleHideWordPopup();
+          ctx.fns.scheduleHideWordPopup();
         }
       }
     }, { passive: true });
@@ -2565,7 +2572,7 @@
       if (!cue || !text) return;
       text.textContent = "";
       cueWordSpans[index] = appendWordSpans(text, cue.text, index, cue.words);
-      applyVocabHighlightToCard(index);
+      ctx.fns.applyVocabHighlightToCard(index);
       applyPreviewHighlightToCard(index);
     }
 
@@ -2598,74 +2605,93 @@
     // beat after the text itself, same tradeoff subtitleIsPartial's
     // progressive rendering already makes elsewhere on this page.
 
-    async function refreshVocabHighlight() {
-      const includeScores = showPKnownOn();
-      if ((!vocabHighlightOn() && !includeScores) || subtitleCues.length === 0) return;
-      const generation = subtitleGeneration;
-      const modelVersion = subtitleModelVersion;
-      const requestId = ++vocabHighlightSeq;
-      if (vocabHighlightController) vocabHighlightController.abort();
-      const controller = typeof AbortController === "function" ? new AbortController() : null;
-      vocabHighlightController = controller;
-      const cues = subtitleCues.map((c) => c.text);
-      try {
-        const res = await fetch(`${API}/api/vocab-highlight`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(includeScores ? { cues, include_scores: true } : { cues }),
-          ...(controller ? { signal: controller.signal } : {}),
-        });
-        const data = await res.json();
-        if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion ||
-            requestId !== vocabHighlightSeq ||
-            (!vocabHighlightOn() && !showPKnownOn()) ||
-            includeScores !== showPKnownOn()) return;
-        cueUnknownWords = vocabHighlightOn() && Array.isArray(data.result)
-          ? data.result.map((words) => new Set(words)) : [];
-        cueWordScores = includeScores && Array.isArray(data.scores)
-          ? data.scores.map((entries) => {
-            const byWord = new Map();
-            if (!Array.isArray(entries)) return byWord;
-            entries.forEach((entry) => {
-              if (!entry || typeof entry.word !== "string") return;
-              const p = Number(entry.p_known);
-              if (!Number.isFinite(p)) return;
-              byWord.set(entry.word.toLowerCase(), { p_known: p, source: entry.source });
-            });
-            return byWord;
-          }) : [];
-      } catch (e) {
-        return;  // best-effort -- cards just stay unhighlighted
-      } finally {
-        if (requestId === vocabHighlightSeq) vocabHighlightController = null;
+    function installVocabHighlight(ctx) {
+      let vocabHighlightSeq = 0;
+      let vocabHighlightController = null;
+
+      function abortVocabHighlight() {
+        vocabHighlightSeq++;
+        if (vocabHighlightController) vocabHighlightController.abort();
+        vocabHighlightController = null;
       }
-      if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion) return;
-      applyVocabHighlight();
-      updateWordPopupPKnown();
-    }
 
-    function applyVocabHighlight() {
-      for (const index of mountedCueIndices) applyVocabHighlightToCard(index);
-    }
+      async function refreshVocabHighlight() {
+        const includeScores = showPKnownOn();
+        if ((!vocabHighlightOn() && !includeScores) || subtitleCues.length === 0) return;
+        const generation = subtitleGeneration;
+        const modelVersion = subtitleModelVersion;
+        const requestId = ++vocabHighlightSeq;
+        if (vocabHighlightController) vocabHighlightController.abort();
+        const controller = typeof AbortController === "function" ? new AbortController() : null;
+        vocabHighlightController = controller;
+        const cues = subtitleCues.map((c) => c.text);
+        try {
+          const res = await fetch(`${API}/api/vocab-highlight`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(includeScores ? { cues, include_scores: true } : { cues }),
+            ...(controller ? { signal: controller.signal } : {}),
+          });
+          const data = await res.json();
+          if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion ||
+              requestId !== vocabHighlightSeq ||
+              (!vocabHighlightOn() && !showPKnownOn()) ||
+              includeScores !== showPKnownOn()) return;
+          ctx.state.cueUnknownWords = vocabHighlightOn() && Array.isArray(data.result)
+            ? data.result.map((words) => new Set(words)) : [];
+          ctx.state.cueWordScores = includeScores && Array.isArray(data.scores)
+            ? data.scores.map((entries) => {
+              const byWord = new Map();
+              if (!Array.isArray(entries)) return byWord;
+              entries.forEach((entry) => {
+                if (!entry || typeof entry.word !== "string") return;
+                const p = Number(entry.p_known);
+                if (!Number.isFinite(p)) return;
+                byWord.set(entry.word.toLowerCase(), { p_known: p, source: entry.source });
+              });
+              return byWord;
+            }) : [];
+        } catch (e) {
+          return;  // best-effort -- cards just stay unhighlighted
+        } finally {
+          if (requestId === vocabHighlightSeq) vocabHighlightController = null;
+        }
+        if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion) return;
+        applyVocabHighlight();
+        updateWordPopupPKnown();
+      }
 
-    function applyVocabHighlightToCard(index) {
-      const unknown = cueUnknownWords[index];
-      const spans = cueWordSpans[index];
-      if (!spans) return;
-      spans.forEach((span) => {
-        const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
-        span.classList.toggle("sub-word-unknown", !!(unknown && unknown.has(norm)));
-      });
-    }
+      function applyVocabHighlight() {
+        for (const index of mountedCueIndices) applyVocabHighlightToCard(index);
+      }
 
-    let hideWordPopupTimer = null;
-    const cancelHide = () => { clearTimeout(hideWordPopupTimer); hideWordPopupTimer = null; };
-    function scheduleHideWordPopup() {
-      cancelHide();
-      hideWordPopupTimer = setTimeout(() => wordPopup.classList.remove("open"), 250);
+      function applyVocabHighlightToCard(index) {
+        const unknown = ctx.state.cueUnknownWords[index];
+        const spans = cueWordSpans[index];
+        if (!spans) return;
+        spans.forEach((span) => {
+          const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
+          span.classList.toggle("sub-word-unknown", !!(unknown && unknown.has(norm)));
+        });
+      }
+
+      let hideWordPopupTimer = null;
+      const cancelHide = () => { clearTimeout(hideWordPopupTimer); hideWordPopupTimer = null; };
+      function scheduleHideWordPopup() {
+        cancelHide();
+        hideWordPopupTimer = setTimeout(() => wordPopup.classList.remove("open"), 250);
+      }
+      wordPopup.addEventListener("mouseenter", cancelHide);
+      wordPopup.addEventListener("mouseleave", scheduleHideWordPopup);
+
+      ctx.fns.refreshVocabHighlight = refreshVocabHighlight;
+      ctx.fns.abortVocabHighlight = abortVocabHighlight;
+      ctx.fns.applyVocabHighlight = applyVocabHighlight;
+      ctx.fns.applyVocabHighlightToCard = applyVocabHighlightToCard;
+      ctx.fns.cancelHide = cancelHide;
+      ctx.fns.scheduleHideWordPopup = scheduleHideWordPopup;
     }
-    wordPopup.addEventListener("mouseenter", cancelHide);
-    wordPopup.addEventListener("mouseleave", scheduleHideWordPopup);
+    installVocabHighlight(ctx);
 
     // ---- dictionary lookups ----
     // Cached per word for the life of the page: hovering back and forth
@@ -2684,7 +2710,7 @@
         return;
       }
       const norm = popupWord.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
-      const byWord = cueWordScores[popupCueIndex];
+      const byWord = ctx.state.cueWordScores[popupCueIndex];
       const detail = byWord && byWord.get(norm);
       if (!detail || !Number.isFinite(detail.p_known)) {
         wordPopupPKnown.hidden = true;
@@ -2793,7 +2819,7 @@
     }
 
     function showWordPopup(anchorEl, word, sentence, cueIndex) {
-      cancelHide();
+      ctx.fns.cancelHide();
       popupAnchor = anchorEl;
       popupWord = word;
       popupCueIndex = cueIndex;
@@ -2839,7 +2865,7 @@
 
       wordPopup.querySelector(".word-popup-ask").onclick = () => {
         wordPopup.classList.remove("open");
-        switchPage("chat");
+        ctx.fns.switchPage("chat");
         const shown = `"${word}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${sentence}"`;
         addMessage("user", shown);
         // Same treatment as asking about a whole line: a word's sense often
@@ -3124,7 +3150,7 @@
       const b = subtitleCues[loopEndIdx];
       const lines = loopEndIdx - loopStartIdx + 1;
       loopPillText.textContent =
-        (lines === 1 ? fmt(a.start_ms) : `${fmt(a.start_ms)} – ${fmt(b.end_ms)} · ${lines} 句`) +
+        (lines === 1 ? ctx.fns.fmt(a.start_ms) : `${ctx.fns.fmt(a.start_ms)} – ${ctx.fns.fmt(b.end_ms)} · ${lines} 句`) +
         (loopCount ? ` · 第 ${loopCount + 1} 遍` : "");
     }
 
@@ -3145,7 +3171,7 @@
         const cue = subtitleCues[i];
         // Marking the target line matters: otherwise the model has to guess
         // which of 21 lines the question is actually about.
-        lines.push(`[${fmt(cue.start_ms)}] ${cue.text}${i === centerIndex ? "   ← 问的是这句" : ""}`);
+        lines.push(`[${ctx.fns.fmt(cue.start_ms)}] ${cue.text}${i === centerIndex ? "   ← 问的是这句" : ""}`);
       }
       return `\n\n---\n以下是这句台词前后的对话，供你理解语境（不用逐句翻译）：\n${lines.join("\n")}`;
     }
@@ -3156,7 +3182,7 @@
     function askAboutCue(index) {
       const cue = subtitleCues[index];
       if (!cue) return;
-      switchPage("chat");
+      ctx.fns.switchPage("chat");
       const shown = `这句台词是什么意思？请解释一下，顺便讲讲里面值得注意的单词/短语/语法：\n"${cue.text}"`;
       addMessage("user", shown);
       runTurn(shown + buildContextBlock(index));
@@ -3285,7 +3311,7 @@
         entry.streak = data.streak;
         entry.next_review_at = data.next_review_at;
         if (result === "known") {
-          refreshVocabHighlight();
+          ctx.fns.refreshVocabHighlight();
           invalidateDifficultyBadge();
           updateDifficultyBadge();
         }
@@ -3354,7 +3380,7 @@
         <div class="vocab-test-promo">
           <div class="vocab-test-promo-text">
             <div class="vocab-test-promo-title">你的词汇量</div>
-            <div class="vocab-test-promo-sub">${escapeHtml(statusLine)}</div>
+            <div class="vocab-test-promo-sub">${ctx.fns.escapeHtml(statusLine)}</div>
           </div>
           <button class="vocab-test-start-btn">${vocabTestStatus && !vocabTestStatus.is_default ? "重新测一下" : "测一下"}</button>
         </div>
@@ -3372,7 +3398,7 @@
           </div>
         ` : `
           <div class="quiz-start">
-            <div class="quiz-start-empty">${escapeHtml(emptyReason)}</div>
+            <div class="quiz-start-empty">${ctx.fns.escapeHtml(emptyReason)}</div>
           </div>
         `}
       `;
@@ -3413,7 +3439,7 @@
           fetch(`${API}/api/vocab-test/status`).then((r) => r.json()),
         ]);
       } catch (e) {
-        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">加载生词本失败：${escapeHtml(e.message)}</div></div>`;
+        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">加载生词本失败：${ctx.fns.escapeHtml(e.message)}</div></div>`;
         return;
       }
       renderQuizStart();
@@ -3439,7 +3465,7 @@
           <button class="quiz-exit-btn" title="退出抽查" aria-label="退出抽查">${icon("close")}</button>
         </div>
         <div class="quiz-card">
-          <div class="quiz-word">${escapeHtml(entry.question)}</div>
+          <div class="quiz-word">${ctx.fns.escapeHtml(entry.question)}</div>
           <button class="quiz-reveal-btn">显示答案</button>
         </div>
       `;
@@ -3454,9 +3480,9 @@
       speakWord(entry.question);
       const quizCard = vocabQuiz.querySelector(".quiz-card");
       quizCard.innerHTML = `
-        <div class="quiz-word">${escapeHtml(entry.question)}</div>
-        ${entry.subtitle_text ? `<div class="quiz-subtitle">"${escapeHtml(entry.subtitle_text)}"</div>` : ""}
-        <div class="quiz-answer">${renderMarkdown(entry.answer)}</div>
+        <div class="quiz-word">${ctx.fns.escapeHtml(entry.question)}</div>
+        ${entry.subtitle_text ? `<div class="quiz-subtitle">"${ctx.fns.escapeHtml(entry.subtitle_text)}"</div>` : ""}
+        <div class="quiz-answer">${ctx.fns.renderMarkdown(entry.answer)}</div>
         <div class="quiz-grade-row">
           <button class="quiz-grade-btn quiz-grade-unknown">${icon("close")} 不认识</button>
           <button class="quiz-grade-btn quiz-grade-known">${icon("check")} 认识</button>
@@ -3532,7 +3558,7 @@
         vocabTestItems = data.items;
         vocabTestTotal = vocabTestItems.length;
       } catch (e) {
-        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${ctx.fns.escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestIndex = 0;
@@ -3559,10 +3585,10 @@
         </div>
         <div class="quiz-card">
           <div class="vocab-test-kicker">${meaning ? "选择最接近的中文释义" : "凭第一反应回答，不确定就选“模糊”"}</div>
-          <div class="quiz-word">${escapeHtml(item.lemma)}</div>
+          <div class="quiz-word">${ctx.fns.escapeHtml(item.lemma)}</div>
           ${meaning
             ? `<div class="vocab-meaning-options">${item.meaning_options.map((option, i) =>
-                `<button class="vocab-meaning-option" data-option="${i}">${escapeHtml(option)}</button>`).join("")}
+                `<button class="vocab-meaning-option" data-option="${i}">${ctx.fns.escapeHtml(option)}</button>`).join("")}
                 <button class="vocab-meaning-unknown">${icon("close")} 不认识，不做猜测</button></div>`
             : `<div class="quiz-grade-row">
                 <button class="quiz-grade-btn quiz-grade-unknown">${icon("close")} 不认识</button>
@@ -3607,7 +3633,7 @@
         vocabTestItems = data.items;
         vocabTestTotal = vocabTestAnswers.length + vocabTestItems.length;
       } catch (e) {
-        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${ctx.fns.escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestStage = 2;
@@ -3626,7 +3652,7 @@
           body: JSON.stringify({ answers: vocabTestAnswers }),
         })).json();
       } catch (e) {
-        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">提交失败：${escapeHtml(e.message)}</div></div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">提交失败：${ctx.fns.escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestStatus = { vocab_size: result.vocab_size, level_label: result.level_label, is_default: false };
@@ -3639,7 +3665,7 @@
         <div class="vocab-test-result">
           <div class="vocab-test-result-size">约 ${result.vocab_size} 词</div>
           <div class="vocab-test-result-range">合理范围 ${result.vocab_size_low} - ${result.vocab_size_high} 词</div>
-          <div class="vocab-test-result-label">${escapeHtml(result.level_label)}</div>
+          <div class="vocab-test-result-label">${ctx.fns.escapeHtml(result.level_label)}</div>
           ${result.retake_suggested
             ? `<div class="vocab-test-retake-warning">这次答题里有 ${result.fake_known} 个"认识"给了不存在的词，结果可能不准，建议重新测一次。</div>`
             : ""}
@@ -3664,7 +3690,7 @@
       });
       if (!res.ok) throw new Error(`保存失败（HTTP ${res.status}）`);
       const data = await res.json();
-      refreshVocabHighlight();
+      ctx.fns.refreshVocabHighlight();
       invalidateDifficultyBadge();
       updateDifficultyBadge();
       return data;
@@ -3806,14 +3832,14 @@
         if (entry.answer) {
           const a = document.createElement("div");
           a.className = "vocab-answer";
-          a.innerHTML = renderMarkdown(entry.answer);
+          a.innerHTML = ctx.fns.renderMarkdown(entry.answer);
           card.appendChild(a);
         } else {
           const ask = document.createElement("button");
           ask.className = "vocab-ask-btn";
           ask.innerHTML = `${icon("help")} 问一下具体意思`;
           ask.addEventListener("click", () => {
-            switchPage("chat");
+            ctx.fns.switchPage("chat");
             const question = `"${entry.question}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${entry.subtitle_text || entry.question}"`;
             addMessage("user", question);
             runTurn(question);
@@ -3848,84 +3874,86 @@
     // way: meaning is required by suggest_phrase's schema, so there's no
     // empty-answer / "问一下" branch to handle here at all.
 
-    async function loadPhraseList() {
-      phraseEmpty.hidden = false;
-      phraseEmpty.textContent = "正在加载…";
-      try {
-        renderPhraseList(await (await fetch(`${API}/api/phrases`)).json());
-      } catch (e) {
+    function installPhrases(ctx) {
+      async function loadPhraseList() {
         phraseEmpty.hidden = false;
-        phraseEmpty.textContent = `加载短语收藏失败：${e.message}`;
-      }
-    }
-
-    function renderPhraseList(entries) {
-      phraseList.innerHTML = "";
-      if (!entries || entries.length === 0) {
-        phraseEmpty.hidden = false;
-        phraseEmpty.textContent =
-          "还没有收藏的短语。跟 AI 聊字幕的时候，它觉得有值得记的短语会主动推荐，你在对话里点\"收藏\"就行。";
-        phraseList.appendChild(phraseEmpty);
-        return;
-      }
-      const frag = document.createDocumentFragment();
-      for (const entry of entries) {
-        const card = document.createElement("div");
-        card.className = "vocab-card";
-
-        if (entry.created_at) {
-          const meta = document.createElement("div");
-          meta.className = "vocab-meta";
-          meta.textContent = new Date(entry.created_at * 1000).toLocaleString();
-          card.appendChild(meta);
+        phraseEmpty.textContent = "正在加载…";
+        try {
+          renderPhraseList(await (await fetch(`${API}/api/phrases`)).json());
+        } catch (e) {
+          phraseEmpty.hidden = false;
+          phraseEmpty.textContent = `加载短语收藏失败：${e.message}`;
         }
-        if (entry.subtitle_text) {
-          card.appendChild(buildSubtitleLine(entry));
-        }
-
-        const qRow = document.createElement("div");
-        qRow.className = "vocab-question-row";
-        const q = document.createElement("span");
-        q.className = "vocab-question";
-        q.textContent = entry.phrase;
-        qRow.appendChild(q);
-        const jumpBtn = buildJumpBtn(entry);
-        if (jumpBtn) qRow.appendChild(jumpBtn);
-        card.appendChild(qRow);
-
-        const a = document.createElement("div");
-        a.className = "vocab-answer";
-        a.innerHTML = renderMarkdown(entry.meaning);
-        card.appendChild(a);
-
-        const del = document.createElement("button");
-        del.className = "vocab-delete-btn";
-        del.innerHTML = icon("trash");
-        del.title = "删除这条";
-        del.setAttribute("aria-label", "删除这条");
-        del.addEventListener("click", async () => {
-          del.disabled = true;
-          try {
-            await fetch(`${API}/api/phrases/${entry.id}`, { method: "DELETE" });
-            card.remove();
-            if (!phraseList.querySelector(".vocab-card")) renderPhraseList([]);
-          } catch (e) { del.disabled = false; }
-        });
-        card.appendChild(del);
-        frag.appendChild(card);
       }
-      phraseEmpty.hidden = true;
-      phraseList.appendChild(frag);
+
+      function renderPhraseList(entries) {
+        phraseList.innerHTML = "";
+        if (!entries || entries.length === 0) {
+          phraseEmpty.hidden = false;
+          phraseEmpty.textContent =
+            "还没有收藏的短语。跟 AI 聊字幕的时候，它觉得有值得记的短语会主动推荐，你在对话里点\"收藏\"就行。";
+          phraseList.appendChild(phraseEmpty);
+          return;
+        }
+        const frag = document.createDocumentFragment();
+        for (const entry of entries) {
+          const card = document.createElement("div");
+          card.className = "vocab-card";
+
+          if (entry.created_at) {
+            const meta = document.createElement("div");
+            meta.className = "vocab-meta";
+            meta.textContent = new Date(entry.created_at * 1000).toLocaleString();
+            card.appendChild(meta);
+          }
+          if (entry.subtitle_text) {
+            card.appendChild(buildSubtitleLine(entry));
+          }
+
+          const qRow = document.createElement("div");
+          qRow.className = "vocab-question-row";
+          const q = document.createElement("span");
+          q.className = "vocab-question";
+          q.textContent = entry.phrase;
+          qRow.appendChild(q);
+          const jumpBtn = buildJumpBtn(entry);
+          if (jumpBtn) qRow.appendChild(jumpBtn);
+          card.appendChild(qRow);
+
+          const a = document.createElement("div");
+          a.className = "vocab-answer";
+          a.innerHTML = ctx.fns.renderMarkdown(entry.meaning);
+          card.appendChild(a);
+
+          const del = document.createElement("button");
+          del.className = "vocab-delete-btn";
+          del.innerHTML = icon("trash");
+          del.title = "删除这条";
+          del.setAttribute("aria-label", "删除这条");
+          del.addEventListener("click", async () => {
+            del.disabled = true;
+            try {
+              await fetch(`${API}/api/phrases/${entry.id}`, { method: "DELETE" });
+              card.remove();
+              if (!phraseList.querySelector(".vocab-card")) renderPhraseList([]);
+            } catch (e) { del.disabled = false; }
+          });
+          card.appendChild(del);
+          frag.appendChild(card);
+        }
+        phraseEmpty.hidden = true;
+        phraseList.appendChild(frag);
+      }
+
+      ctx.fns.loadPhraseList = loadPhraseList;
+      ctx.fns.renderPhraseList = renderPhraseList;
     }
+    installPhrases(ctx);
 
     // ---- Jellyfin playback tracking ----
     // The whole reason for injecting into Jellyfin's page instead of framing
     // it: the real <video> element is reachable, so position is read straight
     // off it rather than polled out of an API.
-
-    // What the last detection attempt actually saw. Surfaced in the context
-    // bar when there's no playback record, so a failure to find the player
-    // reads as a specific reason instead of a blank "还没开始播放".
 
     function installJellyfin(ctx) {
       function findVideo() {
@@ -4098,7 +4126,7 @@
           // Loop bounds are indices into the cue list that just went away.
           subsNote.hidden = true;
           stopExtractPolling();
-          if (currentPage === "subs") loadSubtitleCues();
+          if (ctx.state.currentPage === "subs") loadSubtitleCues();
         }
       } catch (e) {
         if (e.name === "AbortError" || reportSeq !== playbackReportSeq) return;
@@ -4128,7 +4156,7 @@
         previewOverlay.hidden = true;
         previewOverlay.innerHTML = "";
       }
-      if (currentPage === "subs") loadSubtitleCues();
+      if (ctx.state.currentPage === "subs") loadSubtitleCues();
     });
 
     window.addEventListener("english-tutor:captions-ready", () => {
@@ -4294,7 +4322,7 @@
         const p = data.progress;
         lastKnownVideoTitle = p.title || lastKnownVideoTitle;
         contextBar.textContent =
-          `▶ ${p.title} — ${fmt(p.position_ms)}/${fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
+          `▶ ${p.title} — ${ctx.fns.fmt(p.position_ms)}/${ctx.fns.fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
       } catch (e) {
         if (e.name === "AbortError" || contextSeq !== contextRequestSeq) return;
         contextBar.textContent = "读取播放状态失败（后端 app.py 没启动？）";
@@ -4543,15 +4571,15 @@
       previewOverlay.innerHTML = `
         <div class="preview-card">
           <div class="pc-row1">
-            <span class="pc-word">${escapeHtml(c.lemma)}</span>
+            <span class="pc-word">${ctx.fns.escapeHtml(c.lemma)}</span>
             <span class="pc-idx">${s.index + 1} / ${s.cards.length}</span>
           </div>
           <div class="pc-phon">
             <button class="pc-speak" type="button" title="发音" aria-label="发音">${icon("speaker", 12)}</button>
-            <span>${escapeHtml(c.phonetic || "")}</span>
+            <span>${ctx.fns.escapeHtml(c.phonetic || "")}</span>
           </div>
-          <p class="pc-def">${escapeHtml(c.definition || "词典里没查到这个词")}</p>
-          ${c.sentence ? `<p class="pc-quote">${escapeHtml(c.sentence)}</p>` : ""}
+          <p class="pc-def">${ctx.fns.escapeHtml(c.definition || "词典里没查到这个词")}</p>
+          ${c.sentence ? `<p class="pc-quote">${ctx.fns.escapeHtml(c.sentence)}</p>` : ""}
           <div class="pc-facts">本视频出现 ${c.hits} 次${c.in_wordbook ? " · 已在生词本" : ""}${tagsText}</div>
           <div class="pc-acts">
             <button class="preview-btn" id="pcKnownBtn" type="button">我认识这个</button>
@@ -4589,7 +4617,7 @@
         // knowledge map; otherwise the highlight request can win the race
         // and briefly restore the old unknown underline.
         resultRequest.then(() => {
-          refreshVocabHighlight();
+          ctx.fns.refreshVocabHighlight();
           invalidateDifficultyBadge();
           updateDifficultyBadge();
         });

@@ -71,9 +71,9 @@
       card.dataset.videoUrl = video_url || "";
       card.dataset.timestampSeconds = timestamp_seconds == null ? "" : String(timestamp_seconds);
       card.innerHTML = `
-        <div class="phrase-suggestion-phrase">${escapeHtml(evt.phrase || "")}</div>
-        ${evt.meaning ? `<div class="phrase-suggestion-meaning">${escapeHtml(evt.meaning)}</div>` : ""}
-        ${evt.subtitle_text ? `<div class="phrase-suggestion-subtitle">"${escapeHtml(evt.subtitle_text)}"</div>` : ""}
+        <div class="phrase-suggestion-phrase">${ctx.fns.escapeHtml(evt.phrase || "")}</div>
+        ${evt.meaning ? `<div class="phrase-suggestion-meaning">${ctx.fns.escapeHtml(evt.meaning)}</div>` : ""}
+        ${evt.subtitle_text ? `<div class="phrase-suggestion-subtitle">"${ctx.fns.escapeHtml(evt.subtitle_text)}"</div>` : ""}
         <div class="phrase-suggestion-actions">
           <button class="phrase-suggestion-decline">不用了</button>
           <button class="phrase-suggestion-accept">${icon("star")} 收藏</button>
@@ -163,7 +163,7 @@
       let rawAnswer = "";
 
       function statusText() {
-        const elapsed = fmtElapsed(performance.now() - startTime);
+        const elapsed = ctx.fns.fmtElapsed(performance.now() - startTime);
         const n = latestTokens != null ? latestTokens : Math.round(charCount / 4);
         const tokens = n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
         return `${THINKING_VERBS[verbIndex]}… (${elapsed} · ↓ ${tokens} tokens` +
@@ -190,7 +190,7 @@
           rawAnswer += text;
           if (!answerStarted) {
             answerStarted = true;
-            const elapsed = fmtElapsed(performance.now() - startTime);
+            const elapsed = ctx.fns.fmtElapsed(performance.now() - startTime);
             status.innerHTML =
               `<span class="pulse-icon done">${icon("check")}</span><span class="status-text">Thought for ${elapsed}</span>`;
             if (thinkingBox.querySelector(".thinking-content").textContent) {
@@ -203,7 +203,7 @@
           // in the chat -- rawAnswer keeps accumulating regardless, so the
           // next delta (or finalize, which always flushes) catches it up.
           if (Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS) {
-            content.innerHTML = renderMarkdown(rawAnswer);
+            content.innerHTML = ctx.fns.renderMarkdown(rawAnswer);
           }
         },
         onPhraseSuggestion(evt) {
@@ -231,7 +231,7 @@
           // Unconditional: onTextDelta may have skipped its own render while
           // the user was selecting text, so content.innerHTML can't be
           // trusted to already match rawAnswer here.
-          content.innerHTML = renderMarkdown(rawAnswer);
+          content.innerHTML = ctx.fns.renderMarkdown(rawAnswer);
           if (evt.cost_usd != null) {
             const m = document.createElement("span");
             m.className = "meta";

@@ -142,7 +142,7 @@
       const b = subtitleCues[loopEndIdx];
       const lines = loopEndIdx - loopStartIdx + 1;
       loopPillText.textContent =
-        (lines === 1 ? fmt(a.start_ms) : `${fmt(a.start_ms)} – ${fmt(b.end_ms)} · ${lines} 句`) +
+        (lines === 1 ? ctx.fns.fmt(a.start_ms) : `${ctx.fns.fmt(a.start_ms)} – ${ctx.fns.fmt(b.end_ms)} · ${lines} 句`) +
         (loopCount ? ` · 第 ${loopCount + 1} 遍` : "");
     }
 
@@ -163,7 +163,7 @@
         const cue = subtitleCues[i];
         // Marking the target line matters: otherwise the model has to guess
         // which of 21 lines the question is actually about.
-        lines.push(`[${fmt(cue.start_ms)}] ${cue.text}${i === centerIndex ? "   ← 问的是这句" : ""}`);
+        lines.push(`[${ctx.fns.fmt(cue.start_ms)}] ${cue.text}${i === centerIndex ? "   ← 问的是这句" : ""}`);
       }
       return `\n\n---\n以下是这句台词前后的对话，供你理解语境（不用逐句翻译）：\n${lines.join("\n")}`;
     }
@@ -174,7 +174,7 @@
     function askAboutCue(index) {
       const cue = subtitleCues[index];
       if (!cue) return;
-      switchPage("chat");
+      ctx.fns.switchPage("chat");
       const shown = `这句台词是什么意思？请解释一下，顺便讲讲里面值得注意的单词/短语/语法：\n"${cue.text}"`;
       addMessage("user", shown);
       runTurn(shown + buildContextBlock(index));

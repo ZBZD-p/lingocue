@@ -4,7 +4,19 @@
       fns: Object.create(null),
     };
     ctx.state.currentItemId = null;
+    ctx.state.currentPage = "chat";
+    // What the last detection attempt actually saw. Surfaced in the context
+    // bar when there's no playback record, so a failure to find the player
+    // reads as a specific reason instead of a blank "还没开始播放".
     ctx.state.lastProbe = "尚未检测";
+    // Parallel to subtitleCues -- cueUnknownWords[i] is a Set of the
+    // lowercased words in subtitleCues[i].text flagged likely-unknown, or
+    // undefined until /api/vocab-highlight has answered for this render.
+    ctx.state.cueUnknownWords = [];
+    // Parallel to cueUnknownWords -- cueWordScores[i] is a Map keyed by the
+    // lowercased surface word, populated only when the developer diagnostic
+    // setting asks the backend for p_known details.
+    ctx.state.cueWordScores = [];
 
     const $ = (id) => root.getElementById(id);
     const chatEl = $("chat");
@@ -45,7 +57,6 @@
     };
 
     let sessionId = null;
-    let currentPage = "chat";
     let lastKnownVideoTitle = null;
     let lastDifficultyKey = null;
     let previewLastVideoId = null;

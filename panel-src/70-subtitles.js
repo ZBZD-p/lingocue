@@ -16,14 +16,6 @@
     let currentWordSpans = [];
     let lastPositionMs = NaN;
     let lastAutoScrollAt = 0;
-    // Parallel to subtitleCues -- cueUnknownWords[i] is a Set of the
-    // lowercased words in subtitleCues[i].text flagged likely-unknown, or
-    // undefined until /api/vocab-highlight has answered for this render.
-    let cueUnknownWords = [];
-    // Parallel to cueUnknownWords -- cueWordScores[i] is a Map keyed by the
-    // lowercased surface word, populated only when the developer diagnostic
-    // setting asks the backend for p_known details.
-    let cueWordScores = [];
     let currentCueIndex = -1;
     // Card-level virtualization: keep the cue data in memory, but only mount
     // a bounded window of cards around the viewport/current line. The old
@@ -71,8 +63,6 @@
     let subtitleModelVersion = 0;
     let pendingSubtitleCommit = null;
     let pendingSubtitleCommitTimer = null;
-    let vocabHighlightSeq = 0;
-    let vocabHighlightController = null;
     let subtitleResizeObserver = null;
     const USER_SCROLL_QUIET_MS = 4000;
     const EXTRACT_POLL_MS = 1000;
@@ -82,12 +72,6 @@
     // poll, not something with real progress to report more granularly.
     const POLISH_POLL_MS = 5000;
 
-    function abortVocabHighlight() {
-      vocabHighlightSeq++;
-      if (vocabHighlightController) vocabHighlightController.abort();
-      vocabHighlightController = null;
-    }
-
     function invalidateSubtitleSession() {
       subtitleGeneration++;
       subtitleRequestSeq++;
@@ -95,7 +79,7 @@
       subtitleRequestController = null;
       pendingSubtitleCommit = null;
       if (pendingSubtitleCommitTimer) { clearTimeout(pendingSubtitleCommitTimer); pendingSubtitleCommitTimer = null; }
-      abortVocabHighlight();
+      ctx.fns.abortVocabHighlight();
       if (virtualRecycleRaf) { cancelAnimationFrame(virtualRecycleRaf); virtualRecycleRaf = 0; }
       if (virtualMeasureRaf) { cancelAnimationFrame(virtualMeasureRaf); virtualMeasureRaf = 0; }
       if (virtualResizeRaf) { cancelAnimationFrame(virtualResizeRaf); virtualResizeRaf = 0; }
@@ -109,7 +93,7 @@
       subtitleIsPartial = false;
       subtitleCueSignature = "";
       subtitleModelVersion++;
-      abortVocabHighlight();
+      ctx.fns.abortVocabHighlight();
       subtitleCardEls = [];
       cueWordSpans = [];
       cueTextEls = [];
@@ -127,8 +111,8 @@
       currentCueIndex = -1;
       lastPositionMs = NaN;
       spokenWordCount = -1;
-      cueUnknownWords = [];
-      cueWordScores = [];
+      ctx.state.cueUnknownWords = [];
+      ctx.state.cueWordScores = [];
       if (subsScroll) subsScroll.innerHTML = "";
     }
 
@@ -219,8 +203,8 @@
       subtitleIsPartial = !!isPartial;
       subtitleCueSignature = nextSignature;
       subtitleModelVersion++;
-      cueUnknownWords = [];
-      cueWordScores = [];
+      ctx.state.cueUnknownWords = [];
+      ctx.state.cueWordScores = [];
       currentCueIndex = findCueByIdentity(subtitleCues, oldCurrentKey, -1);
       lastPositionMs = NaN;
 
@@ -236,7 +220,7 @@
       }
 
       renderSubtitleCards(savedAnchor);
-      refreshVocabHighlight();
+      ctx.fns.refreshVocabHighlight();
       applyPreviewHighlight();
       return true;
     }
@@ -699,7 +683,7 @@
       time.className = "sub-time";
       const timeText = document.createElement("span");
       timeText.className = "sub-time-text";
-      timeText.textContent = fmt(cue.start_ms);
+      timeText.textContent = ctx.fns.fmt(cue.start_ms);
       time.appendChild(timeText);
       card.appendChild(time);
       const text = document.createElement("div");
@@ -994,7 +978,7 @@
       if (target && target.closest && target.closest(".sub-word")) {
         const related = event.relatedTarget;
         if (!related || !related.closest || !related.closest(".sub-word")) {
-          scheduleHideWordPopup();
+          ctx.fns.scheduleHideWordPopup();
         }
       }
     }, { passive: true });
@@ -1039,7 +1023,7 @@
       if (!cue || !text) return;
       text.textContent = "";
       cueWordSpans[index] = appendWordSpans(text, cue.text, index, cue.words);
-      applyVocabHighlightToCard(index);
+      ctx.fns.applyVocabHighlightToCard(index);
       applyPreviewHighlightToCard(index);
     }
 

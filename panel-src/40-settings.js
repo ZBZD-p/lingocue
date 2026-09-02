@@ -121,7 +121,7 @@
       if (!isUserChange) return;
       resetSubtitleSession();
       subsNote.hidden = true;
-      if (currentPage === "subs") loadSubtitleCues();
+      if (ctx.state.currentPage === "subs") loadSubtitleCues();
     }
 
     const wordHighlightOn = () => settingValue("wordHighlight") !== "off";
@@ -138,7 +138,7 @@
       if (!isUserChange) return;
       startPositionPolling();
       resetSubtitleSession();
-      if (currentPage === "subs") loadSubtitleCues();
+      if (ctx.state.currentPage === "subs") loadSubtitleCues();
     }
 
     // No reload needed -- the cue text already loaded didn't change, only
@@ -158,15 +158,15 @@
     function toggleVocabHighlight(value, isUserChange) {
       if (!isUserChange) return;
       if (value === "on") {
-        refreshVocabHighlight();
+        ctx.fns.refreshVocabHighlight();
       } else {
-        abortVocabHighlight();
-        cueUnknownWords = [];
-        applyVocabHighlight();
+        ctx.fns.abortVocabHighlight();
+        ctx.state.cueUnknownWords = [];
+        ctx.fns.applyVocabHighlight();
         if (showPKnownOn()) {
-          refreshVocabHighlight();
+          ctx.fns.refreshVocabHighlight();
         } else {
-          cueWordScores = [];
+          ctx.state.cueWordScores = [];
           updateWordPopupPKnown();
         }
       }
@@ -175,9 +175,9 @@
     function toggleDeveloperDiagnostics(value, isUserChange) {
       if (!isUserChange) return;
       if (showPKnownOn()) {
-        refreshVocabHighlight();
+        ctx.fns.refreshVocabHighlight();
       } else {
-        cueWordScores = [];
+        ctx.state.cueWordScores = [];
         updateWordPopupPKnown();
       }
     }

@@ -15,7 +15,7 @@
         return;
       }
       const norm = popupWord.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
-      const byWord = cueWordScores[popupCueIndex];
+      const byWord = ctx.state.cueWordScores[popupCueIndex];
       const detail = byWord && byWord.get(norm);
       if (!detail || !Number.isFinite(detail.p_known)) {
         wordPopupPKnown.hidden = true;
@@ -124,7 +124,7 @@
     }
 
     function showWordPopup(anchorEl, word, sentence, cueIndex) {
-      cancelHide();
+      ctx.fns.cancelHide();
       popupAnchor = anchorEl;
       popupWord = word;
       popupCueIndex = cueIndex;
@@ -170,7 +170,7 @@
 
       wordPopup.querySelector(".word-popup-ask").onclick = () => {
         wordPopup.classList.remove("open");
-        switchPage("chat");
+        ctx.fns.switchPage("chat");
         const shown = `"${word}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${sentence}"`;
         addMessage("user", shown);
         // Same treatment as asking about a whole line: a word's sense often

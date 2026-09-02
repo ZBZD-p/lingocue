@@ -147,7 +147,7 @@
           // Loop bounds are indices into the cue list that just went away.
           subsNote.hidden = true;
           stopExtractPolling();
-          if (currentPage === "subs") loadSubtitleCues();
+          if (ctx.state.currentPage === "subs") loadSubtitleCues();
         }
       } catch (e) {
         if (e.name === "AbortError" || reportSeq !== playbackReportSeq) return;
@@ -177,7 +177,7 @@
         previewOverlay.hidden = true;
         previewOverlay.innerHTML = "";
       }
-      if (currentPage === "subs") loadSubtitleCues();
+      if (ctx.state.currentPage === "subs") loadSubtitleCues();
     });
 
     window.addEventListener("english-tutor:captions-ready", () => {
@@ -343,7 +343,7 @@
         const p = data.progress;
         lastKnownVideoTitle = p.title || lastKnownVideoTitle;
         contextBar.textContent =
-          `▶ ${p.title} — ${fmt(p.position_ms)}/${fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
+          `▶ ${p.title} — ${ctx.fns.fmt(p.position_ms)}/${ctx.fns.fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
       } catch (e) {
         if (e.name === "AbortError" || contextSeq !== contextRequestSeq) return;
         contextBar.textContent = "读取播放状态失败（后端 app.py 没启动？）";

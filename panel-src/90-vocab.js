@@ -121,7 +121,7 @@
         entry.streak = data.streak;
         entry.next_review_at = data.next_review_at;
         if (result === "known") {
-          refreshVocabHighlight();
+          ctx.fns.refreshVocabHighlight();
           invalidateDifficultyBadge();
           updateDifficultyBadge();
         }
@@ -190,7 +190,7 @@
         <div class="vocab-test-promo">
           <div class="vocab-test-promo-text">
             <div class="vocab-test-promo-title">你的词汇量</div>
-            <div class="vocab-test-promo-sub">${escapeHtml(statusLine)}</div>
+            <div class="vocab-test-promo-sub">${ctx.fns.escapeHtml(statusLine)}</div>
           </div>
           <button class="vocab-test-start-btn">${vocabTestStatus && !vocabTestStatus.is_default ? "重新测一下" : "测一下"}</button>
         </div>
@@ -208,7 +208,7 @@
           </div>
         ` : `
           <div class="quiz-start">
-            <div class="quiz-start-empty">${escapeHtml(emptyReason)}</div>
+            <div class="quiz-start-empty">${ctx.fns.escapeHtml(emptyReason)}</div>
           </div>
         `}
       `;
@@ -249,7 +249,7 @@
           fetch(`${API}/api/vocab-test/status`).then((r) => r.json()),
         ]);
       } catch (e) {
-        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">加载生词本失败：${escapeHtml(e.message)}</div></div>`;
+        vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-empty">加载生词本失败：${ctx.fns.escapeHtml(e.message)}</div></div>`;
         return;
       }
       renderQuizStart();
@@ -275,7 +275,7 @@
           <button class="quiz-exit-btn" title="退出抽查" aria-label="退出抽查">${icon("close")}</button>
         </div>
         <div class="quiz-card">
-          <div class="quiz-word">${escapeHtml(entry.question)}</div>
+          <div class="quiz-word">${ctx.fns.escapeHtml(entry.question)}</div>
           <button class="quiz-reveal-btn">显示答案</button>
         </div>
       `;
@@ -290,9 +290,9 @@
       speakWord(entry.question);
       const quizCard = vocabQuiz.querySelector(".quiz-card");
       quizCard.innerHTML = `
-        <div class="quiz-word">${escapeHtml(entry.question)}</div>
-        ${entry.subtitle_text ? `<div class="quiz-subtitle">"${escapeHtml(entry.subtitle_text)}"</div>` : ""}
-        <div class="quiz-answer">${renderMarkdown(entry.answer)}</div>
+        <div class="quiz-word">${ctx.fns.escapeHtml(entry.question)}</div>
+        ${entry.subtitle_text ? `<div class="quiz-subtitle">"${ctx.fns.escapeHtml(entry.subtitle_text)}"</div>` : ""}
+        <div class="quiz-answer">${ctx.fns.renderMarkdown(entry.answer)}</div>
         <div class="quiz-grade-row">
           <button class="quiz-grade-btn quiz-grade-unknown">${icon("close")} 不认识</button>
           <button class="quiz-grade-btn quiz-grade-known">${icon("check")} 认识</button>

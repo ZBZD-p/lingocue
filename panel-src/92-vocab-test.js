@@ -28,7 +28,7 @@
         vocabTestItems = data.items;
         vocabTestTotal = vocabTestItems.length;
       } catch (e) {
-        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${ctx.fns.escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestIndex = 0;
@@ -55,10 +55,10 @@
         </div>
         <div class="quiz-card">
           <div class="vocab-test-kicker">${meaning ? "选择最接近的中文释义" : "凭第一反应回答，不确定就选“模糊”"}</div>
-          <div class="quiz-word">${escapeHtml(item.lemma)}</div>
+          <div class="quiz-word">${ctx.fns.escapeHtml(item.lemma)}</div>
           ${meaning
             ? `<div class="vocab-meaning-options">${item.meaning_options.map((option, i) =>
-                `<button class="vocab-meaning-option" data-option="${i}">${escapeHtml(option)}</button>`).join("")}
+                `<button class="vocab-meaning-option" data-option="${i}">${ctx.fns.escapeHtml(option)}</button>`).join("")}
                 <button class="vocab-meaning-unknown">${icon("close")} 不认识，不做猜测</button></div>`
             : `<div class="quiz-grade-row">
                 <button class="quiz-grade-btn quiz-grade-unknown">${icon("close")} 不认识</button>
@@ -103,7 +103,7 @@
         vocabTestItems = data.items;
         vocabTestTotal = vocabTestAnswers.length + vocabTestItems.length;
       } catch (e) {
-        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${escapeHtml(e.message)}</div></div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">题目加载失败：${ctx.fns.escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestStage = 2;
@@ -122,7 +122,7 @@
           body: JSON.stringify({ answers: vocabTestAnswers }),
         })).json();
       } catch (e) {
-        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">提交失败：${escapeHtml(e.message)}</div></div></div>`;
+        host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">提交失败：${ctx.fns.escapeHtml(e.message)}</div></div></div>`;
         return;
       }
       vocabTestStatus = { vocab_size: result.vocab_size, level_label: result.level_label, is_default: false };
@@ -135,7 +135,7 @@
         <div class="vocab-test-result">
           <div class="vocab-test-result-size">约 ${result.vocab_size} 词</div>
           <div class="vocab-test-result-range">合理范围 ${result.vocab_size_low} - ${result.vocab_size_high} 词</div>
-          <div class="vocab-test-result-label">${escapeHtml(result.level_label)}</div>
+          <div class="vocab-test-result-label">${ctx.fns.escapeHtml(result.level_label)}</div>
           ${result.retake_suggested
             ? `<div class="vocab-test-retake-warning">这次答题里有 ${result.fake_known} 个"认识"给了不存在的词，结果可能不准，建议重新测一次。</div>`
             : ""}
@@ -160,7 +160,7 @@
       });
       if (!res.ok) throw new Error(`保存失败（HTTP ${res.status}）`);
       const data = await res.json();
-      refreshVocabHighlight();
+      ctx.fns.refreshVocabHighlight();
       invalidateDifficultyBadge();
       updateDifficultyBadge();
       return data;
@@ -302,14 +302,14 @@
         if (entry.answer) {
           const a = document.createElement("div");
           a.className = "vocab-answer";
-          a.innerHTML = renderMarkdown(entry.answer);
+          a.innerHTML = ctx.fns.renderMarkdown(entry.answer);
           card.appendChild(a);
         } else {
           const ask = document.createElement("button");
           ask.className = "vocab-ask-btn";
           ask.innerHTML = `${icon("help")} 问一下具体意思`;
           ask.addEventListener("click", () => {
-            switchPage("chat");
+            ctx.fns.switchPage("chat");
             const question = `"${entry.question}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${entry.subtitle_text || entry.question}"`;
             addMessage("user", question);
             runTurn(question);

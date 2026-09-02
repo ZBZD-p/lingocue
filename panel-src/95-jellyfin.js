@@ -3,10 +3,6 @@
     // it: the real <video> element is reachable, so position is read straight
     // off it rather than polled out of an API.
 
-    // What the last detection attempt actually saw. Surfaced in the context
-    // bar when there's no playback record, so a failure to find the player
-    // reads as a specific reason instead of a blank "还没开始播放".
-
     function installJellyfin(ctx) {
       function findVideo() {
         // Jellyfin creates and destroys the element per playback session, and
