@@ -1048,6 +1048,7 @@
     ctx.fns.cancelSmoothScroll = cancelSmoothScroll;
     ctx.fns.smoothCenterCard = smoothCenterCard;
     ctx.fns.scheduleVirtualMeasure = scheduleVirtualMeasure;
+    ctx.fns.invalidateVirtualMeasurements = invalidateVirtualMeasurements;
     ctx.fns.userScrollQuietMs = USER_SCROLL_QUIET_MS;
     ctx.fns.stopExtractPolling = stopExtractPolling;
     }

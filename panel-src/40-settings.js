@@ -113,15 +113,15 @@
 
     function applySubSizeAndInvalidate(value, isUserChange) {
       applySubSize(value);
-      if (isUserChange && typeof invalidateVirtualMeasurements === "function") {
-        invalidateVirtualMeasurements();
+      if (isUserChange && typeof ctx.fns.invalidateVirtualMeasurements === "function") {
+        ctx.fns.invalidateVirtualMeasurements();
       }
     }
 
     function applySubWeightAndInvalidate(value, isUserChange) {
       applySubWeight(value);
-      if (isUserChange && typeof invalidateVirtualMeasurements === "function") {
-        invalidateVirtualMeasurements();
+      if (isUserChange && typeof ctx.fns.invalidateVirtualMeasurements === "function") {
+        ctx.fns.invalidateVirtualMeasurements();
       }
     }
 

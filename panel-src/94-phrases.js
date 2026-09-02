@@ -38,7 +38,7 @@
             card.appendChild(meta);
           }
           if (entry.subtitle_text) {
-            card.appendChild(buildSubtitleLine(entry));
+            card.appendChild(ctx.fns.buildSubtitleLine(entry));
           }
 
           const qRow = document.createElement("div");
