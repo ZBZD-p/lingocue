@@ -3898,7 +3898,7 @@
     /** {video_url, timestamp_seconds} for wherever playback is right now,
      *  YouTube only -- both null on Jellyfin/local video, which has no
      *  external address to hand back to. `location.href` is the actual
-     *  youtube.com watch URL here (this script runs injected into that
+     *  youtube.com video URL here (this script runs injected into that
      *  page itself when it's the YouTube extension), so this just folds
      *  the current position into a `t=` param the same way YouTube's own
      *  share-at-timestamp links do. Read at save time, not click time, so
@@ -3919,12 +3919,18 @@
       return { video_url: url.toString(), timestamp_seconds: seconds };
     }
 
-    /** The `v=` param out of a YouTube watch URL, or null if it isn't one --
+    /** The video id out of a YouTube watch or Shorts URL, or null if it isn't one --
      *  used to tell whether a saved jump target is the video already open
      *  (see buildJumpBtn), so a click there can just seek instead of
      *  reloading the exact page it's already sitting on. */
     function youtubeVideoId(url) {
-      try { return new URL(url).searchParams.get("v"); }
+      try {
+        const parsed = new URL(url);
+        const queryId = parsed.searchParams.get("v");
+        if (queryId) return queryId;
+        const match = parsed.pathname.match(/^\/shorts\/([^/]+)(?:\/|$)/);
+        return match ? decodeURIComponent(match[1]) : null;
+      }
       catch (e) { return null; }
     }
 

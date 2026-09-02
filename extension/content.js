@@ -3,7 +3,7 @@
 // <script src>, which always runs in the page's real world regardless of
 // which world inserted the tag -- so this needs to be in that same world
 // too, for window.__englishTutorApiBase/__englishTutorYouTube set here to
-// be visible to it) on every navigation to a /watch page, including
+// be visible to it) on every navigation to a YouTube video page, including
 // YouTube's own SPA navigations between videos, not just full page loads.
 //
 // Two jobs: (1) keep window.__englishTutorYouTube -- the player bridge
@@ -33,52 +33,116 @@
 (function () {
   "use strict";
 
+  // A Shorts page carries TWO players, confirmed by reading the live DOM
+  // rather than reasoned about: the real one is `#shorts-player`, and
+  // alongside it sits a leftover `#movie_player` that is 0x0, has an empty
+  // <video> stuck at readyState 0, and whose getPlayerResponse() has no
+  // videoDetails at all. So a bare `document.querySelector("#movie_player")`
+  // -- what every caller here used to do -- picks the dead one on Shorts and
+  // reads nothing useful out of it.
+  //
+  // Which is why the id is the selector: matching getPlayerResponse()'s
+  // videoDetails.videoId against the video we're actually on identifies the
+  // live player without depending on *any* guess about YouTube's container
+  // markup. Selector guesses fail silently and hand back a wrong element;
+  // this can only ever hand back the right one or nothing. (The reel
+  // attributes an earlier attempt keyed on -- is-active/active -- turned out
+  // not to exist on the real page, and `ytd-reel-video-renderer #movie_player`
+  // matches zero elements, so that whole approach was dead code on Shorts.)
+  function playerFor(videoId) {
+    var players = document.querySelectorAll("#movie_player, #shorts-player, .html5-video-player");
+    if (videoId) {
+      for (var i = 0; i < players.length; i++) {
+        var pr = null;
+        try {
+          pr = typeof players[i].getPlayerResponse === "function"
+            ? players[i].getPlayerResponse() : null;
+        } catch (e) { pr = null; }
+        if (pr && pr.videoDetails && pr.videoDetails.videoId === videoId) return players[i];
+      }
+    }
+    // No id to match against, or the player hasn't published its response
+    // yet: the one with media actually loaded beats the placeholder, whose
+    // <video> never leaves readyState 0.
+    for (var j = 0; j < players.length; j++) {
+      var v = players[j].querySelector("video");
+      if (v && v.readyState > 0) return players[j];
+    }
+    return players[0] || null;
+  }
+
+  function currentMoviePlayer() {
+    return playerFor(videoIdFromUrl());
+  }
+
+  // Every accessor below re-queries through this instead of holding an
+  // element: window.__englishTutorYouTube is built once and survives every
+  // SPA navigation, so a cached node would pin whichever video happened to
+  // be open first -- on the Shorts feed, permanently.
+  function currentVideoElement() {
+    var player = currentMoviePlayer();
+    var owned = player && player.querySelector("video");
+    if (owned) return owned;
+    var videos = document.querySelectorAll("video");
+    for (var i = 0; i < videos.length; i++) {
+      if (!videos[i].paused && videos[i].readyState > 0) return videos[i];
+    }
+    for (var j = 0; j < videos.length; j++) {
+      if (videos[j].duration > 0) return videos[j];
+    }
+    return document.querySelector("video");
+  }
+
   if (!window.__englishTutorYouTube) {
     window.__englishTutorYouTube = {
       ready: function () {
-        var v = document.querySelector("video");
+        var v = currentVideoElement();
         return !!(v && window.__lingocueOrchestrator && window.__lingocueOrchestrator.currentSource() && v.duration > 0);
       },
       source: function () {
         return (window.__lingocueOrchestrator && window.__lingocueOrchestrator.currentSource()) || null;
       },
       currentTime: function () {
-        var v = document.querySelector("video");
+        var v = currentVideoElement();
         return v ? v.currentTime : 0;
       },
       duration: function () {
-        var v = document.querySelector("video");
+        var v = currentVideoElement();
         return v ? v.duration : 0;
       },
       paused: function () {
-        var v = document.querySelector("video");
+        var v = currentVideoElement();
         return v ? v.paused : true;
       },
       seek: function (seconds) {
-        var v = document.querySelector("video");
+        var v = currentVideoElement();
         if (v) v.currentTime = seconds;
       },
       // Preview cards (tutor-panel.js's updatePreviewPrompt) pausing to run
       // a round and resuming after -- YouTube's player is a real <video>
       // element under the hood, same as everywhere else in this bridge.
       pause: function () {
-        var v = document.querySelector("video");
+        var v = currentVideoElement();
         if (v) v.pause();
       },
       play: function () {
-        var v = document.querySelector("video");
+        var v = currentVideoElement();
         if (v) v.play().catch(function () {});
       },
     };
   }
 
   function videoIdFromUrl() {
-    try { return new URL(location.href).searchParams.get("v"); }
-    catch (e) { return null; }
+    try {
+      var url = new URL(location.href);
+      var match = url.pathname.match(/^\/shorts\/([^/]+)(?:\/|$)/);
+      if (match) return decodeURIComponent(match[1]);
+      return url.pathname === "/watch" ? url.searchParams.get("v") : null;
+    } catch (e) { return null; }
   }
 
   function titleFromPage() {
-    var t = (document.title || "").replace(/ - YouTube$/, "").trim();
+    var t = (document.title || "").replace(/ - YouTube(?: Shorts)?$/, "").trim();
     return t || "YouTube video";
   }
 
@@ -93,7 +157,7 @@
   // guess rather than replace it outright, since the player response isn't
   // available yet at the very first read right after navigating.
   function playerTitleFor(videoId) {
-    var player = document.querySelector("#movie_player");
+    var player = playerFor(videoId);
     var pr = player && typeof player.getPlayerResponse === "function"
       ? player.getPlayerResponse() : null;
     if (!pr || !pr.videoDetails || pr.videoDetails.videoId !== videoId) return null;
@@ -161,17 +225,25 @@
     return {
       // Claims a video id immediately and synchronously, before any of the
       // async title-resolution work (registerWhenReady's placeholder-title
-      // retry loop) even starts. This is deliberately separate from
-      // begin()/epoch below: it's what the top-level dedup check uses, so a
-      // second script re-injection for a video whose title is still being
-      // resolved doesn't restart that whole process from scratch.
+      // retry loop) even starts. The claimed id is separate from the token
+      // itself because it drives the top-level dedup check, so a second script
+      // re-injection for a video whose title is still being resolved doesn't
+      // restart that whole process from scratch.
       isClaimed: function (vid) { return vid === claimedVideoId; },
-      claim: function (vid) { claimedVideoId = vid; source = null; },
+      claim: function (vid) {
+        claimedVideoId = vid;
+        source = null;
+        // Invalidate the previous token before any title-resolution delay for
+        // this video. Without this bump, an old registration response could
+        // still pass isCurrent() while registerWhenReady is waiting for the
+        // new page title, briefly restoring the previous video's source.
+        epoch++;
+      },
       currentSource: function () { return source; },
       // Mints a token for guarding ASYNC responses (the actual bug fix).
-      // Independent of claim() above -- can be called more than once for
-      // the same claimed video (the title-correction re-registration does
-      // exactly that), each call superseding the last token's guard.
+      // Can be called more than once for the same claimed video (the
+      // title-correction re-registration does exactly that), each call
+      // superseding the last token's guard.
       begin: function (vid) {
         var myEpoch = ++epoch;
         source = null;
@@ -240,10 +312,10 @@
       window.dispatchEvent(new CustomEvent("english-tutor:captions-ready"));
     },
     captionTracks: function (videoId) {
-      var player = document.querySelector("#movie_player");
+      var player = playerFor(videoId);
       var pr = player && typeof player.getPlayerResponse === "function"
         ? player.getPlayerResponse() : null;
-      if (!pr || (pr.videoDetails && pr.videoDetails.videoId !== videoId)) return null;
+      if (!pr || !pr.videoDetails || pr.videoDetails.videoId !== videoId) return null;
       return (pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
               pr.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
     },
@@ -263,11 +335,13 @@
     // registration call passes an empty or slightly-stale handle, which
     // self-heals the same way a stale title does (see confirmTitle).
     channelIdFor: function (videoId) {
-      var player = document.querySelector("#movie_player");
+      var player = playerFor(videoId);
       var pr = player && typeof player.getPlayerResponse === "function"
         ? player.getPlayerResponse() : null;
       if (!pr || !pr.videoDetails || pr.videoDetails.videoId !== videoId) return "";
-      var owner = document.querySelector("ytd-video-owner-renderer a, #channel-name a, ytd-channel-name a");
+      var reel = player.closest && player.closest("ytd-reel-video-renderer");
+      var owner = (reel && reel.querySelector("#channel-name a, ytd-channel-name a")) ||
+        document.querySelector("ytd-video-owner-renderer a, #channel-name a, ytd-channel-name a");
       if (!owner || !owner.href) return "";
       try {
         var path = new URL(owner.href).pathname;
@@ -278,7 +352,14 @@
     // fresh timedtext request -- confirmed for real, an already-on button
     // that's clicked once doesn't necessarily re-request anything.
     toggleCaptionsButton: function () {
-      var btn = document.querySelector(".ytp-subtitles-button");
+      // Inside the live player first, then anywhere -- "not in this player"
+      // has to fall through as well as "no player at all". On Shorts the
+      // only .ytp-subtitles-button on the page belongs to the dead
+      // placeholder (see playerFor), so the document-wide leg is what keeps
+      // this from regressing to an unconditional false there.
+      var player = currentMoviePlayer();
+      var btn = (player && player.querySelector(".ytp-subtitles-button")) ||
+        document.querySelector(".ytp-subtitles-button");
       if (!btn) return false;
       if (btn.getAttribute("aria-pressed") === "true") btn.click();
       btn.click();
@@ -292,11 +373,15 @@
     waitForTimedtextRequest: function (videoId, attemptsLeft, cb) {
       var entries = performance.getEntriesByType("resource");
       for (var i = 0; i < entries.length; i++) {
-        if (entries[i].name.indexOf("/api/timedtext") !== -1 &&
-            entries[i].name.indexOf("v=" + videoId) !== -1) {
-          cb(entries[i].name);
-          return;
-        }
+        var rawName = entries[i].name;
+        try {
+          var parsed = new URL(rawName, location.href);
+          var isTimedtext = /\/api\/timedtext\/?$/.test(parsed.pathname);
+          if (isTimedtext && parsed.searchParams.get("v") === videoId) {
+            cb(rawName);
+            return;
+          }
+        } catch (e) { /* ignore malformed/non-HTTP resource entries */ }
       }
       if (attemptsLeft <= 0) { cb(null); return; }
       var self = this;
@@ -382,7 +467,14 @@
         .then(token.guard(function (data) {
           if (data && data.available) return; // succeeded the normal way
           if (data && data.status === "error") {
-            tryBrowserCaptionFallback(token, title);
+            var fallbackState = tryBrowserCaptionFallback(token, title);
+            // Shorts can report the backend failure before its active reel
+            // has installed the player response or CC controls. Keep
+            // polling in that transient state instead of consuming the
+            // cooldown and abandoning the only browser-authenticated path.
+            if (fallbackState === "pending") {
+              setTimeout(function () { watchSubtitleFailure(token, title, attemptsLeft - 1); }, 1500);
+            }
             return;
           }
           setTimeout(function () { watchSubtitleFailure(token, title, attemptsLeft - 1); }, 1500);
@@ -403,23 +495,34 @@
     // quietly does nothing.
     function tryBrowserCaptionFallback(token, title) {
       var key = fallbackCooldown.key(token.videoId, title);
-      if (fallbackCooldown.recentlyAttempted(key)) return;
-      fallbackCooldown.markAttempted(key);
+      if (fallbackCooldown.recentlyAttempted(key)) return "done";
 
       var tracks = deps.page.captionTracks(token.videoId);
-      if (!tracks) return; // player hasn't caught up to this video yet
+      if (!tracks) return "pending"; // player hasn't caught up to this video yet
       var target = null;
       for (var i = 0; i < tracks.length; i++) {
-        if (tracks[i].languageCode === "en" && tracks[i].kind !== "asr") { target = tracks[i]; break; }
+        var manualCode = String(tracks[i].languageCode || "").toLowerCase();
+        if ((manualCode === "en" || manualCode.indexOf("en-") === 0) && tracks[i].kind !== "asr") {
+          target = tracks[i];
+          break;
+        }
       }
       var isGenerated = false;
       if (!target) {
         for (var j = 0; j < tracks.length; j++) {
-          if (tracks[j].languageCode === "en" && tracks[j].kind === "asr") { target = tracks[j]; isGenerated = true; break; }
+          var generatedCode = String(tracks[j].languageCode || "").toLowerCase();
+          if ((generatedCode === "en" || generatedCode.indexOf("en-") === 0) && tracks[j].kind === "asr") {
+            target = tracks[j];
+            isGenerated = true;
+            break;
+          }
         }
       }
-      if (!target) return; // this tab has no English track either -- nothing to fetch
-      if (!deps.page.toggleCaptionsButton()) return;
+      if (!target) return "done"; // this tab has no English track either -- nothing to fetch
+      if (!deps.page.toggleCaptionsButton()) return "pending";
+      // Only consume the cooldown once a usable track and CC control have
+      // been found. Both can be absent briefly during a Shorts transition.
+      fallbackCooldown.markAttempted(key);
 
       deps.page.waitForTimedtextRequest(token.videoId, 10, function (rawUrl) {
         if (!rawUrl || !token.isCurrent()) return;
@@ -447,6 +550,7 @@
           }))
           .catch(function (e) { console.error("[lingocue] browser caption fallback failed", e); });
       });
+      return "started";
     }
 
     return {

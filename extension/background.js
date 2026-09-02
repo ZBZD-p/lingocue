@@ -41,7 +41,21 @@
 // extension/tutor-panel.js too.
 
 const DEFAULT_BACKEND = "http://127.0.0.1:8420";
-const WATCH_URL_FILTER = [{ hostEquals: "www.youtube.com", pathEquals: "/watch" }];
+const VIDEO_URL_FILTER = [
+  { hostEquals: "www.youtube.com", pathEquals: "/watch" },
+  { hostEquals: "www.youtube.com", pathPrefix: "/shorts/" },
+];
+
+function isSupportedYouTubeUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "www.youtube.com") return false;
+    if (parsed.pathname === "/watch") return !!parsed.searchParams.get("v");
+    return /^\/shorts\/[^/]+(?:\/|$)/.test(parsed.pathname);
+  } catch (e) {
+    return false;
+  }
+}
 
 async function getBackendBase() {
   const stored = await chrome.storage.local.get("backendBase");
@@ -125,7 +139,7 @@ async function handle(tabId) {
 // Fresh loads and reloads.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") return;
-  if (!tab.url || !/^https:\/\/www\.youtube\.com\/watch/.test(tab.url)) return;
+  if (!isSupportedYouTubeUrl(tab.url)) return;
   handle(tabId);
 });
 
@@ -133,5 +147,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // the up-next autoplay never fires a normal navigation/reload, only a
 // pushState. This is the event YouTube's own player dispatches for that.
 chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (!isSupportedYouTubeUrl(details.url)) return;
   handle(details.tabId);
-}, { url: WATCH_URL_FILTER });
+}, { url: VIDEO_URL_FILTER });
