@@ -233,6 +233,12 @@
       // only signal it gets that the video changed under it.
       window.dispatchEvent(new CustomEvent("english-tutor:source-changed"));
     },
+    notifyCaptionsReady: function () {
+      // A members-only track becomes available only after this content
+      // script uploads the browser-authenticated caption payload. The panel
+      // uses this event to retry preview cards that were requested too early.
+      window.dispatchEvent(new CustomEvent("english-tutor:captions-ready"));
+    },
     captionTracks: function (videoId) {
       var player = document.querySelector("#movie_player");
       var pr = player && typeof player.getPlayerResponse === "function"
@@ -434,7 +440,10 @@
             return deps.backend.uploadCaptions(token.videoId, title, isGenerated ? "auto" : "manual", text);
           })
           .then(token.guard(function (data) {
-            if (data && data.ok) deps.page.notifySourceChanged();
+            if (data && data.ok) {
+              deps.page.notifySourceChanged();
+              if (deps.page.notifyCaptionsReady) deps.page.notifyCaptionsReady();
+            }
           }))
           .catch(function (e) { console.error("[lingocue] browser caption fallback failed", e); });
       });

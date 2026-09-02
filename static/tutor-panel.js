@@ -601,6 +601,7 @@
     let previewAnswered = false;   // this video already got a should_show decision
     let previewFetchInFlight = false;
     let previewPrefetchPromise = null;  // in-flight/settled /api/preview fetch for previewLastVideoId
+    let previewRequestSeq = 0;
     let previewSession = null;     // { videoId, cards, index, more, shown } while a round is on screen
 
     const toggleBtn = root.querySelector(".toggle");
@@ -1482,13 +1483,6 @@
     let cueActionEls = [];
     let wordObserver = null;
     const mountedCueIndices = new Set();
-    // A cue can arrive in several extraction batches. Keep a small identity
-    // set so the loading animation is reserved for genuinely new lines and
-    // is not replayed when virtualization recycles a card during scrolling.
-    let subtitleRevealPending = new Set();
-    let subtitleRevealCursor = 0;
-    let subtitleBoundaryRevealOrder = null;
-    let lastVirtualFirstVisible = -1;
     let currentCardEl = null;
     let currentWordSpans = [];
     let lastPositionMs = NaN;
@@ -1521,6 +1515,8 @@
     // confirmed for real that without it, wheel-scrolling down to read ahead
     // got yanked back to the current line on the very next cue change,
     // because nothing was ever resetting the clock for that input method.
+    // Once this quiet period expires, scheduleManualCenter() restores the
+    // current line even if playback has not advanced to another cue yet.
     let lastManualScrollAt = 0;
     // Set right before this script's own scrollCardIntoView() moves the
     // list, so the "scroll" listener below can tell that apart from the
@@ -1531,7 +1527,8 @@
     let smoothScrollRaf = 0;
     let smoothScrollToken = 0;
     let smoothScrollVelocity = 0;
-    let virtualRecycleTimer = 0;
+    let manualCenterTimer = 0;
+    let virtualRecycleRaf = 0;
     let virtualMeasureRaf = 0;
     let virtualResizeRaf = 0;
     let extractPollTimer = null;
@@ -1544,7 +1541,6 @@
     let vocabHighlightSeq = 0;
     let vocabHighlightController = null;
     let subtitleResizeObserver = null;
-    let subtitleRevealObserver = null;
     const USER_SCROLL_QUIET_MS = 4000;
     const EXTRACT_POLL_MS = 1000;
     // Punctuation restoration takes much longer than an extraction tick
@@ -1567,16 +1563,15 @@
       pendingSubtitleCommit = null;
       if (pendingSubtitleCommitTimer) { clearTimeout(pendingSubtitleCommitTimer); pendingSubtitleCommitTimer = null; }
       abortVocabHighlight();
-      if (virtualRecycleTimer) { clearTimeout(virtualRecycleTimer); virtualRecycleTimer = 0; }
+      if (virtualRecycleRaf) { cancelAnimationFrame(virtualRecycleRaf); virtualRecycleRaf = 0; }
       if (virtualMeasureRaf) { cancelAnimationFrame(virtualMeasureRaf); virtualMeasureRaf = 0; }
       if (virtualResizeRaf) { cancelAnimationFrame(virtualResizeRaf); virtualResizeRaf = 0; }
-      if (subtitleRevealObserver) { subtitleRevealObserver.disconnect(); subtitleRevealObserver = null; }
+      if (manualCenterTimer) { clearTimeout(manualCenterTimer); manualCenterTimer = 0; }
       cancelSmoothScroll();
     }
 
     function clearSubtitleModel() {
       if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
-      if (subtitleRevealObserver) { subtitleRevealObserver.disconnect(); subtitleRevealObserver = null; }
       subtitleCues = [];
       subtitleIsPartial = false;
       subtitleCueSignature = "";
@@ -1587,16 +1582,13 @@
       cueTextEls = [];
       cueActionEls = [];
       mountedCueIndices.clear();
-      subtitleRevealPending.clear();
-      subtitleRevealCursor = 0;
-      subtitleBoundaryRevealOrder = null;
-      lastVirtualFirstVisible = -1;
       cueEstimatedHeights = [];
       cueOffsets = [];
       virtualRangeStart = 0;
       virtualRangeEnd = -1;
       virtualTopSpacer = null;
       virtualBottomSpacer = null;
+      if (manualCenterTimer) { clearTimeout(manualCenterTimer); manualCenterTimer = 0; }
       currentCardEl = null;
       currentWordSpans = [];
       currentCueIndex = -1;
@@ -1638,12 +1630,13 @@
       return `${cue.start_ms}|${cue.end_ms}|${cue.text || ""}`;
     }
 
-    function cueRevealIdentity(cue) {
-      if (!cue) return "";
-      // Start/end timestamps stay stable when a later response adds
-      // punctuation or a translated line, so those updates do not make an
-      // already-read subtitle fade in again.
-      return `${cue.start_ms}|${cue.end_ms}`;
+    function cuesShareTimingPrefix(oldCues, nextCues) {
+      if (!oldCues.length || nextCues.length < oldCues.length) return false;
+      for (let i = 0; i < oldCues.length; i++) {
+        if (oldCues[i].start_ms !== nextCues[i].start_ms ||
+            oldCues[i].end_ms !== nextCues[i].end_ms) return false;
+      }
+      return true;
     }
 
     function cuesSignature(cues, isPartial) {
@@ -1682,8 +1675,6 @@
       const nextSignature = cuesSignature(normalizedCues, isPartial);
       if (nextSignature === subtitleCueSignature) return false;
       const oldCues = subtitleCues;
-      const wasPartial = subtitleIsPartial;
-      const oldRevealKeys = new Set(oldCues.map(cueRevealIdentity));
       const oldCurrentKey = cueIdentity(oldCues[currentCueIndex]);
       const oldLoop = typeof loopActive === "function" && loopActive()
         ? { start: cueIdentity(oldCues[loopStartIdx]), end: cueIdentity(oldCues[loopEndIdx]) }
@@ -1694,14 +1685,6 @@
       subtitleIsPartial = !!isPartial;
       subtitleCueSignature = nextSignature;
       subtitleModelVersion++;
-      subtitleRevealPending = new Set();
-      if (oldCues.length === 0 || wasPartial || isPartial) {
-        normalizedCues.forEach((cue) => {
-          const key = cueRevealIdentity(cue);
-          if (key && !oldRevealKeys.has(key)) subtitleRevealPending.add(key);
-        });
-      }
-      subtitleRevealCursor = 0;
       cueUnknownWords = [];
       currentCueIndex = findCueByIdentity(subtitleCues, oldCurrentKey, -1);
       lastPositionMs = NaN;
@@ -1732,11 +1715,15 @@
     }
 
     function scheduleVirtualRecycle() {
-      if (virtualRecycleTimer) clearTimeout(virtualRecycleTimer);
-      virtualRecycleTimer = setTimeout(() => {
-        virtualRecycleTimer = 0;
-        if (!programmaticScroll && subtitleCues.length) renderVirtualWindow();
-      }, 180);
+      // Recycle on the next paint instead of waiting for a quiet period. A
+      // debounce never fired while a touchpad kept emitting scroll events,
+      // leaving the user at the end of the mounted range with empty space.
+      if (virtualRecycleRaf) return;
+      virtualRecycleRaf = requestAnimationFrame(() => {
+        virtualRecycleRaf = 0;
+        if (programmaticScroll) return;
+        if (subtitleCues.length) renderVirtualWindow();
+      });
     }
 
     function smoothCenterCard(card, immediate = false) {
@@ -1829,6 +1816,39 @@
       smoothScrollRaf = requestAnimationFrame(step);
     }
 
+    function centerCurrentCueAfterScroll() {
+      manualCenterTimer = 0;
+      if (!subtitleCues.length || currentCueIndex < 0) return;
+      const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
+      if (quietFor < USER_SCROLL_QUIET_MS) {
+        scheduleManualCenter();
+        return;
+      }
+      // The current line may have been recycled while the user read ahead.
+      // Mount it again before measuring, then use the normal interruptible
+      // centering animation so another wheel event can take control.
+      ensureVirtualCueWindow(currentCueIndex);
+      const card = subtitleCardEls[currentCueIndex];
+      if (!card || !card.isConnected) return;
+      const rootRect = subsScroll.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      const rootCenter = (rootRect.top + rootRect.bottom) / 2;
+      const cardCenter = (cardRect.top + cardRect.bottom) / 2;
+      if (!Number.isFinite(cardCenter) || Math.abs(cardCenter - rootCenter) <= 1) return;
+      if (Date.now() - lastAutoScrollAt < 180) return;
+      smoothCenterCard(card);
+      lastAutoScrollAt = Date.now();
+    }
+
+    function scheduleManualCenter() {
+      if (manualCenterTimer) clearTimeout(manualCenterTimer);
+      const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
+      manualCenterTimer = setTimeout(
+        centerCurrentCueAfterScroll,
+        Math.max(50, USER_SCROLL_QUIET_MS - Math.max(0, quietFor))
+      );
+    }
+
     function stopExtractPolling() {
       if (extractPollTimer) { clearTimeout(extractPollTimer); extractPollTimer = null; }
     }
@@ -1903,7 +1923,14 @@
         const nextPartial = data.complete === false;
         const wasPartial = subtitleIsPartial;
         const userBusy = Date.now() - lastUserScrollAt < USER_SCROLL_QUIET_MS;
-        if (userBusy && subtitleCues.length) {
+        // Partial extraction responses append the lines below the current
+        // window. Commit those immediately even during scrolling; deferring
+        // them makes the transcript appear stuck at the old end. A response
+        // that preserves all existing cue timings is equally safe to apply,
+        // since the virtual renderer keeps the viewport anchor stable.
+        const canApplyDuringScroll = nextPartial ||
+          cuesShareTimingPrefix(subtitleCues, nextCues);
+        if (userBusy && subtitleCues.length && !canApplyDuringScroll) {
           pendingSubtitleCommit = { cues: nextCues, partial: nextPartial };
           schedulePendingSubtitleCommit(generation);
         } else {
@@ -1978,24 +2005,48 @@
 
     // Virtualized subtitle renderer: the cue data remains in memory, while
     // only the bounded window around the viewport is mounted in the DOM.
-    function estimateCueHeight(cue, isLast = false) {
-      const text = String(cue && cue.text || "");
-      const text2 = String(cue && cue.text2 || "");
+    // Layout values are shared by the whole pass. Reading computed style and
+    // clientWidth once per cue forces the browser to revisit layout thousands
+    // of times on a long transcript, even though those values cannot change
+    // during one estimate pass.
+    function subtitleLayoutMetrics() {
       const width = Math.max(160, (subsScroll ? subsScroll.clientWidth : 440) - 44);
       const rootStyle = getComputedStyle(document.documentElement);
       const configured = parseFloat(rootStyle.getPropertyValue("--english-tutor-sub-size"));
       const fontSize = configured || (window.matchMedia("(max-width: 700px)").matches ? 18 : 16);
-      const charsPerLine = Math.max(12, Math.floor(width / (fontSize * 0.56)));
+      return {
+        fontSize,
+        charsPerLine: Math.max(12, Math.floor(width / (fontSize * 0.56))),
+        secondaryCharsPerLine: Math.max(10, Math.floor(width / (fontSize * 0.72))),
+      };
+    }
+
+    function estimateCueHeight(cue, isLast = false, metrics = subtitleLayoutMetrics()) {
+      const text = String(cue && cue.text || "");
+      const text2 = String(cue && cue.text2 || "");
+      const { fontSize, charsPerLine, secondaryCharsPerLine } = metrics;
       const primaryLines = Math.max(1, Math.ceil(text.length / charsPerLine));
       let height = primaryLines * fontSize * 1.5;
       if (text2) {
-        const secondaryCharsPerLine = Math.max(10, Math.floor(width / (fontSize * 0.72)));
         const secondaryLines = Math.max(1, Math.ceil(text2.length / secondaryCharsPerLine));
         height += 6 + secondaryLines * fontSize * 0.75 * 1.6;
       }
       height += isLast ? 0 : 26;
       const minimum = isLast ? fontSize * 1.5 : DEFAULT_CUE_HEIGHT;
       return Math.max(minimum, Math.ceil(height));
+    }
+
+    function rebuildEstimatedCueGeometry() {
+      const count = subtitleCues.length;
+      const metrics = subtitleLayoutMetrics();
+      cueEstimatedHeights = new Array(count);
+      cueOffsets = new Array(count + 1);
+      cueOffsets[0] = 0;
+      for (let i = 0; i < count; i++) {
+        const height = estimateCueHeight(subtitleCues[i], i === count - 1, metrics);
+        cueEstimatedHeights[i] = height;
+        cueOffsets[i + 1] = cueOffsets[i] + height;
+      }
     }
 
     function rebuildCueOffsets() {
@@ -2045,9 +2096,7 @@
           return;
         }
         const anchor = captureVirtualAnchor();
-        cueEstimatedHeights = subtitleCues.map((cue, i) =>
-          estimateCueHeight(cue, i === subtitleCues.length - 1));
-        rebuildCueOffsets();
+        rebuildEstimatedCueGeometry();
         updateVirtualSpacers();
         restoreVirtualAnchor(anchor);
         scheduleVirtualMeasure();
@@ -2109,29 +2158,6 @@
       const cue = subtitleCues[i];
       const card = document.createElement("div");
       card.className = "sub-card";
-      const revealKey = cueRevealIdentity(cue);
-      const boundaryReveal = subtitleBoundaryRevealOrder && subtitleBoundaryRevealOrder.get(i);
-      if (boundaryReveal) {
-        card.classList.add(typeof IntersectionObserver === "function"
-          ? "subtitle-reveal-armed" : "subtitle-reveal");
-        card.style.setProperty(
-          "--subtitle-reveal-delay",
-          `${Math.min(boundaryReveal.order * 54, 720)}ms`
-        );
-        card.style.setProperty(
-          "--subtitle-reveal-offset",
-          `${boundaryReveal.direction * 7}px`
-        );
-      } else if (revealKey && subtitleRevealPending.has(revealKey)) {
-        card.classList.add(typeof IntersectionObserver === "function"
-          ? "subtitle-reveal-armed" : "subtitle-reveal");
-        card.style.setProperty(
-          "--subtitle-reveal-delay",
-          `${Math.min(subtitleRevealCursor * 54, 1800)}ms`
-        );
-        subtitleRevealPending.delete(revealKey);
-        subtitleRevealCursor++;
-      }
       if (i === subtitleCues.length - 1) card.classList.add("sub-card-last");
       card.dataset.index = String(i);
       const time = document.createElement("span");
@@ -2165,11 +2191,6 @@
     function renderVirtualWindow(anchorIndex = -1, keepExistingRange = false) {
       if (!subtitleCues.length || !virtualTopSpacer || !virtualBottomSpacer) return;
       const firstVisible = virtualIndexAtOffset(subsScroll.scrollTop);
-      const previousFirstVisible = lastVirtualFirstVisible;
-      const userScrollRender = anchorIndex < 0 && !programmaticScroll;
-      const scrollDirection = previousFirstVisible >= 0
-        ? Math.sign(firstVisible - previousFirstVisible) : 0;
-      lastVirtualFirstVisible = firstVisible;
       const anchor = anchorIndex >= 0 ? anchorIndex : firstVisible;
       const center = anchorIndex >= 0 ? anchorIndex : firstVisible;
       // While the user is scrolling, keep the current window stable until
@@ -2205,8 +2226,6 @@
       }
       if (wordObserver) wordObserver.disconnect();
       wordObserver = null;
-      if (subtitleRevealObserver) subtitleRevealObserver.disconnect();
-      subtitleRevealObserver = null;
       // Recycle only the part that left the window. Keeping the overlap avoids
       // destroying word spans, focus and selection on every boundary crossing.
       const oldStart = virtualRangeStart;
@@ -2231,59 +2250,38 @@
       virtualRangeStart = start;
       virtualRangeEnd = end;
       updateVirtualSpacers();
-      // Only the cards entering from the direction of a real user scroll get
-      // this boundary animation. Playback jumps and subtitle refreshes use
-      // their own reveal path, so they never make the viewport flash.
-      subtitleBoundaryRevealOrder = null;
-      if (userScrollRender && scrollDirection !== 0 && oldEnd >= oldStart) {
-        const entering = new Map();
-        if (scrollDirection > 0) {
-          let order = 0;
-          for (let i = Math.max(start, oldEnd + 1); i <= end; i++) {
-            entering.set(i, { order: order++, direction: scrollDirection });
-          }
-        } else {
-          let order = 0;
-          for (let i = Math.min(end, oldStart - 1); i >= start; i--) {
-            entering.set(i, { order: order++, direction: scrollDirection });
-          }
+      // Insert each contiguous run of entering cards in one fragment. The
+      // old per-card insertion also scanned forward for an anchor on every
+      // iteration, making a fresh 145-card window do unnecessary quadratic
+      // work and causing a visible pause before the first paint.
+      let runStart = -1;
+      for (let i = start; i <= end + 1; i++) {
+        const missing = i <= end && !(subtitleCardEls[i] && subtitleCardEls[i].isConnected);
+        if (missing && runStart < 0) {
+          runStart = i;
+          continue;
         }
-        subtitleBoundaryRevealOrder = entering.size ? entering : null;
-      }
-      for (let i = start; i <= end; i++) {
-        if (subtitleCardEls[i] && subtitleCardEls[i].isConnected) continue;
-        const card = subtitleCardEls[i] || createVirtualCueCard(i);
+        if (runStart < 0) continue;
+        const runEnd = i - 1;
         let next = virtualBottomSpacer;
-        for (let j = i + 1; j <= end; j++) {
+        for (let j = runEnd + 1; j <= end; j++) {
           if (subtitleCardEls[j] && subtitleCardEls[j].isConnected) {
             next = subtitleCardEls[j];
             break;
           }
         }
-        subsScroll.insertBefore(card, next);
+        const fragment = document.createDocumentFragment();
+        for (let j = runStart; j <= runEnd; j++) {
+          fragment.appendChild(subtitleCardEls[j] || createVirtualCueCard(j));
+        }
+        subsScroll.insertBefore(fragment, next);
+        runStart = -1;
       }
-      subtitleBoundaryRevealOrder = null;
       if (preserveIndex >= start && preserveIndex <= end && Number.isFinite(preserveTop)) {
         const newAnchor = subtitleCardEls[preserveIndex];
         if (newAnchor) {
           const newTop = newAnchor.getBoundingClientRect().top;
           if (Number.isFinite(newTop)) subsScroll.scrollTop += newTop - preserveTop;
-        }
-      }
-      if (typeof IntersectionObserver === "function") {
-        subtitleRevealObserver = new IntersectionObserver((entries, observer) => {
-          entries.forEach((entry) => {
-            if (!entry.isIntersecting) return;
-            entry.target.classList.remove("subtitle-reveal-armed");
-            entry.target.classList.add("subtitle-reveal");
-            observer.unobserve(entry.target);
-          });
-        }, { root: subsScroll, rootMargin: "0px", threshold: 0.01 });
-        for (let i = start; i <= end; i++) {
-          const card = subtitleCardEls[i];
-          if (card && card.classList.contains("subtitle-reveal-armed")) {
-            subtitleRevealObserver.observe(card);
-          }
         }
       }
       if (typeof IntersectionObserver === "function") {
@@ -2338,18 +2336,14 @@
     function renderSubtitleCards(anchor = null) {
       const savedAnchor = anchor || captureVirtualAnchor();
       cancelSmoothScroll();
-      if (virtualRecycleTimer) { clearTimeout(virtualRecycleTimer); virtualRecycleTimer = 0; }
+      if (virtualRecycleRaf) { cancelAnimationFrame(virtualRecycleRaf); virtualRecycleRaf = 0; }
       if (virtualMeasureRaf) { cancelAnimationFrame(virtualMeasureRaf); virtualMeasureRaf = 0; }
       subtitleCardEls = new Array(subtitleCues.length);
       cueWordSpans = new Array(subtitleCues.length).fill(null);
       cueTextEls = new Array(subtitleCues.length);
       cueActionEls = new Array(subtitleCues.length);
       mountedCueIndices.clear();
-      subtitleRevealCursor = 0;
-      cueEstimatedHeights = subtitleCues.map((cue, i) =>
-        estimateCueHeight(cue, i === subtitleCues.length - 1));
-      cueOffsets = new Array(subtitleCues.length + 1);
-      rebuildCueOffsets();
+      rebuildEstimatedCueGeometry();
       if (wordObserver) wordObserver.disconnect();
       wordObserver = null;
       currentCardEl = null;
@@ -2357,9 +2351,6 @@
       spokenWordCount = -1;
       virtualRangeStart = 0;
       virtualRangeEnd = -1;
-      lastVirtualFirstVisible = -1;
-      if (subtitleRevealObserver) subtitleRevealObserver.disconnect();
-      subtitleRevealObserver = null;
       subsScroll.innerHTML = "";
       virtualTopSpacer = document.createElement("div");
       virtualBottomSpacer = document.createElement("div");
@@ -2386,8 +2377,8 @@
     // (search "Jellyfin binds wheel-to-volume"). Wiring plain scrolling into
     // this same busy-guard just meant any scroll over the list reset the
     // clock, so on a still-updating video the cards could keep missing their
-    // window to ever re-render. The separate wheel listener below only
-    // cancels an in-flight lyric animation when the user takes control.)
+    // window to ever re-render. The wheel listener below cancels an in-flight
+    // lyric animation and starts the four-second recenter countdown.)
     subsScroll.addEventListener("mousedown", () => {
       cancelSmoothScroll();
       lastUserScrollAt = Date.now();
@@ -2396,6 +2387,7 @@
       cancelSmoothScroll();
       lastUserScrollAt = Date.now();
       lastManualScrollAt = Date.now();
+      scheduleManualCenter();
     }, { passive: true });
     subsScroll.addEventListener("pointerdown", () => {
       cancelSmoothScroll();
@@ -2414,6 +2406,7 @@
         const now = Date.now();
         lastUserScrollAt = now;
         lastManualScrollAt = now;
+        scheduleManualCenter();
       }
       // Recycle the card window as the user scrolls through a long transcript.
       // The range check makes ordinary playback scroll events effectively
@@ -4017,6 +4010,28 @@
       if (currentPage === "subs") loadSubtitleCues();
     });
 
+    window.addEventListener("english-tutor:captions-ready", () => {
+      const p = player();
+      const videoId = p && p.kind === "youtube" ? youtubeVideoId(location.href) : null;
+      if (!videoId) return;
+      // The first preview request may have finished before the browser-side
+      // member caption upload. Invalidate that decision and fetch again from
+      // the newly written local subtitle cache.
+      previewRequestSeq++;
+      previewLastVideoId = videoId;
+      previewAnswered = false;
+      previewPrefetchPromise = null;
+      const retry = () => {
+        if (videoId !== previewLastVideoId || previewSession) return;
+        if (previewFetchInFlight) {
+          setTimeout(retry, 100);
+          return;
+        }
+        updatePreviewPrompt();
+      };
+      retry();
+    });
+
     // Position for the highlight comes from the element directly (smooth, no
     // network); the POST above is throttled separately since it only needs to
     // keep the backend roughly current for chat/MCP lookups.
@@ -4255,8 +4270,9 @@
     // ---- 预习卡片 ----------------------------------------------------------
     //
     // YouTube only, same scoping as the difficulty badge and jump-to-moment:
-    // built around YouTube's video-open moment and /api/preview, which only
-    // knows how to fetch a YouTube video's own caption tracks.
+    // built around YouTube's video-open moment and /api/preview. The endpoint
+    // can use either an anonymous caption track or the browser-authenticated
+    // local track uploaded for a members-only video.
 
     const PREVIEW_SHOWN_KEY = "english-tutor-preview-shown";        // { [videoId]: shownAtMs }
     const PREVIEW_DISMISSED_KEY = "english-tutor-preview-dismissed-at"; // { [videoId]: dismissedAtMs }
@@ -4321,6 +4337,7 @@
       }
       if (videoId !== previewLastVideoId) {
         previewLastVideoId = videoId;
+        previewRequestSeq++;
         previewAnswered = false;
         previewBar.hidden = true;
         previewPrefetchPromise = null;
@@ -4344,10 +4361,11 @@
       if (!previewGateOpen(videoId)) return;
       if (previewFetchInFlight) return;
 
+      const requestSeq = previewRequestSeq;
       previewFetchInFlight = true;
       try {
         const data = await previewPrefetchPromise;
-        if (videoId !== previewLastVideoId) return;  // moved on before this resolved
+        if (videoId !== previewLastVideoId || requestSeq !== previewRequestSeq) return;
         if (!data) {
           previewPrefetchPromise = null;  // network hiccup -- next tick retries the fetch itself
           return;

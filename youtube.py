@@ -903,6 +903,35 @@ def _english_subtitle(base: Path) -> Path | None:
     return None
 
 
+def _cached_preview_cues(video_id: str) -> list[tuple[int, int, str]] | None:
+    """Read an English sidecar uploaded or fetched for ``video_id``.
+
+    Members-only videos cannot be fetched by the backend's anonymous caption
+    client, but the browser extension can upload the same track after using
+    the viewer's session. The title is not available to this endpoint, so
+    locate the sidecar by its stable ``[video_id]`` suffix instead of trying
+    to reconstruct ``safe_base_name`` (which would miss title corrections).
+    """
+    suffix = f"[{video_id}].en.srt"
+    try:
+        candidates = sorted(
+            (path for path in CACHE_DIR.iterdir()
+             if path.is_file() and path.name.endswith(suffix)),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            cues = subs_now.parse_cues(path)
+        except Exception:
+            continue
+        if cues:
+            return cues
+    return None
+
+
 # ---- caption tracks via youtube-transcript-api ----------------------------
 #
 # Subtitles deliberately do *not* go through yt-dlp. yt-dlp is built to reach
@@ -1042,9 +1071,10 @@ def preview_cues(video_id: str) -> list[tuple[int, int, str]] | None:
     cards prompt -- which only needs to know *which words appear*, not
     punctuation, not real sentence boundaries, not per-word timing.
 
-    Two network calls total (list tracks, fetch one track's snippets) versus
-    the full pipeline's up to four (list, try manual, fall back to the raw
-    auto-caption VTT, write secondary) -- and no local processing at all:
+    For an already cached/uploaded track this is a local parse. Otherwise it
+    uses two network calls total (list tracks, fetch one track's snippets)
+    versus the full pipeline's up to four (list, try manual, fall back to the
+    raw auto-caption VTT, write secondary) -- and no local processing at all:
     track.fetch() already returns plain per-snippet text for both manual and
     auto-generated tracks, so this skips _track_vtt's inline-timestamp
     parsing entirely (that parsing exists only for the word-by-word
@@ -1068,6 +1098,12 @@ def preview_cues(video_id: str) -> list[tuple[int, int, str]] | None:
     cached = _preview_cues_cache.get(video_id)
     if cached is not None:
         return cached
+    local = _cached_preview_cues(video_id)
+    if local:
+        if len(_preview_cues_cache) >= _PREVIEW_CUES_CACHE_MAX:
+            _preview_cues_cache.pop(next(iter(_preview_cues_cache)))
+        _preview_cues_cache[video_id] = local
+        return local
     tracks = _caption_tracks(video_id)
     track = _pick_track(tracks, ("en",), generated=False) or _pick_track(tracks, ("en",), generated=True)
     if not track:
