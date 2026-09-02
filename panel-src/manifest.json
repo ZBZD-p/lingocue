@@ -1,6 +1,21 @@
 {
   "fragments": [
     "00-prelude.js",
-    "99-rest.js"
+    "10-bootstrap.js",
+    "20-init-head.js",
+    "30-helpers.js",
+    "40-settings.js",
+    "50-chat.js",
+    "60-pages.js",
+    "70-subtitles.js",
+    "75-vocab-highlight.js",
+    "80-dictionary.js",
+    "85-loop.js",
+    "90-vocab.js",
+    "92-vocab-test.js",
+    "94-phrases.js",
+    "95-jellyfin.js",
+    "96-playback.js",
+    "97-preview.js"
   ]
 }
