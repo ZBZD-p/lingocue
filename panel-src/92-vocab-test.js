@@ -316,8 +316,8 @@
           ask.addEventListener("click", () => {
             ctx.fns.switchPage("chat");
             const question = `"${entry.question}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${entry.subtitle_text || entry.question}"`;
-            addMessage("user", question);
-            runTurn(question);
+            ctx.fns.addMessage("user", question);
+            ctx.fns.runTurn(question);
           });
           card.appendChild(ask);
         }

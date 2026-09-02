@@ -5,12 +5,11 @@
     // can use either an anonymous caption track or the browser-authenticated
     // local track uploaded for a members-only video.
 
+    function installPreview(ctx) {
     const PREVIEW_SHOWN_KEY = "english-tutor-preview-shown";        // { [videoId]: shownAtMs }
     const PREVIEW_DISMISSED_KEY = "english-tutor-preview-dismissed-at"; // { [videoId]: dismissedAtMs }
     const PREVIEW_SHOWN_TTL_MS = 10 * 60 * 1000;        // 同一视频 10 分钟内不重复
     const PREVIEW_DISMISS_COOLDOWN_MS = 60 * 60 * 1000; // 上次点了"直接看" < 1h 不显示
-
-    let previewedWordForms = new Set();
 
     function loadPreviewShownMap() {
       try { return JSON.parse(localStorage.getItem(PREVIEW_SHOWN_KEY) || "{}"); }
@@ -62,20 +61,20 @@
       const videoId = p && p.kind === "youtube" ? youtubeVideoId(location.href) : null;
       if (!videoId) {
         previewBar.hidden = true;
-        previewLastVideoId = null;
-        previewAnswered = false;
+        ctx.state.previewLastVideoId = null;
+        ctx.state.previewAnswered = false;
         return;
       }
-      if (videoId !== previewLastVideoId) {
-        previewLastVideoId = videoId;
-        previewRequestSeq++;
-        previewAnswered = false;
+      if (videoId !== ctx.state.previewLastVideoId) {
+        ctx.state.previewLastVideoId = videoId;
+        ctx.state.previewRequestSeq++;
+        ctx.state.previewAnswered = false;
         previewBar.hidden = true;
-        previewPrefetchPromise = null;
+        ctx.state.previewPrefetchPromise = null;
       }
-      if (previewSession) return;      // a round is already on screen
+      if (ctx.state.previewSession) return;      // a round is already on screen
       if (!previewBar.hidden) return;  // already showing for this video
-      if (previewAnswered) return;     // already decided (shown, or "no") for this video
+      if (ctx.state.previewAnswered) return;     // already decided (shown, or "no") for this video
 
       // Kicked off the instant the video is known, and shown the instant
       // it resolves -- no artificial delay before either. The fetch itself
@@ -84,35 +83,35 @@
       // length (a 4+ hour video timed the same as a 13-minute one -- this
       // is fixed round-trip latency, not something that scales with
       // transcript size), so that's the only wait there is.
-      if (!previewPrefetchPromise) {
-        previewPrefetchPromise = fetch(`${API}/api/preview/${encodeURIComponent(videoId)}`)
+      if (!ctx.state.previewPrefetchPromise) {
+        ctx.state.previewPrefetchPromise = fetch(`${API}/api/preview/${encodeURIComponent(videoId)}`)
           .then((res) => res.json())
           .catch(() => null);
       }
       if (!previewGateOpen(videoId)) return;
-      if (previewFetchInFlight) return;
+      if (ctx.state.previewFetchInFlight) return;
 
-      const requestSeq = previewRequestSeq;
-      previewFetchInFlight = true;
+      const requestSeq = ctx.state.previewRequestSeq;
+      ctx.state.previewFetchInFlight = true;
       try {
-        const data = await previewPrefetchPromise;
-        if (videoId !== previewLastVideoId || requestSeq !== previewRequestSeq) return;
+        const data = await ctx.state.previewPrefetchPromise;
+        if (videoId !== ctx.state.previewLastVideoId || requestSeq !== ctx.state.previewRequestSeq) return;
         if (!data) {
-          previewPrefetchPromise = null;  // network hiccup -- next tick retries the fetch itself
+          ctx.state.previewPrefetchPromise = null;  // network hiccup -- next tick retries the fetch itself
           return;
         }
         if (!data.should_show) {
-          previewAnswered = true;
+          ctx.state.previewAnswered = true;
           return;
         }
         showPreviewBar(videoId, data);
       } finally {
-        previewFetchInFlight = false;
+        ctx.state.previewFetchInFlight = false;
       }
     }
 
     function showPreviewBar(videoId, data) {
-      previewAnswered = true;
+      ctx.state.previewAnswered = true;
       const total = data.cards.length + data.more;
       const repeated = data.cards.filter((c) => c.hits > 1).length;
       previewBarText.innerHTML = `这个视频里有 <b>${total}</b> 个你可能不认识的词` +
@@ -123,7 +122,7 @@
 
     previewSkipBtn.addEventListener("click", () => {
       previewBar.hidden = true;
-      markPreviewDismissed(previewLastVideoId);
+      markPreviewDismissed(ctx.state.previewLastVideoId);
     });
 
     previewStartBtn.addEventListener("click", () => {
@@ -131,23 +130,23 @@
       const data = previewBar.__data;
       if (!p || !data) return;
       previewBar.hidden = true;
-      markPreviewShown(previewLastVideoId);
+      markPreviewShown(ctx.state.previewLastVideoId);
       // The first few seconds are usually a greeting/intro -- seeking to 0
       // is zero loss, and lets a round started a little into playback
       // still start from the top.
       p.pause();
       p.seekMs(0);
-      startPreviewSession(previewLastVideoId, data.cards, data.more);
+      startPreviewSession(ctx.state.previewLastVideoId, data.cards, data.more);
     });
 
     function startPreviewSession(videoId, cards, more) {
-      previewSession = { videoId, cards, index: 0, more };
+      ctx.state.previewSession = { videoId, cards, index: 0, more };
       previewOverlay.hidden = false;
       renderPreviewCard();
     }
 
     function renderPreviewCard() {
-      const s = previewSession;
+      const s = ctx.state.previewSession;
       const c = s.cards[s.index];
       const tagsText = c.tags && c.tags.length ? ` · ${c.tags.join("/")}` : "";
       previewOverlay.innerHTML = `
@@ -174,14 +173,14 @@
     }
 
     function advancePreviewCard(action) {
-      const s = previewSession;
+      const s = ctx.state.previewSession;
       const c = s.cards[s.index];
       const resultRequest = fetch(`${API}/api/preview/result`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lemma: c.lemma, action }),
       }).catch(() => {});
-      (c.forms && c.forms.length ? c.forms : [c.lemma]).forEach((f) => previewedWordForms.add(f));
+      (c.forms && c.forms.length ? c.forms : [c.lemma]).forEach((f) => ctx.state.previewedWordForms.add(f));
       applyPreviewHighlight();
       if (action === "known") {
         // The previous vocab-highlight response may still have this word in
@@ -192,7 +191,7 @@
           if (!spans) continue;
           spans.forEach((span) => {
             const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
-            if (previewedWordForms.has(norm)) span.classList.remove("sub-word-unknown");
+            if (ctx.state.previewedWordForms.has(norm)) span.classList.remove("sub-word-unknown");
           });
         }
         // Wait for the evidence write before re-reading the server-side
@@ -213,7 +212,7 @@
     }
 
     function renderPreviewEnd() {
-      const s = previewSession;
+      const s = ctx.state.previewSession;
       if (s.more <= 0) {
         finishPreviewSession();
         return;
@@ -235,14 +234,14 @@
     }
 
     async function loadMorePreviewCards() {
-      const s = previewSession;
+      const s = ctx.state.previewSession;
       const seen = s.cards.map((c) => c.lemma).join(",");
       previewOverlay.innerHTML = `<div class="preview-end"><div class="pe-text">加载中…</div></div>`;
       try {
         const res = await fetch(
           `${API}/api/preview/${encodeURIComponent(s.videoId)}?exclude=${encodeURIComponent(seen)}`);
         const data = await res.json();
-        if (previewSession !== s) return;
+        if (ctx.state.previewSession !== s) return;
         if (!data.should_show || !data.cards.length) {
           finishPreviewSession();
           return;
@@ -252,14 +251,14 @@
         s.index = s.cards.length - data.cards.length;  // resume at the first new card
         renderPreviewCard();
       } catch (e) {
-        if (previewSession === s) finishPreviewSession();
+        if (ctx.state.previewSession === s) finishPreviewSession();
       }
     }
 
     function finishPreviewSession() {
       previewOverlay.hidden = true;
       previewOverlay.innerHTML = "";
-      previewSession = null;
+      ctx.state.previewSession = null;
       const p = player();
       if (p) p.play();
     }
@@ -269,7 +268,7 @@
      *  shape as applyVocabHighlight, but not per-cue: a previewed word is
      *  marked wherever it appears, not looked up by cue index. */
     function applyPreviewHighlight() {
-      if (previewedWordForms.size === 0) return;
+      if (ctx.state.previewedWordForms.size === 0) return;
       for (const index of mountedCueIndices) applyPreviewHighlightToCard(index);
     }
 
@@ -278,13 +277,21 @@
       if (!spans) return;
       spans.forEach((span) => {
         const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
-        if (previewedWordForms.has(norm)) span.classList.add("sub-word-previewed");
+        if (ctx.state.previewedWordForms.has(norm)) span.classList.add("sub-word-previewed");
       });
     }
+
+    ctx.fns.updatePreviewPrompt = updatePreviewPrompt;
+    ctx.fns.applyPreviewHighlight = applyPreviewHighlight;
+    ctx.fns.applyPreviewHighlightToCard = applyPreviewHighlightToCard;
+    ctx.fns.finishPreviewSession = finishPreviewSession;
+    ctx.fns.previewGateOpen = previewGateOpen;
 
     refreshContext();
     setInterval(refreshContext, 4000);
     ctx.fns.loadVocabList();
+    }
+    installPreview(ctx);
   }
 
   if (document.readyState === "loading") {

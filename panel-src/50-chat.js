@@ -1,3 +1,6 @@
+    function installChat(ctx) {
+    let sessionId = null;
+
     // ---- chat history ----
 
     function saveHistory() {
@@ -101,7 +104,7 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              video_title: lastKnownVideoTitle,
+              video_title: ctx.state.lastKnownVideoTitle,
               subtitle_text: card.dataset.subtitle,
               phrase: card.dataset.phrase,
               meaning: card.dataset.meaning,
@@ -277,14 +280,14 @@
           body: JSON.stringify({
             message: text,
             session_id: sessionId,
-            engine: settingValue("engine") || null,
+            engine: ctx.fns.settingValue("engine") || null,
             // The model dropdown is Claude-specific -- DeepSeek's own model
             // comes from deepseek_config.json instead, via the DeepSeek 模型
             // field -- but effort applies to both engines now.
-            model: settingValue("engine") === "deepseek" ? null : (settingValue("model") || null),
-            effort: settingValue("effort") || null,
-            thinking: settingValue("engine") === "deepseek" ? settingValue("deepseekThinking") : null,
-            custom_prompt: settingValue("customPrompt") || null,
+            model: ctx.fns.settingValue("engine") === "deepseek" ? null : (ctx.fns.settingValue("model") || null),
+            effort: ctx.fns.settingValue("effort") || null,
+            thinking: ctx.fns.settingValue("engine") === "deepseek" ? ctx.fns.settingValue("deepseekThinking") : null,
+            custom_prompt: ctx.fns.settingValue("customPrompt") || null,
           }),
         });
         if (!res.ok || !res.body) {
@@ -327,7 +330,7 @@
     }
 
     function currentEffortLabel() {
-      const opt = EFFORT_OPTIONS.find((o) => o.value === settingValue("effort"));
+      const opt = EFFORT_OPTIONS.find((o) => o.value === ctx.fns.settingValue("effort"));
       return opt && opt.value ? opt.label : null;
     }
 
@@ -368,3 +371,12 @@
       localStorage.removeItem(HISTORY_KEY);
     });
 
+    ctx.fns.addMessage = addMessage;
+    ctx.fns.runTurn = runTurn;
+    ctx.fns.sendMessage = sendMessage;
+    ctx.fns.saveHistory = saveHistory;
+    ctx.fns.buildPhraseSuggestionCard = buildPhraseSuggestionCard;
+    ctx.fns.wirePhraseSuggestionCard = wirePhraseSuggestionCard;
+    ctx.fns.currentEffortLabel = currentEffortLabel;
+    }
+    installChat(ctx);

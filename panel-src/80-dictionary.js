@@ -10,7 +10,7 @@
     let popupCueIndex = -1;
 
     function updateWordPopupPKnown() {
-      if (!showPKnownOn()) {
+      if (!ctx.fns.showPKnownOn()) {
         wordPopupPKnown.hidden = true;
         wordPopupPKnown.textContent = "";
         return;
@@ -154,7 +154,7 @@
           const tags = def && def.found ? def.tags : [];
           const { video_url, timestamp_seconds } = youtubeJumpTarget();
           await ctx.fns.saveVocabEntry({
-            video_title: lastKnownVideoTitle,
+            video_title: ctx.state.lastKnownVideoTitle,
             subtitle_text: sentence,
             question: word,
             answer,
@@ -173,10 +173,10 @@
         wordPopup.classList.remove("open");
         ctx.fns.switchPage("chat");
         const shown = `"${word}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${sentence}"`;
-        addMessage("user", shown);
+        ctx.fns.addMessage("user", shown);
         // Same treatment as asking about a whole line: a word's sense often
         // only resolves from the scene around it.
-        runTurn(shown + ctx.fns.buildContextBlock(cueIndex == null ? -1 : cueIndex));
+        ctx.fns.runTurn(shown + ctx.fns.buildContextBlock(cueIndex == null ? -1 : cueIndex));
       };
     }
 

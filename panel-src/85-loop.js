@@ -175,8 +175,8 @@
       if (!cue) return;
       ctx.fns.switchPage("chat");
       const shown = `这句台词是什么意思？请解释一下，顺便讲讲里面值得注意的单词/短语/语法：\n"${cue.text}"`;
-      addMessage("user", shown);
-      runTurn(shown + buildContextBlock(index));
+      ctx.fns.addMessage("user", shown);
+      ctx.fns.runTurn(shown + buildContextBlock(index));
     }
 
     ctx.fns.loopActive = loopActive;

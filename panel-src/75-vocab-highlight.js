@@ -19,8 +19,8 @@
       }
 
       async function refreshVocabHighlight() {
-        const includeScores = showPKnownOn();
-        if ((!vocabHighlightOn() && !includeScores) || subtitleCues.length === 0) return;
+        const includeScores = ctx.fns.showPKnownOn();
+        if ((!ctx.fns.vocabHighlightOn() && !includeScores) || subtitleCues.length === 0) return;
         const generation = subtitleGeneration;
         const modelVersion = subtitleModelVersion;
         const requestId = ++vocabHighlightSeq;
@@ -38,9 +38,9 @@
           const data = await res.json();
           if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion ||
               requestId !== vocabHighlightSeq ||
-              (!vocabHighlightOn() && !showPKnownOn()) ||
-              includeScores !== showPKnownOn()) return;
-          ctx.state.cueUnknownWords = vocabHighlightOn() && Array.isArray(data.result)
+              (!ctx.fns.vocabHighlightOn() && !ctx.fns.showPKnownOn()) ||
+              includeScores !== ctx.fns.showPKnownOn()) return;
+          ctx.state.cueUnknownWords = ctx.fns.vocabHighlightOn() && Array.isArray(data.result)
             ? data.result.map((words) => new Set(words)) : [];
           ctx.state.cueWordScores = includeScores && Array.isArray(data.scores)
             ? data.scores.map((entries) => {

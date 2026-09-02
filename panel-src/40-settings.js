@@ -1,3 +1,14 @@
+    function installSettings(ctx) {
+    const settingRestores = [];
+    let settingsReady = false;
+    const settingControls = new Map();
+    const settingRows = new Map();
+    const settingSections = new Map();
+    function settingValue(key) {
+      const control = settingControls.get(key);
+      return control ? control.value : null;
+    }
+
     // ---- dropdowns ----
     // Hand-rolled rather than <select>, because a native popup renders
     // outside the shadow root with none of these styles applied.
@@ -78,7 +89,8 @@
       const fallback = (options.find((o) => o.default) || options[0]).value;
       const initial = saved != null && options.some((o) => o.value === saved)
         ? saved : fallback;
-      select(initial, false);
+      if (settingsReady) select(initial, false);
+      else settingRestores.push(() => select(initial, false));
     }
 
     /** Subtitle size is a CSS variable rather than a class, for the same
@@ -243,9 +255,6 @@
     // Rendered from the SETTINGS declaration, and the resulting controls are
     // kept in a map so the rest of the panel reads values by key
     // (settingValue("model")) instead of holding element references.
-    const settingControls = new Map();
-    const settingRows = new Map();
-
     // A free-text field (the DeepSeek key/model) has no fixed option set, so
     // it can't go through populateSelect -- but it still needs to behave
     // like one from the outside: read via settingValue(), persisted to
@@ -276,7 +285,6 @@
       // plumbing.
     }
 
-    const settingSections = new Map();
     const diagnosticSection = settingsList.querySelector(".settings-diagnostic");
     for (const section of SETTINGS_SECTIONS) {
       const sectionEl = document.createElement("section");
@@ -348,10 +356,11 @@
       settingRows.set(setting.key, row);
     }
 
-    const settingValue = (key) => {
-      const control = settingControls.get(key);
-      return control ? control.value : null;
-    };
+    // Restore only after every control and handler is registered. Passing
+    // false preserves the boot-time path and keeps handlers from treating a
+    // saved value as a user change.
+    settingRestores.forEach((restore) => restore());
+    settingsReady = true;
     updateSettingVisibility(); // initial pass -- covers a saved engine choice from a previous visit; needs settingValue, so after its declaration
 
     root.addEventListener("click", (e) => {
@@ -362,3 +371,13 @@
         });
       }
     });
+    ctx.fns.settingValue = settingValue;
+    ctx.fns.populateSelect = populateSelect;
+    ctx.fns.wordHighlightOn = wordHighlightOn;
+    ctx.fns.vocabHighlightOn = vocabHighlightOn;
+    ctx.fns.showPKnownOn = showPKnownOn;
+    ctx.fns.updateSettingVisibility = updateSettingVisibility;
+    ctx.fns.applySubSize = applySubSize;
+    ctx.fns.applySubWeight = applySubWeight;
+    }
+    installSettings(ctx);

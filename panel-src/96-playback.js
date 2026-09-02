@@ -171,9 +171,9 @@
       detachSeekVideo();
       ctx.state.currentItemId = null;
       subsNote.hidden = true;
-      previewedWordForms.clear();
-      if (previewSession) {
-        previewSession = null;
+      ctx.state.previewedWordForms.clear();
+      if (ctx.state.previewSession) {
+        ctx.state.previewSession = null;
         previewOverlay.hidden = true;
         previewOverlay.innerHTML = "";
       }
@@ -187,17 +187,17 @@
       // The first preview request may have finished before the browser-side
       // member caption upload. Invalidate that decision and fetch again from
       // the newly written local subtitle cache.
-      previewRequestSeq++;
-      previewLastVideoId = videoId;
-      previewAnswered = false;
-      previewPrefetchPromise = null;
+      ctx.state.previewRequestSeq++;
+      ctx.state.previewLastVideoId = videoId;
+      ctx.state.previewAnswered = false;
+      ctx.state.previewPrefetchPromise = null;
       const retry = () => {
-        if (videoId !== previewLastVideoId || previewSession) return;
-        if (previewFetchInFlight) {
+        if (videoId !== ctx.state.previewLastVideoId || ctx.state.previewSession) return;
+        if (ctx.state.previewFetchInFlight) {
           setTimeout(retry, 100);
           return;
         }
-        updatePreviewPrompt();
+        ctx.fns.updatePreviewPrompt();
       };
       retry();
     });
@@ -306,7 +306,7 @@
         if (!p) return;
         const nowMs = p.currentTimeMs();
         if (!isNaN(nowMs)) ctx.fns.updateCurrentCue(nowMs, commitSeek);
-      }, wordHighlightOn() ? POSITION_POLL_WORD_MS : POSITION_POLL_MS);
+      }, ctx.fns.wordHighlightOn() ? POSITION_POLL_WORD_MS : POSITION_POLL_MS);
     }
     startPositionPolling();
     setInterval(reportPlaybackState, 2000);
@@ -326,7 +326,7 @@
       // hadn't caught up yet (still very possible right after a switch)
       // silently skipped the badge for that whole poll tick too.
       updateDifficultyBadge();
-      updatePreviewPrompt();
+      ctx.fns.updatePreviewPrompt();
       try {
         const response = await fetch(`${API}/api/context?tab_id=${TAB_ID}`,
           contextController ? { signal: contextController.signal } : undefined);
@@ -341,7 +341,7 @@
           return;
         }
         const p = data.progress;
-        lastKnownVideoTitle = p.title || lastKnownVideoTitle;
+        ctx.state.lastKnownVideoTitle = p.title || ctx.state.lastKnownVideoTitle;
         contextBar.textContent =
           `▶ ${p.title} — ${ctx.fns.fmt(p.position_ms)}/${ctx.fns.fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
       } catch (e) {
@@ -393,7 +393,7 @@
     async function updateDifficultyBadge() {
       const p = player();
       const isYouTube = p && p.kind === "youtube";
-      const key = isYouTube ? youtubeVideoId(location.href) : (p ? lastKnownVideoTitle : null);
+      const key = isYouTube ? youtubeVideoId(location.href) : (p ? ctx.state.lastKnownVideoTitle : null);
       if (!key) {
         difficultyBadge.hidden = true;
         lastDifficultyKey = null;

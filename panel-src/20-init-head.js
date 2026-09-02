@@ -61,15 +61,15 @@
       settings: $("settingsPage"),
     };
 
-    let sessionId = null;
-    let lastKnownVideoTitle = null;
+    ctx.state.lastKnownVideoTitle = null;
     let lastDifficultyKey = null;
-    let previewLastVideoId = null;
-    let previewAnswered = false;   // this video already got a should_show decision
-    let previewFetchInFlight = false;
-    let previewPrefetchPromise = null;  // in-flight/settled /api/preview fetch for previewLastVideoId
-    let previewRequestSeq = 0;
-    let previewSession = null;     // { videoId, cards, index, more, shown } while a round is on screen
+    ctx.state.previewLastVideoId = null;
+    ctx.state.previewAnswered = false;   // this video already got a should_show decision
+    ctx.state.previewFetchInFlight = false;
+    ctx.state.previewPrefetchPromise = null;  // in-flight/settled /api/preview fetch for previewLastVideoId
+    ctx.state.previewRequestSeq = 0;
+    ctx.state.previewSession = null;     // { videoId, cards, index, more, shown } while a round is on screen
+    ctx.state.previewedWordForms = new Set();
 
     const toggleBtn = root.querySelector(".toggle");
 

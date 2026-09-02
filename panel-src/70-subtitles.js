@@ -221,7 +221,7 @@
 
       renderSubtitleCards(savedAnchor);
       ctx.fns.refreshVocabHighlight();
-      applyPreviewHighlight();
+      ctx.fns.applyPreviewHighlight();
       return true;
     }
 
@@ -396,10 +396,10 @@
           if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
           subsScroll.innerHTML = "";
         }
-        const lang2 = settingValue("secondaryLang") || "";
+        const lang2 = ctx.fns.settingValue("secondaryLang") || "";
         const response = await fetch(
           `${API}/api/subtitles?lang=en&tab_id=${TAB_ID}${lang2 ? `&secondary=${lang2}` : ""}` +
-          `${wordHighlightOn() ? "&words=1" : ""}`,
+          `${ctx.fns.wordHighlightOn() ? "&words=1" : ""}`,
           controller ? { signal: controller.signal } : undefined
         );
         const data = await response.json();
@@ -1024,7 +1024,7 @@
       text.textContent = "";
       cueWordSpans[index] = appendWordSpans(text, cue.text, index, cue.words);
       ctx.fns.applyVocabHighlightToCard(index);
-      applyPreviewHighlightToCard(index);
+      ctx.fns.applyPreviewHighlightToCard(index);
     }
 
     function ensureCardActions(index) {

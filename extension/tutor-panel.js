@@ -645,15 +645,15 @@
       settings: $("settingsPage"),
     };
 
-    let sessionId = null;
-    let lastKnownVideoTitle = null;
+    ctx.state.lastKnownVideoTitle = null;
     let lastDifficultyKey = null;
-    let previewLastVideoId = null;
-    let previewAnswered = false;   // this video already got a should_show decision
-    let previewFetchInFlight = false;
-    let previewPrefetchPromise = null;  // in-flight/settled /api/preview fetch for previewLastVideoId
-    let previewRequestSeq = 0;
-    let previewSession = null;     // { videoId, cards, index, more, shown } while a round is on screen
+    ctx.state.previewLastVideoId = null;
+    ctx.state.previewAnswered = false;   // this video already got a should_show decision
+    ctx.state.previewFetchInFlight = false;
+    ctx.state.previewPrefetchPromise = null;  // in-flight/settled /api/preview fetch for previewLastVideoId
+    ctx.state.previewRequestSeq = 0;
+    ctx.state.previewSession = null;     // { videoId, cards, index, more, shown } while a round is on screen
+    ctx.state.previewedWordForms = new Set();
 
     const toggleBtn = root.querySelector(".toggle");
 
@@ -794,6 +794,17 @@
     }
     installHelpers(ctx);
 
+    function installSettings(ctx) {
+    const settingRestores = [];
+    let settingsReady = false;
+    const settingControls = new Map();
+    const settingRows = new Map();
+    const settingSections = new Map();
+    function settingValue(key) {
+      const control = settingControls.get(key);
+      return control ? control.value : null;
+    }
+
     // ---- dropdowns ----
     // Hand-rolled rather than <select>, because a native popup renders
     // outside the shadow root with none of these styles applied.
@@ -874,7 +885,8 @@
       const fallback = (options.find((o) => o.default) || options[0]).value;
       const initial = saved != null && options.some((o) => o.value === saved)
         ? saved : fallback;
-      select(initial, false);
+      if (settingsReady) select(initial, false);
+      else settingRestores.push(() => select(initial, false));
     }
 
     /** Subtitle size is a CSS variable rather than a class, for the same
@@ -1039,9 +1051,6 @@
     // Rendered from the SETTINGS declaration, and the resulting controls are
     // kept in a map so the rest of the panel reads values by key
     // (settingValue("model")) instead of holding element references.
-    const settingControls = new Map();
-    const settingRows = new Map();
-
     // A free-text field (the DeepSeek key/model) has no fixed option set, so
     // it can't go through populateSelect -- but it still needs to behave
     // like one from the outside: read via settingValue(), persisted to
@@ -1072,7 +1081,6 @@
       // plumbing.
     }
 
-    const settingSections = new Map();
     const diagnosticSection = settingsList.querySelector(".settings-diagnostic");
     for (const section of SETTINGS_SECTIONS) {
       const sectionEl = document.createElement("section");
@@ -1144,10 +1152,11 @@
       settingRows.set(setting.key, row);
     }
 
-    const settingValue = (key) => {
-      const control = settingControls.get(key);
-      return control ? control.value : null;
-    };
+    // Restore only after every control and handler is registered. Passing
+    // false preserves the boot-time path and keeps handlers from treating a
+    // saved value as a user change.
+    settingRestores.forEach((restore) => restore());
+    settingsReady = true;
     updateSettingVisibility(); // initial pass -- covers a saved engine choice from a previous visit; needs settingValue, so after its declaration
 
     root.addEventListener("click", (e) => {
@@ -1158,6 +1167,19 @@
         });
       }
     });
+    ctx.fns.settingValue = settingValue;
+    ctx.fns.populateSelect = populateSelect;
+    ctx.fns.wordHighlightOn = wordHighlightOn;
+    ctx.fns.vocabHighlightOn = vocabHighlightOn;
+    ctx.fns.showPKnownOn = showPKnownOn;
+    ctx.fns.updateSettingVisibility = updateSettingVisibility;
+    ctx.fns.applySubSize = applySubSize;
+    ctx.fns.applySubWeight = applySubWeight;
+    }
+    installSettings(ctx);
+    function installChat(ctx) {
+    let sessionId = null;
+
     // ---- chat history ----
 
     function saveHistory() {
@@ -1261,7 +1283,7 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              video_title: lastKnownVideoTitle,
+              video_title: ctx.state.lastKnownVideoTitle,
               subtitle_text: card.dataset.subtitle,
               phrase: card.dataset.phrase,
               meaning: card.dataset.meaning,
@@ -1437,14 +1459,14 @@
           body: JSON.stringify({
             message: text,
             session_id: sessionId,
-            engine: settingValue("engine") || null,
+            engine: ctx.fns.settingValue("engine") || null,
             // The model dropdown is Claude-specific -- DeepSeek's own model
             // comes from deepseek_config.json instead, via the DeepSeek 模型
             // field -- but effort applies to both engines now.
-            model: settingValue("engine") === "deepseek" ? null : (settingValue("model") || null),
-            effort: settingValue("effort") || null,
-            thinking: settingValue("engine") === "deepseek" ? settingValue("deepseekThinking") : null,
-            custom_prompt: settingValue("customPrompt") || null,
+            model: ctx.fns.settingValue("engine") === "deepseek" ? null : (ctx.fns.settingValue("model") || null),
+            effort: ctx.fns.settingValue("effort") || null,
+            thinking: ctx.fns.settingValue("engine") === "deepseek" ? ctx.fns.settingValue("deepseekThinking") : null,
+            custom_prompt: ctx.fns.settingValue("customPrompt") || null,
           }),
         });
         if (!res.ok || !res.body) {
@@ -1487,7 +1509,7 @@
     }
 
     function currentEffortLabel() {
-      const opt = EFFORT_OPTIONS.find((o) => o.value === settingValue("effort"));
+      const opt = EFFORT_OPTIONS.find((o) => o.value === ctx.fns.settingValue("effort"));
       return opt && opt.value ? opt.label : null;
     }
 
@@ -1528,6 +1550,15 @@
       localStorage.removeItem(HISTORY_KEY);
     });
 
+    ctx.fns.addMessage = addMessage;
+    ctx.fns.runTurn = runTurn;
+    ctx.fns.sendMessage = sendMessage;
+    ctx.fns.saveHistory = saveHistory;
+    ctx.fns.buildPhraseSuggestionCard = buildPhraseSuggestionCard;
+    ctx.fns.wirePhraseSuggestionCard = wirePhraseSuggestionCard;
+    ctx.fns.currentEffortLabel = currentEffortLabel;
+    }
+    installChat(ctx);
     // ---- pages ----
 
     function installPages(ctx) {
@@ -1772,7 +1803,7 @@
 
       renderSubtitleCards(savedAnchor);
       ctx.fns.refreshVocabHighlight();
-      applyPreviewHighlight();
+      ctx.fns.applyPreviewHighlight();
       return true;
     }
 
@@ -1947,10 +1978,10 @@
           if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
           subsScroll.innerHTML = "";
         }
-        const lang2 = settingValue("secondaryLang") || "";
+        const lang2 = ctx.fns.settingValue("secondaryLang") || "";
         const response = await fetch(
           `${API}/api/subtitles?lang=en&tab_id=${TAB_ID}${lang2 ? `&secondary=${lang2}` : ""}` +
-          `${wordHighlightOn() ? "&words=1" : ""}`,
+          `${ctx.fns.wordHighlightOn() ? "&words=1" : ""}`,
           controller ? { signal: controller.signal } : undefined
         );
         const data = await response.json();
@@ -2575,7 +2606,7 @@
       text.textContent = "";
       cueWordSpans[index] = appendWordSpans(text, cue.text, index, cue.words);
       ctx.fns.applyVocabHighlightToCard(index);
-      applyPreviewHighlightToCard(index);
+      ctx.fns.applyPreviewHighlightToCard(index);
     }
 
     function ensureCardActions(index) {
@@ -2617,8 +2648,8 @@
       }
 
       async function refreshVocabHighlight() {
-        const includeScores = showPKnownOn();
-        if ((!vocabHighlightOn() && !includeScores) || subtitleCues.length === 0) return;
+        const includeScores = ctx.fns.showPKnownOn();
+        if ((!ctx.fns.vocabHighlightOn() && !includeScores) || subtitleCues.length === 0) return;
         const generation = subtitleGeneration;
         const modelVersion = subtitleModelVersion;
         const requestId = ++vocabHighlightSeq;
@@ -2636,9 +2667,9 @@
           const data = await res.json();
           if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion ||
               requestId !== vocabHighlightSeq ||
-              (!vocabHighlightOn() && !showPKnownOn()) ||
-              includeScores !== showPKnownOn()) return;
-          ctx.state.cueUnknownWords = vocabHighlightOn() && Array.isArray(data.result)
+              (!ctx.fns.vocabHighlightOn() && !ctx.fns.showPKnownOn()) ||
+              includeScores !== ctx.fns.showPKnownOn()) return;
+          ctx.state.cueUnknownWords = ctx.fns.vocabHighlightOn() && Array.isArray(data.result)
             ? data.result.map((words) => new Set(words)) : [];
           ctx.state.cueWordScores = includeScores && Array.isArray(data.scores)
             ? data.scores.map((entries) => {
@@ -2705,7 +2736,7 @@
     let popupCueIndex = -1;
 
     function updateWordPopupPKnown() {
-      if (!showPKnownOn()) {
+      if (!ctx.fns.showPKnownOn()) {
         wordPopupPKnown.hidden = true;
         wordPopupPKnown.textContent = "";
         return;
@@ -2849,7 +2880,7 @@
           const tags = def && def.found ? def.tags : [];
           const { video_url, timestamp_seconds } = youtubeJumpTarget();
           await ctx.fns.saveVocabEntry({
-            video_title: lastKnownVideoTitle,
+            video_title: ctx.state.lastKnownVideoTitle,
             subtitle_text: sentence,
             question: word,
             answer,
@@ -2868,10 +2899,10 @@
         wordPopup.classList.remove("open");
         ctx.fns.switchPage("chat");
         const shown = `"${word}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${sentence}"`;
-        addMessage("user", shown);
+        ctx.fns.addMessage("user", shown);
         // Same treatment as asking about a whole line: a word's sense often
         // only resolves from the scene around it.
-        runTurn(shown + ctx.fns.buildContextBlock(cueIndex == null ? -1 : cueIndex));
+        ctx.fns.runTurn(shown + ctx.fns.buildContextBlock(cueIndex == null ? -1 : cueIndex));
       };
     }
 
@@ -3190,8 +3221,8 @@
       if (!cue) return;
       ctx.fns.switchPage("chat");
       const shown = `这句台词是什么意思？请解释一下，顺便讲讲里面值得注意的单词/短语/语法：\n"${cue.text}"`;
-      addMessage("user", shown);
-      runTurn(shown + buildContextBlock(index));
+      ctx.fns.addMessage("user", shown);
+      ctx.fns.runTurn(shown + buildContextBlock(index));
     }
 
     ctx.fns.loopActive = loopActive;
@@ -3852,8 +3883,8 @@
           ask.addEventListener("click", () => {
             ctx.fns.switchPage("chat");
             const question = `"${entry.question}" 在这句话里是什么意思？请解释一下，并给出这个词/短语常见的其他用法：\n"${entry.subtitle_text || entry.question}"`;
-            addMessage("user", question);
-            runTurn(question);
+            ctx.fns.addMessage("user", question);
+            ctx.fns.runTurn(question);
           });
           card.appendChild(ask);
         }
@@ -4168,9 +4199,9 @@
       detachSeekVideo();
       ctx.state.currentItemId = null;
       subsNote.hidden = true;
-      previewedWordForms.clear();
-      if (previewSession) {
-        previewSession = null;
+      ctx.state.previewedWordForms.clear();
+      if (ctx.state.previewSession) {
+        ctx.state.previewSession = null;
         previewOverlay.hidden = true;
         previewOverlay.innerHTML = "";
       }
@@ -4184,17 +4215,17 @@
       // The first preview request may have finished before the browser-side
       // member caption upload. Invalidate that decision and fetch again from
       // the newly written local subtitle cache.
-      previewRequestSeq++;
-      previewLastVideoId = videoId;
-      previewAnswered = false;
-      previewPrefetchPromise = null;
+      ctx.state.previewRequestSeq++;
+      ctx.state.previewLastVideoId = videoId;
+      ctx.state.previewAnswered = false;
+      ctx.state.previewPrefetchPromise = null;
       const retry = () => {
-        if (videoId !== previewLastVideoId || previewSession) return;
-        if (previewFetchInFlight) {
+        if (videoId !== ctx.state.previewLastVideoId || ctx.state.previewSession) return;
+        if (ctx.state.previewFetchInFlight) {
           setTimeout(retry, 100);
           return;
         }
-        updatePreviewPrompt();
+        ctx.fns.updatePreviewPrompt();
       };
       retry();
     });
@@ -4303,7 +4334,7 @@
         if (!p) return;
         const nowMs = p.currentTimeMs();
         if (!isNaN(nowMs)) ctx.fns.updateCurrentCue(nowMs, commitSeek);
-      }, wordHighlightOn() ? POSITION_POLL_WORD_MS : POSITION_POLL_MS);
+      }, ctx.fns.wordHighlightOn() ? POSITION_POLL_WORD_MS : POSITION_POLL_MS);
     }
     startPositionPolling();
     setInterval(reportPlaybackState, 2000);
@@ -4323,7 +4354,7 @@
       // hadn't caught up yet (still very possible right after a switch)
       // silently skipped the badge for that whole poll tick too.
       updateDifficultyBadge();
-      updatePreviewPrompt();
+      ctx.fns.updatePreviewPrompt();
       try {
         const response = await fetch(`${API}/api/context?tab_id=${TAB_ID}`,
           contextController ? { signal: contextController.signal } : undefined);
@@ -4338,7 +4369,7 @@
           return;
         }
         const p = data.progress;
-        lastKnownVideoTitle = p.title || lastKnownVideoTitle;
+        ctx.state.lastKnownVideoTitle = p.title || ctx.state.lastKnownVideoTitle;
         contextBar.textContent =
           `▶ ${p.title} — ${ctx.fns.fmt(p.position_ms)}/${ctx.fns.fmt(p.duration_ms)}  |  ${data.status_line || ""}`;
       } catch (e) {
@@ -4390,7 +4421,7 @@
     async function updateDifficultyBadge() {
       const p = player();
       const isYouTube = p && p.kind === "youtube";
-      const key = isYouTube ? youtubeVideoId(location.href) : (p ? lastKnownVideoTitle : null);
+      const key = isYouTube ? youtubeVideoId(location.href) : (p ? ctx.state.lastKnownVideoTitle : null);
       if (!key) {
         difficultyBadge.hidden = true;
         lastDifficultyKey = null;
@@ -4440,12 +4471,11 @@
     // can use either an anonymous caption track or the browser-authenticated
     // local track uploaded for a members-only video.
 
+    function installPreview(ctx) {
     const PREVIEW_SHOWN_KEY = "english-tutor-preview-shown";        // { [videoId]: shownAtMs }
     const PREVIEW_DISMISSED_KEY = "english-tutor-preview-dismissed-at"; // { [videoId]: dismissedAtMs }
     const PREVIEW_SHOWN_TTL_MS = 10 * 60 * 1000;        // 同一视频 10 分钟内不重复
     const PREVIEW_DISMISS_COOLDOWN_MS = 60 * 60 * 1000; // 上次点了"直接看" < 1h 不显示
-
-    let previewedWordForms = new Set();
 
     function loadPreviewShownMap() {
       try { return JSON.parse(localStorage.getItem(PREVIEW_SHOWN_KEY) || "{}"); }
@@ -4497,20 +4527,20 @@
       const videoId = p && p.kind === "youtube" ? youtubeVideoId(location.href) : null;
       if (!videoId) {
         previewBar.hidden = true;
-        previewLastVideoId = null;
-        previewAnswered = false;
+        ctx.state.previewLastVideoId = null;
+        ctx.state.previewAnswered = false;
         return;
       }
-      if (videoId !== previewLastVideoId) {
-        previewLastVideoId = videoId;
-        previewRequestSeq++;
-        previewAnswered = false;
+      if (videoId !== ctx.state.previewLastVideoId) {
+        ctx.state.previewLastVideoId = videoId;
+        ctx.state.previewRequestSeq++;
+        ctx.state.previewAnswered = false;
         previewBar.hidden = true;
-        previewPrefetchPromise = null;
+        ctx.state.previewPrefetchPromise = null;
       }
-      if (previewSession) return;      // a round is already on screen
+      if (ctx.state.previewSession) return;      // a round is already on screen
       if (!previewBar.hidden) return;  // already showing for this video
-      if (previewAnswered) return;     // already decided (shown, or "no") for this video
+      if (ctx.state.previewAnswered) return;     // already decided (shown, or "no") for this video
 
       // Kicked off the instant the video is known, and shown the instant
       // it resolves -- no artificial delay before either. The fetch itself
@@ -4519,35 +4549,35 @@
       // length (a 4+ hour video timed the same as a 13-minute one -- this
       // is fixed round-trip latency, not something that scales with
       // transcript size), so that's the only wait there is.
-      if (!previewPrefetchPromise) {
-        previewPrefetchPromise = fetch(`${API}/api/preview/${encodeURIComponent(videoId)}`)
+      if (!ctx.state.previewPrefetchPromise) {
+        ctx.state.previewPrefetchPromise = fetch(`${API}/api/preview/${encodeURIComponent(videoId)}`)
           .then((res) => res.json())
           .catch(() => null);
       }
       if (!previewGateOpen(videoId)) return;
-      if (previewFetchInFlight) return;
+      if (ctx.state.previewFetchInFlight) return;
 
-      const requestSeq = previewRequestSeq;
-      previewFetchInFlight = true;
+      const requestSeq = ctx.state.previewRequestSeq;
+      ctx.state.previewFetchInFlight = true;
       try {
-        const data = await previewPrefetchPromise;
-        if (videoId !== previewLastVideoId || requestSeq !== previewRequestSeq) return;
+        const data = await ctx.state.previewPrefetchPromise;
+        if (videoId !== ctx.state.previewLastVideoId || requestSeq !== ctx.state.previewRequestSeq) return;
         if (!data) {
-          previewPrefetchPromise = null;  // network hiccup -- next tick retries the fetch itself
+          ctx.state.previewPrefetchPromise = null;  // network hiccup -- next tick retries the fetch itself
           return;
         }
         if (!data.should_show) {
-          previewAnswered = true;
+          ctx.state.previewAnswered = true;
           return;
         }
         showPreviewBar(videoId, data);
       } finally {
-        previewFetchInFlight = false;
+        ctx.state.previewFetchInFlight = false;
       }
     }
 
     function showPreviewBar(videoId, data) {
-      previewAnswered = true;
+      ctx.state.previewAnswered = true;
       const total = data.cards.length + data.more;
       const repeated = data.cards.filter((c) => c.hits > 1).length;
       previewBarText.innerHTML = `这个视频里有 <b>${total}</b> 个你可能不认识的词` +
@@ -4558,7 +4588,7 @@
 
     previewSkipBtn.addEventListener("click", () => {
       previewBar.hidden = true;
-      markPreviewDismissed(previewLastVideoId);
+      markPreviewDismissed(ctx.state.previewLastVideoId);
     });
 
     previewStartBtn.addEventListener("click", () => {
@@ -4566,23 +4596,23 @@
       const data = previewBar.__data;
       if (!p || !data) return;
       previewBar.hidden = true;
-      markPreviewShown(previewLastVideoId);
+      markPreviewShown(ctx.state.previewLastVideoId);
       // The first few seconds are usually a greeting/intro -- seeking to 0
       // is zero loss, and lets a round started a little into playback
       // still start from the top.
       p.pause();
       p.seekMs(0);
-      startPreviewSession(previewLastVideoId, data.cards, data.more);
+      startPreviewSession(ctx.state.previewLastVideoId, data.cards, data.more);
     });
 
     function startPreviewSession(videoId, cards, more) {
-      previewSession = { videoId, cards, index: 0, more };
+      ctx.state.previewSession = { videoId, cards, index: 0, more };
       previewOverlay.hidden = false;
       renderPreviewCard();
     }
 
     function renderPreviewCard() {
-      const s = previewSession;
+      const s = ctx.state.previewSession;
       const c = s.cards[s.index];
       const tagsText = c.tags && c.tags.length ? ` · ${c.tags.join("/")}` : "";
       previewOverlay.innerHTML = `
@@ -4609,14 +4639,14 @@
     }
 
     function advancePreviewCard(action) {
-      const s = previewSession;
+      const s = ctx.state.previewSession;
       const c = s.cards[s.index];
       const resultRequest = fetch(`${API}/api/preview/result`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lemma: c.lemma, action }),
       }).catch(() => {});
-      (c.forms && c.forms.length ? c.forms : [c.lemma]).forEach((f) => previewedWordForms.add(f));
+      (c.forms && c.forms.length ? c.forms : [c.lemma]).forEach((f) => ctx.state.previewedWordForms.add(f));
       applyPreviewHighlight();
       if (action === "known") {
         // The previous vocab-highlight response may still have this word in
@@ -4627,7 +4657,7 @@
           if (!spans) continue;
           spans.forEach((span) => {
             const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
-            if (previewedWordForms.has(norm)) span.classList.remove("sub-word-unknown");
+            if (ctx.state.previewedWordForms.has(norm)) span.classList.remove("sub-word-unknown");
           });
         }
         // Wait for the evidence write before re-reading the server-side
@@ -4648,7 +4678,7 @@
     }
 
     function renderPreviewEnd() {
-      const s = previewSession;
+      const s = ctx.state.previewSession;
       if (s.more <= 0) {
         finishPreviewSession();
         return;
@@ -4670,14 +4700,14 @@
     }
 
     async function loadMorePreviewCards() {
-      const s = previewSession;
+      const s = ctx.state.previewSession;
       const seen = s.cards.map((c) => c.lemma).join(",");
       previewOverlay.innerHTML = `<div class="preview-end"><div class="pe-text">加载中…</div></div>`;
       try {
         const res = await fetch(
           `${API}/api/preview/${encodeURIComponent(s.videoId)}?exclude=${encodeURIComponent(seen)}`);
         const data = await res.json();
-        if (previewSession !== s) return;
+        if (ctx.state.previewSession !== s) return;
         if (!data.should_show || !data.cards.length) {
           finishPreviewSession();
           return;
@@ -4687,14 +4717,14 @@
         s.index = s.cards.length - data.cards.length;  // resume at the first new card
         renderPreviewCard();
       } catch (e) {
-        if (previewSession === s) finishPreviewSession();
+        if (ctx.state.previewSession === s) finishPreviewSession();
       }
     }
 
     function finishPreviewSession() {
       previewOverlay.hidden = true;
       previewOverlay.innerHTML = "";
-      previewSession = null;
+      ctx.state.previewSession = null;
       const p = player();
       if (p) p.play();
     }
@@ -4704,7 +4734,7 @@
      *  shape as applyVocabHighlight, but not per-cue: a previewed word is
      *  marked wherever it appears, not looked up by cue index. */
     function applyPreviewHighlight() {
-      if (previewedWordForms.size === 0) return;
+      if (ctx.state.previewedWordForms.size === 0) return;
       for (const index of mountedCueIndices) applyPreviewHighlightToCard(index);
     }
 
@@ -4713,13 +4743,21 @@
       if (!spans) return;
       spans.forEach((span) => {
         const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
-        if (previewedWordForms.has(norm)) span.classList.add("sub-word-previewed");
+        if (ctx.state.previewedWordForms.has(norm)) span.classList.add("sub-word-previewed");
       });
     }
+
+    ctx.fns.updatePreviewPrompt = updatePreviewPrompt;
+    ctx.fns.applyPreviewHighlight = applyPreviewHighlight;
+    ctx.fns.applyPreviewHighlightToCard = applyPreviewHighlightToCard;
+    ctx.fns.finishPreviewSession = finishPreviewSession;
+    ctx.fns.previewGateOpen = previewGateOpen;
 
     refreshContext();
     setInterval(refreshContext, 4000);
     ctx.fns.loadVocabList();
+    }
+    installPreview(ctx);
   }
 
   if (document.readyState === "loading") {
