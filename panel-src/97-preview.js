@@ -57,8 +57,8 @@
     }
 
     async function updatePreviewPrompt() {
-      const p = player();
-      const videoId = p && p.kind === "youtube" ? youtubeVideoId(location.href) : null;
+      const p = ctx.fns.player();
+      const videoId = p && p.kind === "youtube" ? ctx.fns.youtubeVideoId(location.href) : null;
       if (!videoId) {
         previewBar.hidden = true;
         ctx.state.previewLastVideoId = null;
@@ -126,7 +126,7 @@
     });
 
     previewStartBtn.addEventListener("click", () => {
-      const p = player();
+      const p = ctx.fns.player();
       const data = previewBar.__data;
       if (!p || !data) return;
       previewBar.hidden = true;
@@ -186,8 +186,8 @@
         // The previous vocab-highlight response may still have this word in
         // its unknown set. Remove that stale underline immediately, then let
         // the server-backed refresh reconcile every mounted cue.
-        for (const index of mountedCueIndices) {
-          const spans = cueWordSpans[index];
+        for (const index of ctx.state.mountedCueIndices) {
+          const spans = ctx.state.cueWordSpans[index];
           if (!spans) continue;
           spans.forEach((span) => {
             const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
@@ -199,8 +199,8 @@
         // and briefly restore the old unknown underline.
         resultRequest.then(() => {
           ctx.fns.refreshVocabHighlight();
-          invalidateDifficultyBadge();
-          updateDifficultyBadge();
+          ctx.fns.invalidateDifficultyBadge();
+          ctx.fns.updateDifficultyBadge();
         });
       }
       s.index++;
@@ -259,7 +259,7 @@
       previewOverlay.hidden = true;
       previewOverlay.innerHTML = "";
       ctx.state.previewSession = null;
-      const p = player();
+      const p = ctx.fns.player();
       if (p) p.play();
     }
 
@@ -269,11 +269,11 @@
      *  marked wherever it appears, not looked up by cue index. */
     function applyPreviewHighlight() {
       if (ctx.state.previewedWordForms.size === 0) return;
-      for (const index of mountedCueIndices) applyPreviewHighlightToCard(index);
+      for (const index of ctx.state.mountedCueIndices) applyPreviewHighlightToCard(index);
     }
 
     function applyPreviewHighlightToCard(index) {
-      const spans = cueWordSpans[index];
+      const spans = ctx.state.cueWordSpans[index];
       if (!spans) return;
       spans.forEach((span) => {
         const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
@@ -287,8 +287,8 @@
     ctx.fns.finishPreviewSession = finishPreviewSession;
     ctx.fns.previewGateOpen = previewGateOpen;
 
-    refreshContext();
-    setInterval(refreshContext, 4000);
+    ctx.fns.refreshContext();
+    setInterval(ctx.fns.refreshContext, 4000);
     ctx.fns.loadVocabList();
     }
     installPreview(ctx);

@@ -1,4 +1,5 @@
     // ---- playback source ----
+    function installPlayback(ctx) {
     // Two very different things can be driving playback: the <video> element
     // inside Jellyfin's page, and YouTube's embedded player on /youtube,
     // which has no element to reach at all -- only an API of methods. Cue
@@ -142,12 +143,12 @@
           // New episode -- drop the old cues so the subtitle page reloads
           // for what's playing now, not the previous episode.
           invalidateDifficultyBadge();
-          resetSubtitleSession();
+          ctx.fns.resetSubtitleSession();
           detachSeekVideo();
           // Loop bounds are indices into the cue list that just went away.
           subsNote.hidden = true;
-          stopExtractPolling();
-          if (ctx.state.currentPage === "subs") loadSubtitleCues();
+          ctx.fns.stopExtractPolling();
+          if (ctx.state.currentPage === "subs") ctx.fns.loadSubtitleCues();
         }
       } catch (e) {
         if (e.name === "AbortError" || reportSeq !== playbackReportSeq) return;
@@ -167,7 +168,7 @@
       if (playbackReportController) playbackReportController.abort();
       playbackReportController = null;
       invalidateDifficultyBadge();
-      resetSubtitleSession();
+      ctx.fns.resetSubtitleSession();
       detachSeekVideo();
       ctx.state.currentItemId = null;
       subsNote.hidden = true;
@@ -177,7 +178,7 @@
         previewOverlay.hidden = true;
         previewOverlay.innerHTML = "";
       }
-      if (ctx.state.currentPage === "subs") loadSubtitleCues();
+      if (ctx.state.currentPage === "subs") ctx.fns.loadSubtitleCues();
     });
 
     window.addEventListener("english-tutor:captions-ready", () => {
@@ -242,18 +243,18 @@
       if (!p) return;
       const nowMs = p.currentTimeMs();
       if (!Number.isFinite(nowMs)) return;
-      lastPositionMs = NaN;
+      ctx.state.lastPositionMs = NaN;
       ctx.fns.updateCurrentCue(nowMs, true);
     }
 
     function handleVideoSeeking() {
       if (seekCommitTimer) { clearTimeout(seekCommitTimer); seekCommitTimer = 0; }
       seekInProgress = true;
-      cancelSmoothScroll();
+      ctx.fns.cancelSmoothScroll();
       // A progress-bar drag emits several intermediate currentTime values.
       // Do not render each one as a separate jump; seeked will commit the
       // final position once the player has settled.
-      lastPositionMs = NaN;
+      ctx.state.lastPositionMs = NaN;
     }
 
     function handleVideoSeeked() {
@@ -436,3 +437,17 @@
         }
       }
     }
+
+    ctx.fns.player = player;
+    ctx.fns.html5Player = html5Player;
+    ctx.fns.youtubePlayer = youtubePlayer;
+    ctx.fns.youtubeVideoId = youtubeVideoId;
+    ctx.fns.youtubeJumpTarget = youtubeJumpTarget;
+    ctx.fns.startPositionPolling = startPositionPolling;
+    ctx.fns.reportPlaybackState = reportPlaybackState;
+    ctx.fns.refreshContext = refreshContext;
+    ctx.fns.invalidateDifficultyBadge = invalidateDifficultyBadge;
+    ctx.fns.updateDifficultyBadge = updateDifficultyBadge;
+    ctx.fns.bindSeekEvents = bindSeekEvents;
+    }
+    installPlayback(ctx);

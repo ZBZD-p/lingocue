@@ -36,8 +36,8 @@
     const loopActive = () => ctx.state.loopStartIdx >= 0;
 
     function loopBounds() {
-      const a = subtitleCues[ctx.state.loopStartIdx];
-      const b = subtitleCues[ctx.state.loopEndIdx];
+      const a = ctx.state.subtitleCues[ctx.state.loopStartIdx];
+      const b = ctx.state.subtitleCues[ctx.state.loopEndIdx];
       if (!a || !b) return null;
       const startMs = Math.max(0, a.start_ms - LOOP_LEAD_MS);
       // A very short cue (a one-word "Yes." with barely a beat before the
@@ -63,7 +63,7 @@
       // asking to loop a line that already went past means "play it again",
       // not "wait for the next lap". Already inside, leave the position
       // alone so widening a loop doesn't restart it mid-sentence.
-      const p = player();
+      const p = ctx.fns.player();
       if (p) {
         const nowMs = p.currentTimeMs();
         if (nowMs < bounds.startMs || nowMs > bounds.endMs) p.seekMs(bounds.startMs);
@@ -82,7 +82,7 @@
     function loopTick() {
       const bounds = loopBounds();
       if (!bounds) { clearLoop(); return; }
-      const p = player();
+      const p = ctx.fns.player();
       if (!p) return;
       const nowMs = p.currentTimeMs();
       if (isNaN(nowMs)) return;
@@ -113,7 +113,7 @@
      *  side of the range can't silently swallow a dozen lines.
      */
     function toggleLoopAt(idx) {
-      if (!subtitleCues[idx]) return;
+      if (!ctx.state.subtitleCues[idx]) return;
       if (!loopActive()) { setLoop(idx, idx); return; }
       if (ctx.state.loopStartIdx === idx && ctx.state.loopEndIdx === idx) { clearLoop(); return; }
       if (idx < ctx.state.loopStartIdx) setLoop(idx, ctx.state.loopEndIdx);
@@ -122,8 +122,8 @@
     }
 
     function renderLoopState() {
-      for (const index of mountedCueIndices) {
-        const el = subtitleCardEls[index];
+      for (const index of ctx.state.mountedCueIndices) {
+        const el = ctx.state.subtitleCardEls[index];
         if (el) el.classList.remove("in-loop", "loop-edge");
       }
       const on = loopActive();
@@ -131,14 +131,14 @@
       if (!on) return;
 
       for (let i = ctx.state.loopStartIdx; i <= ctx.state.loopEndIdx; i++) {
-        const card = subtitleCardEls[i];
+        const card = ctx.state.subtitleCardEls[i];
         if (!card) continue;
         card.classList.add("in-loop");
         if (i === ctx.state.loopStartIdx || i === ctx.state.loopEndIdx) card.classList.add("loop-edge");
       }
 
-      const a = subtitleCues[ctx.state.loopStartIdx];
-      const b = subtitleCues[ctx.state.loopEndIdx];
+      const a = ctx.state.subtitleCues[ctx.state.loopStartIdx];
+      const b = ctx.state.subtitleCues[ctx.state.loopEndIdx];
       const lines = ctx.state.loopEndIdx - ctx.state.loopStartIdx + 1;
       loopPillText.textContent =
         (lines === 1 ? ctx.fns.fmt(a.start_ms) : `${ctx.fns.fmt(a.start_ms)} – ${ctx.fns.fmt(b.end_ms)} · ${lines} 句`) +
@@ -154,12 +154,12 @@
     const CONTEXT_SPAN = 10;
 
     function buildContextBlock(centerIndex) {
-      if (centerIndex < 0 || subtitleCues.length === 0) return "";
+      if (centerIndex < 0 || ctx.state.subtitleCues.length === 0) return "";
       const start = Math.max(0, centerIndex - CONTEXT_SPAN);
-      const end = Math.min(subtitleCues.length, centerIndex + CONTEXT_SPAN + 1);
+      const end = Math.min(ctx.state.subtitleCues.length, centerIndex + CONTEXT_SPAN + 1);
       const lines = [];
       for (let i = start; i < end; i++) {
-        const cue = subtitleCues[i];
+        const cue = ctx.state.subtitleCues[i];
         // Marking the target line matters: otherwise the model has to guess
         // which of 21 lines the question is actually about.
         lines.push(`[${ctx.fns.fmt(cue.start_ms)}] ${cue.text}${i === centerIndex ? "   ← 问的是这句" : ""}`);
@@ -171,7 +171,7 @@
      *  -- the surrounding dialogue rides along in the prompt alone, so the
      *  transcript doesn't fill up with 21-line quotations. */
     function askAboutCue(index) {
-      const cue = subtitleCues[index];
+      const cue = ctx.state.subtitleCues[index];
       if (!cue) return;
       ctx.fns.switchPage("chat");
       const shown = `这句台词是什么意思？请解释一下，顺便讲讲里面值得注意的单词/短语/语法：\n"${cue.text}"`;

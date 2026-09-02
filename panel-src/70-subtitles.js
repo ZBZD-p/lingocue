@@ -1,22 +1,13 @@
     // ---- subtitle cards ----
 
-    let subtitleCues = [];
+    function installSubtitles(ctx) {
     let subtitleIsPartial = false;
     let subtitleCueSignature = "";
     // Keep direct references to rendered cards and their word spans. The
     // subtitle list can contain thousands of cards; querying the whole DOM
     // on every playback tick made the cost grow with video length.
-    let subtitleCardEls = [];
-    let cueWordSpans = [];
-    let cueTextEls = [];
-    let cueActionEls = [];
     let wordObserver = null;
-    const mountedCueIndices = new Set();
-    let currentCardEl = null;
-    let currentWordSpans = [];
-    let lastPositionMs = NaN;
-    let lastAutoScrollAt = 0;
-    let currentCueIndex = -1;
+
     // Card-level virtualization: keep the cue data in memory, but only mount
     // a bounded window of cards around the viewport/current line. The old
     // implementation still allocated one DOM subtree per cue, which made
@@ -30,7 +21,6 @@
     const VIRTUAL_BUFFER_CUES = 72;
     const VIRTUAL_RECYCLE_MARGIN_CUES = 30;
     const DEFAULT_CUE_HEIGHT = 50;
-    let lastUserScrollAt = 0;
     // Separate from lastUserScrollAt above (which only fires on mousedown --
     // see that listener's own comment for why wheel/trackpad scrolling was
     // deliberately left out of it, a different concern about the
@@ -42,7 +32,7 @@
     // because nothing was ever resetting the clock for that input method.
     // Once this quiet period expires, scheduleManualCenter() restores the
     // current line even if playback has not advanced to another cue yet.
-    let lastManualScrollAt = 0;
+
     // Set right before this script's own scrollCardIntoView() moves the
     // list, so the "scroll" listener below can tell that apart from the
     // user's own input and not treat it as "user just scrolled" -- without
@@ -57,10 +47,8 @@
     let virtualMeasureRaf = 0;
     let virtualResizeRaf = 0;
     let extractPollTimer = null;
-    let subtitleGeneration = 0;
     let subtitleRequestSeq = 0;
     let subtitleRequestController = null;
-    let subtitleModelVersion = 0;
     let pendingSubtitleCommit = null;
     let pendingSubtitleCommitTimer = null;
     let subtitleResizeObserver = null;
@@ -73,7 +61,7 @@
     const POLISH_POLL_MS = 5000;
 
     function invalidateSubtitleSession() {
-      subtitleGeneration++;
+      ctx.state.subtitleGeneration++;
       subtitleRequestSeq++;
       if (subtitleRequestController) subtitleRequestController.abort();
       subtitleRequestController = null;
@@ -89,16 +77,16 @@
 
     function clearSubtitleModel() {
       if (wordObserver) { wordObserver.disconnect(); wordObserver = null; }
-      subtitleCues = [];
+      ctx.state.subtitleCues = [];
       subtitleIsPartial = false;
       subtitleCueSignature = "";
-      subtitleModelVersion++;
+      ctx.state.subtitleModelVersion++;
       ctx.fns.abortVocabHighlight();
-      subtitleCardEls = [];
-      cueWordSpans = [];
-      cueTextEls = [];
-      cueActionEls = [];
-      mountedCueIndices.clear();
+      ctx.state.subtitleCardEls = [];
+      ctx.state.cueWordSpans = [];
+      ctx.state.cueTextEls = [];
+      ctx.state.cueActionEls = [];
+      ctx.state.mountedCueIndices.clear();
       cueEstimatedHeights = [];
       cueOffsets = [];
       virtualRangeStart = 0;
@@ -106,10 +94,10 @@
       virtualTopSpacer = null;
       virtualBottomSpacer = null;
       if (manualCenterTimer) { clearTimeout(manualCenterTimer); manualCenterTimer = 0; }
-      currentCardEl = null;
-      currentWordSpans = [];
-      currentCueIndex = -1;
-      lastPositionMs = NaN;
+      ctx.state.currentCardEl = null;
+      ctx.state.currentWordSpans = [];
+      ctx.state.currentCueIndex = -1;
+      ctx.state.lastPositionMs = NaN;
       ctx.state.spokenWordCount = -1;
       ctx.state.cueUnknownWords = [];
       ctx.state.cueWordScores = [];
@@ -123,15 +111,15 @@
     }
 
     function subtitleRequestIsCurrent(generation, requestId) {
-      return generation === subtitleGeneration && requestId === subtitleRequestSeq;
+      return generation === ctx.state.subtitleGeneration && requestId === subtitleRequestSeq;
     }
 
     function schedulePendingSubtitleCommit(generation) {
       if (pendingSubtitleCommitTimer) return;
       pendingSubtitleCommitTimer = setTimeout(() => {
         pendingSubtitleCommitTimer = null;
-        if (generation !== subtitleGeneration || !pendingSubtitleCommit) return;
-        const quietFor = Date.now() - lastUserScrollAt;
+        if (generation !== ctx.state.subtitleGeneration || !pendingSubtitleCommit) return;
+        const quietFor = Date.now() - ctx.state.lastUserScrollAt;
         if (quietFor < USER_SCROLL_QUIET_MS) {
           schedulePendingSubtitleCommit(generation);
           return;
@@ -140,7 +128,7 @@
         pendingSubtitleCommit = null;
         commitSubtitleCues(pending.cues, pending.partial);
         subsEmpty.hidden = true;
-      }, Math.max(50, USER_SCROLL_QUIET_MS - Math.max(0, Date.now() - lastUserScrollAt)));
+      }, Math.max(50, USER_SCROLL_QUIET_MS - Math.max(0, Date.now() - ctx.state.lastUserScrollAt)));
     }
 
     function cueIdentity(cue) {
@@ -169,17 +157,17 @@
     }
 
     function captureVirtualAnchor() {
-      if (!subtitleCues.length || !subsScroll) return null;
+      if (!ctx.state.subtitleCues.length || !subsScroll) return null;
       const index = virtualIndexAtOffset(subsScroll.scrollTop);
-      const card = subtitleCardEls[index];
-      if (!card || !card.isConnected) return { index, identity: cueIdentity(subtitleCues[index]), top: NaN };
-      return { index, identity: cueIdentity(subtitleCues[index]), top: card.getBoundingClientRect().top };
+      const card = ctx.state.subtitleCardEls[index];
+      if (!card || !card.isConnected) return { index, identity: cueIdentity(ctx.state.subtitleCues[index]), top: NaN };
+      return { index, identity: cueIdentity(ctx.state.subtitleCues[index]), top: card.getBoundingClientRect().top };
     }
 
     function restoreVirtualAnchor(anchor) {
-      if (!anchor || !subtitleCues.length) return;
-      const index = findCueByIdentity(subtitleCues, anchor.identity, anchor.index);
-      const card = subtitleCardEls[index];
+      if (!anchor || !ctx.state.subtitleCues.length) return;
+      const index = findCueByIdentity(ctx.state.subtitleCues, anchor.identity, anchor.index);
+      const card = ctx.state.subtitleCardEls[index];
       if (!card || !card.isConnected || !Number.isFinite(anchor.top)) return;
       const top = card.getBoundingClientRect().top;
       if (!Number.isFinite(top) || Math.abs(top - anchor.top) < 0.5) return;
@@ -192,25 +180,25 @@
       const normalizedCues = Array.isArray(nextCues) ? nextCues : [];
       const nextSignature = cuesSignature(normalizedCues, isPartial);
       if (nextSignature === subtitleCueSignature) return false;
-      const oldCues = subtitleCues;
-      const oldCurrentKey = cueIdentity(oldCues[currentCueIndex]);
+      const oldCues = ctx.state.subtitleCues;
+      const oldCurrentKey = cueIdentity(oldCues[ctx.state.currentCueIndex]);
       const oldLoop = ctx.fns.loopActive()
         ? { start: cueIdentity(oldCues[ctx.state.loopStartIdx]), end: cueIdentity(oldCues[ctx.state.loopEndIdx]) }
         : null;
       const savedAnchor = anchor || captureVirtualAnchor();
 
-      subtitleCues = normalizedCues;
+      ctx.state.subtitleCues = normalizedCues;
       subtitleIsPartial = !!isPartial;
       subtitleCueSignature = nextSignature;
-      subtitleModelVersion++;
+      ctx.state.subtitleModelVersion++;
       ctx.state.cueUnknownWords = [];
       ctx.state.cueWordScores = [];
-      currentCueIndex = findCueByIdentity(subtitleCues, oldCurrentKey, -1);
-      lastPositionMs = NaN;
+      ctx.state.currentCueIndex = findCueByIdentity(ctx.state.subtitleCues, oldCurrentKey, -1);
+      ctx.state.lastPositionMs = NaN;
 
       if (oldLoop) {
-        const start = findCueByIdentity(subtitleCues, oldLoop.start, -1);
-        const end = findCueByIdentity(subtitleCues, oldLoop.end, -1);
+        const start = findCueByIdentity(ctx.state.subtitleCues, oldLoop.start, -1);
+        const end = findCueByIdentity(ctx.state.subtitleCues, oldLoop.end, -1);
         if (start >= 0 && end >= 0) {
           ctx.state.loopStartIdx = Math.min(start, end);
           ctx.state.loopEndIdx = Math.max(start, end);
@@ -241,7 +229,7 @@
       virtualRecycleRaf = requestAnimationFrame(() => {
         virtualRecycleRaf = 0;
         if (programmaticScroll) return;
-        if (subtitleCues.length) renderVirtualWindow();
+        if (ctx.state.subtitleCues.length) renderVirtualWindow();
       });
     }
 
@@ -337,8 +325,8 @@
 
     function centerCurrentCueAfterScroll() {
       manualCenterTimer = 0;
-      if (!subtitleCues.length || currentCueIndex < 0) return;
-      const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
+      if (!ctx.state.subtitleCues.length || ctx.state.currentCueIndex < 0) return;
+      const quietFor = Date.now() - Math.max(ctx.state.lastUserScrollAt, ctx.state.lastManualScrollAt);
       if (quietFor < USER_SCROLL_QUIET_MS) {
         scheduleManualCenter();
         return;
@@ -346,22 +334,22 @@
       // The current line may have been recycled while the user read ahead.
       // Mount it again before measuring, then use the normal interruptible
       // centering animation so another wheel event can take control.
-      ensureVirtualCueWindow(currentCueIndex);
-      const card = subtitleCardEls[currentCueIndex];
+      ensureVirtualCueWindow(ctx.state.currentCueIndex);
+      const card = ctx.state.subtitleCardEls[ctx.state.currentCueIndex];
       if (!card || !card.isConnected) return;
       const rootRect = subsScroll.getBoundingClientRect();
       const cardRect = card.getBoundingClientRect();
       const rootCenter = (rootRect.top + rootRect.bottom) / 2;
       const cardCenter = (cardRect.top + cardRect.bottom) / 2;
       if (!Number.isFinite(cardCenter) || Math.abs(cardCenter - rootCenter) <= 1) return;
-      if (Date.now() - lastAutoScrollAt < 180) return;
+      if (Date.now() - ctx.state.lastAutoScrollAt < 180) return;
       smoothCenterCard(card);
-      lastAutoScrollAt = Date.now();
+      ctx.state.lastAutoScrollAt = Date.now();
     }
 
     function scheduleManualCenter() {
       if (manualCenterTimer) clearTimeout(manualCenterTimer);
-      const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
+      const quietFor = Date.now() - Math.max(ctx.state.lastUserScrollAt, ctx.state.lastManualScrollAt);
       manualCenterTimer = setTimeout(
         centerCurrentCueAfterScroll,
         Math.max(50, USER_SCROLL_QUIET_MS - Math.max(0, quietFor))
@@ -378,7 +366,7 @@
 
     async function loadSubtitleCues(startedAt = null) {
       stopExtractPolling();
-      const generation = subtitleGeneration;
+      const generation = ctx.state.subtitleGeneration;
       const requestId = ++subtitleRequestSeq;
       if (subtitleRequestController) subtitleRequestController.abort();
       const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -441,15 +429,15 @@
         const nextCues = Array.isArray(data.cues) ? data.cues : [];
         const nextPartial = data.complete === false;
         const wasPartial = subtitleIsPartial;
-        const userBusy = Date.now() - lastUserScrollAt < USER_SCROLL_QUIET_MS;
+        const userBusy = Date.now() - ctx.state.lastUserScrollAt < USER_SCROLL_QUIET_MS;
         // Partial extraction responses append the lines below the current
         // window. Commit those immediately even during scrolling; deferring
         // them makes the transcript appear stuck at the old end. A response
         // that preserves all existing cue timings is equally safe to apply,
         // since the virtual renderer keeps the viewport anchor stable.
         const canApplyDuringScroll = nextPartial ||
-          cuesShareTimingPrefix(subtitleCues, nextCues);
-        if (userBusy && subtitleCues.length && !canApplyDuringScroll) {
+          cuesShareTimingPrefix(ctx.state.subtitleCues, nextCues);
+        if (userBusy && ctx.state.subtitleCues.length && !canApplyDuringScroll) {
           pendingSubtitleCommit = { cues: nextCues, partial: nextPartial };
           schedulePendingSubtitleCommit(generation);
         } else {
@@ -499,7 +487,7 @@
           subsNote.hidden = true;
           // The DOM was just rebuilt with the complete list, so snap back to
           // whatever's playing rather than leaving the user mid-list.
-          if (wasPartial) lastUserScrollAt = 0;
+          if (wasPartial) ctx.state.lastUserScrollAt = 0;
         }
       } catch (e) {
         if (!subtitleRequestIsCurrent(generation, requestId) || e.name === "AbortError") return;
@@ -556,13 +544,13 @@
     }
 
     function rebuildEstimatedCueGeometry() {
-      const count = subtitleCues.length;
+      const count = ctx.state.subtitleCues.length;
       const metrics = subtitleLayoutMetrics();
       cueEstimatedHeights = new Array(count);
       cueOffsets = new Array(count + 1);
       cueOffsets[0] = 0;
       for (let i = 0; i < count; i++) {
-        const height = estimateCueHeight(subtitleCues[i], i === count - 1, metrics);
+        const height = estimateCueHeight(ctx.state.subtitleCues[i], i === count - 1, metrics);
         cueEstimatedHeights[i] = height;
         cueOffsets[i + 1] = cueOffsets[i] + height;
       }
@@ -570,18 +558,18 @@
 
     function rebuildCueOffsets() {
       cueOffsets[0] = 0;
-      for (let i = 0; i < subtitleCues.length; i++) {
+      for (let i = 0; i < ctx.state.subtitleCues.length; i++) {
         cueOffsets[i + 1] = cueOffsets[i] + cueEstimatedHeights[i];
       }
     }
 
     function updateVirtualSpacers() {
-      if (!virtualTopSpacer || !virtualBottomSpacer || !subtitleCues.length) return;
+      if (!virtualTopSpacer || !virtualBottomSpacer || !ctx.state.subtitleCues.length) return;
       const start = Math.max(0, virtualRangeStart);
-      const end = Math.min(subtitleCues.length - 1, virtualRangeEnd);
+      const end = Math.min(ctx.state.subtitleCues.length - 1, virtualRangeEnd);
       virtualTopSpacer.style.height = `${cueOffsets[start] || 0}px`;
       virtualBottomSpacer.style.height = `${Math.max(
-        0, cueOffsets[subtitleCues.length] - (cueOffsets[end + 1] || cueOffsets[subtitleCues.length])
+        0, cueOffsets[ctx.state.subtitleCues.length] - (cueOffsets[end + 1] || cueOffsets[ctx.state.subtitleCues.length])
       )}px`;
     }
 
@@ -600,14 +588,14 @@
       virtualMeasureRaf = requestAnimationFrame(() => {
         virtualMeasureRaf = 0;
         if (programmaticScroll) return;
-        if (subtitleCues.length && virtualRangeEnd >= virtualRangeStart) {
+        if (ctx.state.subtitleCues.length && virtualRangeEnd >= virtualRangeStart) {
           measureVirtualWindow();
         }
       });
     }
 
     function invalidateVirtualMeasurements() {
-      if (!subtitleCues.length || virtualResizeRaf) return;
+      if (!ctx.state.subtitleCues.length || virtualResizeRaf) return;
       virtualResizeRaf = requestAnimationFrame(() => {
         virtualResizeRaf = 0;
         if (programmaticScroll) {
@@ -630,7 +618,7 @@
       let changed = false;
 
       for (let i = virtualRangeStart; i <= virtualRangeEnd; i++) {
-        const card = subtitleCardEls[i];
+        const card = ctx.state.subtitleCardEls[i];
         if (!card || !card.isConnected) continue;
         const rect = card.getBoundingClientRect();
         if (!anchorCard && rect.bottom > rootRect.top) {
@@ -674,10 +662,10 @@
     }
 
     function createVirtualCueCard(i) {
-      const cue = subtitleCues[i];
+      const cue = ctx.state.subtitleCues[i];
       const card = document.createElement("div");
       card.className = "sub-card";
-      if (i === subtitleCues.length - 1) card.classList.add("sub-card-last");
+      if (i === ctx.state.subtitleCues.length - 1) card.classList.add("sub-card-last");
       card.dataset.index = String(i);
       const time = document.createElement("span");
       time.className = "sub-time";
@@ -690,7 +678,7 @@
       text.className = "sub-text";
       if (cue.words) text.classList.add("has-word-times");
       text.textContent = cue.text;
-      cueTextEls[i] = text;
+      ctx.state.cueTextEls[i] = text;
       card.appendChild(text);
       if (cue.text2) {
         const text2 = document.createElement("div");
@@ -700,15 +688,15 @@
       }
       const actions = document.createElement("div");
       actions.className = "sub-actions";
-      cueActionEls[i] = actions;
+      ctx.state.cueActionEls[i] = actions;
       card.appendChild(actions);
-      subtitleCardEls[i] = card;
-      mountedCueIndices.add(i);
+      ctx.state.subtitleCardEls[i] = card;
+      ctx.state.mountedCueIndices.add(i);
       return card;
     }
 
     function renderVirtualWindow(anchorIndex = -1, keepExistingRange = false) {
-      if (!subtitleCues.length || !virtualTopSpacer || !virtualBottomSpacer) return;
+      if (!ctx.state.subtitleCues.length || !virtualTopSpacer || !virtualBottomSpacer) return;
       const firstVisible = virtualIndexAtOffset(subsScroll.scrollTop);
       const anchor = anchorIndex >= 0 ? anchorIndex : firstVisible;
       const center = anchorIndex >= 0 ? anchorIndex : firstVisible;
@@ -723,7 +711,7 @@
       const oldRangeStart = virtualRangeStart;
       const oldRangeEnd = virtualRangeEnd;
       let start = Math.max(0, center - VIRTUAL_BUFFER_CUES);
-      let end = Math.min(subtitleCues.length - 1, center + VIRTUAL_BUFFER_CUES);
+      let end = Math.min(ctx.state.subtitleCues.length - 1, center + VIRTUAL_BUFFER_CUES);
       if (keepExistingRange && oldRangeEnd >= oldRangeStart) {
         // Preloading during playback should expand the window without
         // throwing away already-mounted context on the opposite side.
@@ -731,7 +719,7 @@
         end = Math.max(end, oldRangeEnd);
       }
       if (start === virtualRangeStart && end === virtualRangeEnd &&
-          subtitleCardEls[anchor] && subtitleCardEls[anchor].isConnected) return;
+          ctx.state.subtitleCardEls[anchor] && ctx.state.subtitleCardEls[anchor].isConnected) return;
       // When recycling because of user scrolling, preserve the current
       // viewport anchor. Changing the top spacer while replacing cards can
       // otherwise make the browser keep the old scrollTop but display a
@@ -740,7 +728,7 @@
       let preserveTop = NaN;
       if (anchorIndex < 0 && virtualRangeEnd >= virtualRangeStart) {
         preserveIndex = firstVisible;
-        const oldAnchor = subtitleCardEls[preserveIndex];
+        const oldAnchor = ctx.state.subtitleCardEls[preserveIndex];
         if (oldAnchor && oldAnchor.isConnected) preserveTop = oldAnchor.getBoundingClientRect().top;
       }
       if (wordObserver) wordObserver.disconnect();
@@ -751,17 +739,17 @@
       const oldEnd = virtualRangeEnd;
       for (let i = oldStart; i <= oldEnd; i++) {
         if (i >= start && i <= end) continue;
-        const card = subtitleCardEls[i];
+        const card = ctx.state.subtitleCardEls[i];
         if (card) {
           card.remove();
-          subtitleCardEls[i] = null;
-          cueTextEls[i] = null;
-          cueActionEls[i] = null;
-          cueWordSpans[i] = null;
-          mountedCueIndices.delete(i);
-          if (currentCardEl === card) {
-            currentCardEl = null;
-            currentWordSpans = [];
+          ctx.state.subtitleCardEls[i] = null;
+          ctx.state.cueTextEls[i] = null;
+          ctx.state.cueActionEls[i] = null;
+          ctx.state.cueWordSpans[i] = null;
+          ctx.state.mountedCueIndices.delete(i);
+          if (ctx.state.currentCardEl === card) {
+            ctx.state.currentCardEl = null;
+            ctx.state.currentWordSpans = [];
             ctx.state.spokenWordCount = -1;
           }
         }
@@ -775,7 +763,7 @@
       // work and causing a visible pause before the first paint.
       let runStart = -1;
       for (let i = start; i <= end + 1; i++) {
-        const missing = i <= end && !(subtitleCardEls[i] && subtitleCardEls[i].isConnected);
+        const missing = i <= end && !(ctx.state.subtitleCardEls[i] && ctx.state.subtitleCardEls[i].isConnected);
         if (missing && runStart < 0) {
           runStart = i;
           continue;
@@ -784,20 +772,20 @@
         const runEnd = i - 1;
         let next = virtualBottomSpacer;
         for (let j = runEnd + 1; j <= end; j++) {
-          if (subtitleCardEls[j] && subtitleCardEls[j].isConnected) {
-            next = subtitleCardEls[j];
+          if (ctx.state.subtitleCardEls[j] && ctx.state.subtitleCardEls[j].isConnected) {
+            next = ctx.state.subtitleCardEls[j];
             break;
           }
         }
         const fragment = document.createDocumentFragment();
         for (let j = runStart; j <= runEnd; j++) {
-          fragment.appendChild(subtitleCardEls[j] || createVirtualCueCard(j));
+          fragment.appendChild(ctx.state.subtitleCardEls[j] || createVirtualCueCard(j));
         }
         subsScroll.insertBefore(fragment, next);
         runStart = -1;
       }
       if (preserveIndex >= start && preserveIndex <= end && Number.isFinite(preserveTop)) {
-        const newAnchor = subtitleCardEls[preserveIndex];
+        const newAnchor = ctx.state.subtitleCardEls[preserveIndex];
         if (newAnchor) {
           const newTop = newAnchor.getBoundingClientRect().top;
           if (Number.isFinite(newTop)) subsScroll.scrollTop += newTop - preserveTop;
@@ -807,31 +795,31 @@
         wordObserver = new IntersectionObserver((entries) => {
           entries.forEach((entry) => {
             const index = Number(entry.target.dataset.index);
-            if (!Number.isInteger(index) || subtitleCardEls[index] !== entry.target) return;
+            if (!Number.isInteger(index) || ctx.state.subtitleCardEls[index] !== entry.target) return;
             // `isIntersecting` includes the 800px preload margin. Keep a
             // separate real-viewport test for auto-follow, otherwise a line
             // that is merely near the viewport suppresses centering.
             const root = entry.rootBounds;
             const rect = entry.boundingClientRect;
-            if (entry.isIntersecting || index === currentCueIndex) decorateCardWords(index);
-            else if (index !== currentCueIndex && cueWordSpans[index] !== null) {
-              cueTextEls[index].textContent = subtitleCues[index].text;
-              cueWordSpans[index] = null;
+            if (entry.isIntersecting || index === ctx.state.currentCueIndex) decorateCardWords(index);
+            else if (index !== ctx.state.currentCueIndex && ctx.state.cueWordSpans[index] !== null) {
+              ctx.state.cueTextEls[index].textContent = ctx.state.subtitleCues[index].text;
+              ctx.state.cueWordSpans[index] = null;
             }
           });
         }, { root: subsScroll, rootMargin: "800px 0px" });
-        for (let i = start; i <= end; i++) if (subtitleCardEls[i]) wordObserver.observe(subtitleCardEls[i]);
+        for (let i = start; i <= end; i++) if (ctx.state.subtitleCardEls[i]) wordObserver.observe(ctx.state.subtitleCardEls[i]);
       } else {
         for (let i = start; i <= end; i++) decorateCardWords(i);
       }
-      if (currentCueIndex >= start && currentCueIndex <= end && subtitleCardEls[currentCueIndex]) {
-        const current = subtitleCardEls[currentCueIndex];
+      if (ctx.state.currentCueIndex >= start && ctx.state.currentCueIndex <= end && ctx.state.subtitleCardEls[ctx.state.currentCueIndex]) {
+        const current = ctx.state.subtitleCardEls[ctx.state.currentCueIndex];
         current.classList.add("current");
-        decorateCardWords(currentCueIndex);
-        ensureCardActions(currentCueIndex);
-        currentCardEl = current;
-        currentWordSpans = subtitleCues[currentCueIndex].words
-          ? (cueWordSpans[currentCueIndex] || []) : [];
+        decorateCardWords(ctx.state.currentCueIndex);
+        ensureCardActions(ctx.state.currentCueIndex);
+        ctx.state.currentCardEl = current;
+        ctx.state.currentWordSpans = ctx.state.subtitleCues[ctx.state.currentCueIndex].words
+          ? (ctx.state.cueWordSpans[ctx.state.currentCueIndex] || []) : [];
         ctx.state.spokenWordCount = -1;
       }
       ctx.fns.renderLoopState();
@@ -839,14 +827,14 @@
     }
 
     function ensureVirtualCueWindow(index) {
-      if (!subtitleCues.length || index < 0) return;
+      if (!ctx.state.subtitleCues.length || index < 0) return;
       const outside = index < virtualRangeStart || index > virtualRangeEnd;
       const canExpandTop = virtualRangeStart > 0 &&
         index < virtualRangeStart + VIRTUAL_RECYCLE_MARGIN_CUES;
-      const canExpandBottom = virtualRangeEnd < subtitleCues.length - 1 &&
+      const canExpandBottom = virtualRangeEnd < ctx.state.subtitleCues.length - 1 &&
         index > virtualRangeEnd - VIRTUAL_RECYCLE_MARGIN_CUES;
       if (!outside && !canExpandTop && !canExpandBottom &&
-          subtitleCardEls[index] && subtitleCardEls[index].isConnected) return;
+          ctx.state.subtitleCardEls[index] && ctx.state.subtitleCardEls[index].isConnected) return;
       const anchor = captureVirtualAnchor();
       renderVirtualWindow(index, !outside);
       restoreVirtualAnchor(anchor);
@@ -857,16 +845,16 @@
       cancelSmoothScroll();
       if (virtualRecycleRaf) { cancelAnimationFrame(virtualRecycleRaf); virtualRecycleRaf = 0; }
       if (virtualMeasureRaf) { cancelAnimationFrame(virtualMeasureRaf); virtualMeasureRaf = 0; }
-      subtitleCardEls = new Array(subtitleCues.length);
-      cueWordSpans = new Array(subtitleCues.length).fill(null);
-      cueTextEls = new Array(subtitleCues.length);
-      cueActionEls = new Array(subtitleCues.length);
-      mountedCueIndices.clear();
+      ctx.state.subtitleCardEls = new Array(ctx.state.subtitleCues.length);
+      ctx.state.cueWordSpans = new Array(ctx.state.subtitleCues.length).fill(null);
+      ctx.state.cueTextEls = new Array(ctx.state.subtitleCues.length);
+      ctx.state.cueActionEls = new Array(ctx.state.subtitleCues.length);
+      ctx.state.mountedCueIndices.clear();
       rebuildEstimatedCueGeometry();
       if (wordObserver) wordObserver.disconnect();
       wordObserver = null;
-      currentCardEl = null;
-      currentWordSpans = [];
+      ctx.state.currentCardEl = null;
+      ctx.state.currentWordSpans = [];
       ctx.state.spokenWordCount = -1;
       virtualRangeStart = 0;
       virtualRangeEnd = -1;
@@ -876,7 +864,7 @@
       virtualTopSpacer.className = "subs-virtual-spacer";
       virtualBottomSpacer.className = "subs-virtual-spacer";
       subsScroll.append(virtualTopSpacer, virtualBottomSpacer);
-      renderVirtualWindow(currentCueIndex);
+      renderVirtualWindow(ctx.state.currentCueIndex);
       restoreVirtualAnchor(savedAnchor);
       ctx.fns.renderLoopState();
     }
@@ -900,31 +888,31 @@
     // lyric animation and starts the four-second recenter countdown.)
     subsScroll.addEventListener("mousedown", () => {
       cancelSmoothScroll();
-      lastUserScrollAt = Date.now();
+      ctx.state.lastUserScrollAt = Date.now();
     }, { passive: true });
     subsScroll.addEventListener("wheel", () => {
       cancelSmoothScroll();
-      lastUserScrollAt = Date.now();
-      lastManualScrollAt = Date.now();
+      ctx.state.lastUserScrollAt = Date.now();
+      ctx.state.lastManualScrollAt = Date.now();
       scheduleManualCenter();
     }, { passive: true });
     subsScroll.addEventListener("pointerdown", () => {
       cancelSmoothScroll();
-      lastUserScrollAt = Date.now();
-      lastManualScrollAt = Date.now();
+      ctx.state.lastUserScrollAt = Date.now();
+      ctx.state.lastManualScrollAt = Date.now();
     }, { passive: true });
     subsScroll.addEventListener("touchstart", () => {
       cancelSmoothScroll();
-      lastUserScrollAt = Date.now();
-      lastManualScrollAt = Date.now();
+      ctx.state.lastUserScrollAt = Date.now();
+      ctx.state.lastManualScrollAt = Date.now();
     }, { passive: true });
     subsScroll.addEventListener("scroll", () => {
       wordPopup.classList.remove("open");
       if (!programmaticScroll) {
         cancelSmoothScroll();
         const now = Date.now();
-        lastUserScrollAt = now;
-        lastManualScrollAt = now;
+        ctx.state.lastUserScrollAt = now;
+        ctx.state.lastManualScrollAt = now;
         scheduleManualCenter();
       }
       // Recycle the card window as the user scrolls through a long transcript.
@@ -935,7 +923,7 @@
       // event would apply a second anchor correction and make the animation
       // oscillate past the target. The explicit playback jump already mounts
       // the needed range before the animation starts.
-      if (!programmaticScroll && subtitleCues.length) scheduleVirtualRecycle();
+      if (!programmaticScroll && ctx.state.subtitleCues.length) scheduleVirtualRecycle();
     }, { passive: true });
 
     // One delegated listener replaces thousands of per-card/per-word
@@ -948,7 +936,7 @@
       const wordSpan = target.closest(".sub-word");
       if (wordSpan) {
         const index = Number(wordSpan.dataset.cueIndex);
-        const cue = subtitleCues[index];
+        const cue = ctx.state.subtitleCues[index];
         if (cue) ctx.fns.showWordPopup(wordSpan, wordSpan.dataset.word, cue.text, index);
         event.stopPropagation();
         return;
@@ -957,19 +945,19 @@
       const card = target.closest(".sub-card");
       if (!card || !subsScroll.contains(card)) return;
       const index = Number(card.dataset.index);
-      if (!Number.isInteger(index) || !subtitleCues[index]) return;
+      if (!Number.isInteger(index) || !ctx.state.subtitleCues[index]) return;
       if (action) {
         event.stopPropagation();
         if (action.dataset.subAction === "loop") ctx.fns.toggleLoopAt(index);
         else if (action.dataset.subAction === "ask") ctx.fns.askAboutCue(index);
-        else if (action.dataset.subAction === "read") ctx.fns.speakWord(subtitleCues[index].text);
+        else if (action.dataset.subAction === "read") ctx.fns.speakWord(ctx.state.subtitleCues[index].text);
         return;
       }
       if (ctx.fns.loopActive()) { ctx.fns.toggleLoopAt(index); return; }
-      const p = player();
-      if (p) p.seekMs(subtitleCues[index].start_ms);
-      lastUserScrollAt = 0;
-      lastPositionMs = NaN;
+      const p = ctx.fns.player();
+      if (p) p.seekMs(ctx.state.subtitleCues[index].start_ms);
+      ctx.state.lastUserScrollAt = 0;
+      ctx.state.lastPositionMs = NaN;
       ctx.fns.highlightCue(index, true);
     });
     subsScroll.addEventListener("mouseout", (event) => {
@@ -1017,20 +1005,20 @@
     }
 
     function decorateCardWords(index) {
-      if (cueWordSpans[index] !== null) return;
-      const cue = subtitleCues[index];
-      const text = cueTextEls[index];
+      if (ctx.state.cueWordSpans[index] !== null) return;
+      const cue = ctx.state.subtitleCues[index];
+      const text = ctx.state.cueTextEls[index];
       if (!cue || !text) return;
       text.textContent = "";
-      cueWordSpans[index] = appendWordSpans(text, cue.text, index, cue.words);
+      ctx.state.cueWordSpans[index] = appendWordSpans(text, cue.text, index, cue.words);
       ctx.fns.applyVocabHighlightToCard(index);
       ctx.fns.applyPreviewHighlightToCard(index);
     }
 
     function ensureCardActions(index) {
-      const actions = cueActionEls[index];
+      const actions = ctx.state.cueActionEls[index];
       if (!actions || actions.childElementCount) return;
-      const cue = subtitleCues[index];
+      const cue = ctx.state.subtitleCues[index];
       if (!cue) return;
       const makeButton = (className, action, html, title) => {
         const button = document.createElement("button");
@@ -1045,3 +1033,22 @@
       makeButton("sub-ask-btn", "ask", `${icon("help")}问这句`, "问一下这句什么意思");
       makeButton("sub-read-btn", "read", `${icon("speaker")}朗读`, "朗读这句");
     }
+
+    ctx.fns.loadSubtitleCues = loadSubtitleCues;
+    ctx.fns.commitSubtitleCues = commitSubtitleCues;
+    ctx.fns.renderSubtitleCards = renderSubtitleCards;
+    ctx.fns.resetSubtitleSession = resetSubtitleSession;
+    ctx.fns.invalidateSubtitleSession = invalidateSubtitleSession;
+    ctx.fns.cueIdentity = cueIdentity;
+    ctx.fns.findCueByIdentity = findCueByIdentity;
+    ctx.fns.ensureVirtualCueWindow = ensureVirtualCueWindow;
+    ctx.fns.appendWordSpans = appendWordSpans;
+    ctx.fns.decorateCardWords = decorateCardWords;
+    ctx.fns.ensureCardActions = ensureCardActions;
+    ctx.fns.cancelSmoothScroll = cancelSmoothScroll;
+    ctx.fns.smoothCenterCard = smoothCenterCard;
+    ctx.fns.scheduleVirtualMeasure = scheduleVirtualMeasure;
+    ctx.fns.userScrollQuietMs = USER_SCROLL_QUIET_MS;
+    ctx.fns.stopExtractPolling = stopExtractPolling;
+    }
+    installSubtitles(ctx);

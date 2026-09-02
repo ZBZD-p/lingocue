@@ -109,8 +109,8 @@
         entry.next_review_at = data.next_review_at;
         if (result === "known") {
           ctx.fns.refreshVocabHighlight();
-          invalidateDifficultyBadge();
-          updateDifficultyBadge();
+          ctx.fns.invalidateDifficultyBadge();
+          ctx.fns.updateDifficultyBadge();
         }
       }
       return data;

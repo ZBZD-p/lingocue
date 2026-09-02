@@ -20,14 +20,14 @@
 
       async function refreshVocabHighlight() {
         const includeScores = ctx.fns.showPKnownOn();
-        if ((!ctx.fns.vocabHighlightOn() && !includeScores) || subtitleCues.length === 0) return;
-        const generation = subtitleGeneration;
-        const modelVersion = subtitleModelVersion;
+        if ((!ctx.fns.vocabHighlightOn() && !includeScores) || ctx.state.subtitleCues.length === 0) return;
+        const generation = ctx.state.subtitleGeneration;
+        const modelVersion = ctx.state.subtitleModelVersion;
         const requestId = ++vocabHighlightSeq;
         if (vocabHighlightController) vocabHighlightController.abort();
         const controller = typeof AbortController === "function" ? new AbortController() : null;
         vocabHighlightController = controller;
-        const cues = subtitleCues.map((c) => c.text);
+        const cues = ctx.state.subtitleCues.map((c) => c.text);
         try {
           const res = await fetch(`${API}/api/vocab-highlight`, {
             method: "POST",
@@ -36,7 +36,7 @@
             ...(controller ? { signal: controller.signal } : {}),
           });
           const data = await res.json();
-          if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion ||
+          if (generation !== ctx.state.subtitleGeneration || modelVersion !== ctx.state.subtitleModelVersion ||
               requestId !== vocabHighlightSeq ||
               (!ctx.fns.vocabHighlightOn() && !ctx.fns.showPKnownOn()) ||
               includeScores !== ctx.fns.showPKnownOn()) return;
@@ -59,18 +59,18 @@
         } finally {
           if (requestId === vocabHighlightSeq) vocabHighlightController = null;
         }
-        if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion) return;
+        if (generation !== ctx.state.subtitleGeneration || modelVersion !== ctx.state.subtitleModelVersion) return;
         applyVocabHighlight();
         ctx.fns.updateWordPopupPKnown();
       }
 
       function applyVocabHighlight() {
-        for (const index of mountedCueIndices) applyVocabHighlightToCard(index);
+        for (const index of ctx.state.mountedCueIndices) applyVocabHighlightToCard(index);
       }
 
       function applyVocabHighlightToCard(index) {
         const unknown = ctx.state.cueUnknownWords[index];
-        const spans = cueWordSpans[index];
+        const spans = ctx.state.cueWordSpans[index];
         if (!spans) return;
         spans.forEach((span) => {
           const norm = span.textContent.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();

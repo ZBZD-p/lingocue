@@ -6,7 +6,7 @@
         tabBtns.forEach((b) => b.classList.toggle("active", b.dataset.page === name));
         Object.entries(pages).forEach(([k, el]) => el.classList.toggle("active", k === name));
         composerEl.hidden = name !== "chat";
-        if (name === "subs" && subtitleCues.length === 0) loadSubtitleCues();
+        if (name === "subs" && ctx.state.subtitleCues.length === 0) ctx.fns.loadSubtitleCues();
         if (name === "vocab") ctx.fns.loadVocabList();
         if (name === "phrases") ctx.fns.loadPhraseList();
         // Own tab now (not a mode switched into from the vocab list), so

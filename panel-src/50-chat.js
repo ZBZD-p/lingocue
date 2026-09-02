@@ -44,7 +44,7 @@
     // the user is likely dragging to select a reply's text, and the
     // streaming re-render in onTextDelta below would wipe that selection out
     // on the very next token if it didn't back off.
-    chatEl.addEventListener("mousedown", () => { lastUserScrollAt = Date.now(); }, { passive: true });
+    chatEl.addEventListener("mousedown", () => { ctx.state.lastUserScrollAt = Date.now(); }, { passive: true });
 
     function addMessage(role, text) {
       const div = document.createElement("div");
@@ -70,7 +70,7 @@
       card.dataset.phrase = evt.phrase || "";
       card.dataset.meaning = evt.meaning || "";
       card.dataset.subtitle = evt.subtitle_text || "";
-      const { video_url, timestamp_seconds } = youtubeJumpTarget();
+      const { video_url, timestamp_seconds } = ctx.fns.youtubeJumpTarget();
       card.dataset.videoUrl = video_url || "";
       card.dataset.timestampSeconds = timestamp_seconds == null ? "" : String(timestamp_seconds);
       card.innerHTML = `
@@ -205,7 +205,7 @@
           // Skip the rebuild while the user looks like they're mid-drag-select
           // in the chat -- rawAnswer keeps accumulating regardless, so the
           // next delta (or finalize, which always flushes) catches it up.
-          if (Date.now() - lastUserScrollAt >= USER_SCROLL_QUIET_MS) {
+          if (Date.now() - ctx.state.lastUserScrollAt >= ctx.fns.userScrollQuietMs) {
             content.innerHTML = ctx.fns.renderMarkdown(rawAnswer);
           }
         },

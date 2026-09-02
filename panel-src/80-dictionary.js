@@ -152,7 +152,7 @@
           const def = defCache.get(word);
           const answer = def && def.found ? def.translation : "";
           const tags = def && def.found ? def.tags : [];
-          const { video_url, timestamp_seconds } = youtubeJumpTarget();
+          const { video_url, timestamp_seconds } = ctx.fns.youtubeJumpTarget();
           await ctx.fns.saveVocabEntry({
             video_title: ctx.state.lastKnownVideoTitle,
             subtitle_text: sentence,
@@ -181,26 +181,26 @@
     }
 
     function updateCurrentCue(positionMs, immediate = false) {
-      if (subtitleCues.length === 0) return;
-      let idx = currentCueIndex;
+      if (ctx.state.subtitleCues.length === 0) return;
+      let idx = ctx.state.currentCueIndex;
       // During normal playback timestamps only move forward, so advance the
       // existing index instead of rescanning the entire cue array. A seek or
       // rewind falls back to an upper-bound binary search.
-      if (!Number.isFinite(lastPositionMs) || positionMs < lastPositionMs) {
+      if (!Number.isFinite(ctx.state.lastPositionMs) || positionMs < ctx.state.lastPositionMs) {
         let lo = 0;
-        let hi = subtitleCues.length;
+        let hi = ctx.state.subtitleCues.length;
         while (lo < hi) {
           const mid = (lo + hi) >> 1;
-          if (subtitleCues[mid].start_ms <= positionMs) lo = mid + 1;
+          if (ctx.state.subtitleCues[mid].start_ms <= positionMs) lo = mid + 1;
           else hi = mid;
         }
         idx = lo - 1;
       } else {
-        if (idx < -1 || idx >= subtitleCues.length) idx = -1;
-        while (idx + 1 < subtitleCues.length &&
-               subtitleCues[idx + 1].start_ms <= positionMs) idx++;
+        if (idx < -1 || idx >= ctx.state.subtitleCues.length) idx = -1;
+        while (idx + 1 < ctx.state.subtitleCues.length &&
+               ctx.state.subtitleCues[idx + 1].start_ms <= positionMs) idx++;
       }
-      lastPositionMs = positionMs;
+      ctx.state.lastPositionMs = positionMs;
       // The loop's own seek deliberately lands LOOP_LEAD_MS before the
       // loop-start cue's start_ms, as a pre-roll so the line's first word
       // doesn't get clipped -- but that position genuinely falls inside the
@@ -209,11 +209,11 @@
       // is running, the line being drilled is never actually the one before
       // it, so floor the display at the loop's own start.
       if (ctx.fns.loopActive() && idx < ctx.state.loopStartIdx) idx = ctx.state.loopStartIdx;
-      if (idx !== currentCueIndex) {
-        const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
+      if (idx !== ctx.state.currentCueIndex) {
+        const quietFor = Date.now() - Math.max(ctx.state.lastUserScrollAt, ctx.state.lastManualScrollAt);
         // A committed progress-bar seek is an explicit navigation command;
         // it must override the temporary "user is reading" follow-off window.
-        highlightCue(idx, immediate || quietFor >= USER_SCROLL_QUIET_MS, immediate);
+        highlightCue(idx, immediate || quietFor >= ctx.fns.userScrollQuietMs, immediate);
       }
       // Outside the cue-changed check on purpose: the whole point is to keep
       // moving *within* one line, which is exactly the case that check skips.
@@ -228,7 +228,7 @@
       // No match when the setting is off (nothing was requested, so no cue
       // carries the marker) or when this video has no per-word data at all,
       // which is what makes both cases a no-op without checking either.
-      const spans = currentWordSpans;
+      const spans = ctx.state.currentWordSpans;
       if (spans.length === 0) return;
       let lit = 0;
       while (lit < spans.length && Number(spans[lit].dataset.start) <= positionMs) lit++;
@@ -246,41 +246,41 @@
     }
 
     function highlightCue(idx, autoScroll, immediate = false) {
-      const prev = currentCardEl;
+      const prev = ctx.state.currentCardEl;
       if (prev) prev.classList.remove("current");
-      if (currentCueIndex >= 0 && cueActionEls[currentCueIndex]) {
-        cueActionEls[currentCueIndex].replaceChildren();
+      if (ctx.state.currentCueIndex >= 0 && ctx.state.cueActionEls[ctx.state.currentCueIndex]) {
+        ctx.state.cueActionEls[ctx.state.currentCueIndex].replaceChildren();
       }
-      if (currentWordSpans.length) {
-        currentWordSpans.forEach((span) => span.classList.remove("spoken"));
+      if (ctx.state.currentWordSpans.length) {
+        ctx.state.currentWordSpans.forEach((span) => span.classList.remove("spoken"));
       }
-      currentCueIndex = idx;
+      ctx.state.currentCueIndex = idx;
       // The new line starts unlit, and its count has to be invalidated
       // rather than carried over -- otherwise the first tick on a line that
       // happens to light the same number of words as the last one would be
       // mistaken for "nothing changed" and never paint.
       ctx.state.spokenWordCount = -1;
       if (idx < 0) {
-        currentCardEl = null;
-        currentWordSpans = [];
+        ctx.state.currentCardEl = null;
+        ctx.state.currentWordSpans = [];
         return;
       }
       // Playback can jump several minutes ahead of the mounted window. Bring
       // that cue into the small virtualized range before touching its DOM.
-      ensureVirtualCueWindow(idx);
-      const card = subtitleCardEls[idx];
+      ctx.fns.ensureVirtualCueWindow(idx);
+      const card = ctx.state.subtitleCardEls[idx];
       if (!card) {
-        currentCardEl = null;
-        currentWordSpans = [];
+        ctx.state.currentCardEl = null;
+        ctx.state.currentWordSpans = [];
         return;
       }
-      currentCardEl = card;
-      currentWordSpans = subtitleCues[idx] && subtitleCues[idx].words
-        ? (cueWordSpans[idx] || []) : [];
-      decorateCardWords(idx);
-      currentWordSpans = subtitleCues[idx] && subtitleCues[idx].words
-        ? (cueWordSpans[idx] || []) : [];
-      ensureCardActions(idx);
+      ctx.state.currentCardEl = card;
+      ctx.state.currentWordSpans = ctx.state.subtitleCues[idx] && ctx.state.subtitleCues[idx].words
+        ? (ctx.state.cueWordSpans[idx] || []) : [];
+      ctx.fns.decorateCardWords(idx);
+      ctx.state.currentWordSpans = ctx.state.subtitleCues[idx] && ctx.state.subtitleCues[idx].words
+        ? (ctx.state.cueWordSpans[idx] || []) : [];
+      ctx.fns.ensureCardActions(idx);
       card.classList.add("current");
       // Seek jumps use an immediate scroll rather than the normal spring:
       // an offscreen target may be mounted with an estimated height and then
@@ -300,21 +300,22 @@
         needsCenter = !Number.isFinite(cardCenter) || Math.abs(cardCenter - rootCenter) > 1;
       }
       if (autoScroll && needsCenter &&
-          (immediate || Date.now() - lastAutoScrollAt >= 180)) {
+          (immediate || Date.now() - ctx.state.lastAutoScrollAt >= 180)) {
         // Animate scrollTop ourselves instead of using native smooth
         // scrollIntoView. The virtualized list can recycle cards while a
         // native animation is running; an explicit target plus cancellation
         // on user input keeps the lyric-style motion stable.
-        smoothCenterCard(card, immediate);
-        lastAutoScrollAt = Date.now();
+        ctx.fns.smoothCenterCard(card, immediate);
+        ctx.state.lastAutoScrollAt = Date.now();
       }
-      scheduleVirtualMeasure();
+      ctx.fns.scheduleVirtualMeasure();
     }
 
     ctx.fns.showWordPopup = showWordPopup;
     ctx.fns.speakWord = speakWord;
     ctx.fns.updateWordPopupPKnown = updateWordPopupPKnown;
     ctx.fns.updateCurrentCue = updateCurrentCue;
+    ctx.fns.updateSpokenWords = updateSpokenWords;
     ctx.fns.highlightCue = highlightCue;
     }
     installDictionary(ctx);

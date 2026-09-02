@@ -22,6 +22,21 @@
     ctx.state.loopEndIdx = -1;
     ctx.state.vocabEntries = [];
     ctx.state.vocabTestStatus = null;
+    ctx.state.subtitleCues = [];
+    ctx.state.subtitleCardEls = [];
+    ctx.state.cueWordSpans = [];
+    ctx.state.cueTextEls = [];
+    ctx.state.cueActionEls = [];
+    ctx.state.mountedCueIndices = new Set();
+    ctx.state.currentCueIndex = -1;
+    ctx.state.lastPositionMs = NaN;
+    ctx.state.currentCardEl = null;
+    ctx.state.currentWordSpans = [];
+    ctx.state.subtitleGeneration = 0;
+    ctx.state.subtitleModelVersion = 0;
+    ctx.state.lastUserScrollAt = 0;
+    ctx.state.lastManualScrollAt = 0;
+    ctx.state.lastAutoScrollAt = 0;
 
     const $ = (id) => root.getElementById(id);
     const chatEl = $("chat");

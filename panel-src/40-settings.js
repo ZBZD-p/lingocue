@@ -131,9 +131,9 @@
      *  and half the state this touches hasn't been declared yet. */
     function reloadForSecondary(value, isUserChange) {
       if (!isUserChange) return;
-      resetSubtitleSession();
+      ctx.fns.resetSubtitleSession();
       subsNote.hidden = true;
-      if (ctx.state.currentPage === "subs") loadSubtitleCues();
+      if (ctx.state.currentPage === "subs") ctx.fns.loadSubtitleCues();
     }
 
     const wordHighlightOn = () => settingValue("wordHighlight") !== "off";
@@ -148,9 +148,9 @@
      *  which is why this isn't purely a render concern. */
     function reloadForWordHighlight(value, isUserChange) {
       if (!isUserChange) return;
-      startPositionPolling();
-      resetSubtitleSession();
-      if (ctx.state.currentPage === "subs") loadSubtitleCues();
+      ctx.fns.startPositionPolling();
+      ctx.fns.resetSubtitleSession();
+      if (ctx.state.currentPage === "subs") ctx.fns.loadSubtitleCues();
     }
 
     // No reload needed -- the cue text already loaded didn't change, only

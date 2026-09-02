@@ -166,8 +166,8 @@
       if (!res.ok) throw new Error(`保存失败（HTTP ${res.status}）`);
       const data = await res.json();
       ctx.fns.refreshVocabHighlight();
-      invalidateDifficultyBadge();
-      updateDifficultyBadge();
+      ctx.fns.invalidateDifficultyBadge();
+      ctx.fns.updateDifficultyBadge();
       return data;
     }
 
@@ -208,9 +208,9 @@
         // Already sitting on the same video? Seek in place instead of
         // reloading the exact page it's already on -- a navigation would
         // just tear down and re-fetch everything to end up right back here.
-        const p = player();
+        const p = ctx.fns.player();
         if (p && p.kind === "youtube" && entry.timestamp_seconds != null &&
-            youtubeVideoId(entry.video_url) === youtubeVideoId(location.href)) {
+            ctx.fns.youtubeVideoId(entry.video_url) === ctx.fns.youtubeVideoId(location.href)) {
           e.preventDefault();
           p.seekMs(entry.timestamp_seconds * 1000);
         }
