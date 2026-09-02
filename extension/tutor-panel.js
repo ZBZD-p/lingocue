@@ -583,6 +583,13 @@
   // ---- panel -------------------------------------------------------------
 
   function init(host, root) {
+    const ctx = {
+      state: Object.create(null),
+      fns: Object.create(null),
+    };
+    ctx.state.currentItemId = null;
+    ctx.state.lastProbe = "尚未检测";
+
     const $ = (id) => root.getElementById(id);
     const chatEl = $("chat");
     const inputEl = $("input");
@@ -3916,29 +3923,31 @@
     // it: the real <video> element is reachable, so position is read straight
     // off it rather than polled out of an API.
 
-    let currentItemId = null;
     // What the last detection attempt actually saw. Surfaced in the context
     // bar when there's no playback record, so a failure to find the player
     // reads as a specific reason instead of a blank "还没开始播放".
-    let lastProbe = "尚未检测";
 
-    function findVideo() {
-      // Jellyfin creates and destroys the element per playback session, and
-      // on an episode change the outgoing one can still be in the DOM while
-      // the new one spins up. Taking the first match would then read the
-      // previous episode's clock, which is what made subtitle highlighting
-      // drift after switching videos -- so prefer one that's actually live.
-      const candidates = Array.from(document.querySelectorAll("video"));
-      // Some Jellyfin builds mount the player inside a web component, where
-      // a document-level query can't see it -- walk open shadow roots too.
-      for (const el of document.querySelectorAll("*")) {
-        if (el.shadowRoot) candidates.push(...el.shadowRoot.querySelectorAll("video"));
+    function installJellyfin(ctx) {
+      function findVideo() {
+        // Jellyfin creates and destroys the element per playback session, and
+        // on an episode change the outgoing one can still be in the DOM while
+        // the new one spins up. Taking the first match would then read the
+        // previous episode's clock, which is what made subtitle highlighting
+        // drift after switching videos -- so prefer one that's actually live.
+        const candidates = Array.from(document.querySelectorAll("video"));
+        // Some Jellyfin builds mount the player inside a web component, where
+        // a document-level query can't see it -- walk open shadow roots too.
+        for (const el of document.querySelectorAll("*")) {
+          if (el.shadowRoot) candidates.push(...el.shadowRoot.querySelectorAll("video"));
+        }
+        const usable = candidates.filter(
+          (v) => v.isConnected && v.duration && !isNaN(v.duration)
+        );
+        return usable.find((v) => !v.paused) || usable[0] || candidates[0] || null;
       }
-      const usable = candidates.filter(
-        (v) => v.isConnected && v.duration && !isNaN(v.duration)
-      );
-      return usable.find((v) => !v.paused) || usable[0] || candidates[0] || null;
+      ctx.fns.findVideo = findVideo;
     }
+    installJellyfin(ctx);
 
     // ---- playback source ----
     // Two very different things can be driving playback: the <video> element
@@ -3952,13 +3961,13 @@
     // underlying players happen to use.
 
     function html5Player() {
-      const v = findVideo();
+      const v = ctx.fns.findVideo();
       if (!v) {
-        lastProbe = "面板没在页面上找到 <video> 元素";
+        ctx.state.lastProbe = "面板没在页面上找到 <video> 元素";
         return null;
       }
       if (!v.duration || isNaN(v.duration)) {
-        lastProbe = `找到 <video> 但还没有时长（src=${(v.currentSrc || v.src || "空").slice(0, 60)}）`;
+        ctx.state.lastProbe = `找到 <video> 但还没有时长（src=${(v.currentSrc || v.src || "空").slice(0, 60)}）`;
         return null;
       }
       return {
@@ -3976,7 +3985,7 @@
     function youtubePlayer() {
       const yt = window.__englishTutorYouTube;
       if (!yt || !yt.ready()) {
-        lastProbe = "YouTube 播放器还没就绪";
+        ctx.state.lastProbe = "YouTube 播放器还没就绪";
         return null;
       }
       return {
@@ -4071,16 +4080,16 @@
         });
         if (reportSeq !== playbackReportSeq) return;
         if (!res.ok) {
-          lastProbe = res.status === 409
+          ctx.state.lastProbe = res.status === 409
             ? "Jellyfin 还没报告播放会话，稍等几秒"
             : `上报播放状态失败（HTTP ${res.status}）`;
           return;
         }
-        lastProbe = "";
+        ctx.state.lastProbe = "";
 
         const data = await res.json();
-        if (data.path && data.path !== currentItemId) {
-          currentItemId = data.path;
+        if (data.path && data.path !== ctx.state.currentItemId) {
+          ctx.state.currentItemId = data.path;
           // New episode -- drop the old cues so the subtitle page reloads
           // for what's playing now, not the previous episode.
           invalidateDifficultyBadge();
@@ -4093,7 +4102,7 @@
         }
       } catch (e) {
         if (e.name === "AbortError" || reportSeq !== playbackReportSeq) return;
-        lastProbe = "连不上后端 app.py";
+        ctx.state.lastProbe = "连不上后端 app.py";
       } finally {
         if (reportSeq === playbackReportSeq) playbackReportController = null;
       }
@@ -4111,7 +4120,7 @@
       invalidateDifficultyBadge();
       resetSubtitleSession();
       detachSeekVideo();
-      currentItemId = null;
+      ctx.state.currentItemId = null;
       subsNote.hidden = true;
       previewedWordForms.clear();
       if (previewSession) {
@@ -4217,7 +4226,7 @@
       const now = Date.now();
       if (now - lastSeekProbeAt < 500) return;
       lastSeekProbeAt = now;
-      const video = findVideo();
+      const video = ctx.fns.findVideo();
       if (video === seekVideo) return;
       if (seekVideo) {
         seekVideo.removeEventListener("seeking", handleVideoSeeking);
@@ -4277,8 +4286,8 @@
         if (!data.available) {
           // lastProbe says what the panel itself sees; without it a detection
           // failure is indistinguishable from "nothing is playing yet".
-          contextBar.textContent = lastProbe
-            ? `⚠ ${lastProbe}`
+          contextBar.textContent = ctx.state.lastProbe
+            ? `⚠ ${ctx.state.lastProbe}`
             : (data.error || "还没开始播放");
           return;
         }

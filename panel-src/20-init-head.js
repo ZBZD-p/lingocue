@@ -1,4 +1,11 @@
   function init(host, root) {
+    const ctx = {
+      state: Object.create(null),
+      fns: Object.create(null),
+    };
+    ctx.state.currentItemId = null;
+    ctx.state.lastProbe = "尚未检测";
+
     const $ = (id) => root.getElementById(id);
     const chatEl = $("chat");
     const inputEl = $("input");

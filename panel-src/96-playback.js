@@ -10,13 +10,13 @@
     // underlying players happen to use.
 
     function html5Player() {
-      const v = findVideo();
+      const v = ctx.fns.findVideo();
       if (!v) {
-        lastProbe = "面板没在页面上找到 <video> 元素";
+        ctx.state.lastProbe = "面板没在页面上找到 <video> 元素";
         return null;
       }
       if (!v.duration || isNaN(v.duration)) {
-        lastProbe = `找到 <video> 但还没有时长（src=${(v.currentSrc || v.src || "空").slice(0, 60)}）`;
+        ctx.state.lastProbe = `找到 <video> 但还没有时长（src=${(v.currentSrc || v.src || "空").slice(0, 60)}）`;
         return null;
       }
       return {
@@ -34,7 +34,7 @@
     function youtubePlayer() {
       const yt = window.__englishTutorYouTube;
       if (!yt || !yt.ready()) {
-        lastProbe = "YouTube 播放器还没就绪";
+        ctx.state.lastProbe = "YouTube 播放器还没就绪";
         return null;
       }
       return {
@@ -129,16 +129,16 @@
         });
         if (reportSeq !== playbackReportSeq) return;
         if (!res.ok) {
-          lastProbe = res.status === 409
+          ctx.state.lastProbe = res.status === 409
             ? "Jellyfin 还没报告播放会话，稍等几秒"
             : `上报播放状态失败（HTTP ${res.status}）`;
           return;
         }
-        lastProbe = "";
+        ctx.state.lastProbe = "";
 
         const data = await res.json();
-        if (data.path && data.path !== currentItemId) {
-          currentItemId = data.path;
+        if (data.path && data.path !== ctx.state.currentItemId) {
+          ctx.state.currentItemId = data.path;
           // New episode -- drop the old cues so the subtitle page reloads
           // for what's playing now, not the previous episode.
           invalidateDifficultyBadge();
@@ -151,7 +151,7 @@
         }
       } catch (e) {
         if (e.name === "AbortError" || reportSeq !== playbackReportSeq) return;
-        lastProbe = "连不上后端 app.py";
+        ctx.state.lastProbe = "连不上后端 app.py";
       } finally {
         if (reportSeq === playbackReportSeq) playbackReportController = null;
       }
@@ -169,7 +169,7 @@
       invalidateDifficultyBadge();
       resetSubtitleSession();
       detachSeekVideo();
-      currentItemId = null;
+      ctx.state.currentItemId = null;
       subsNote.hidden = true;
       previewedWordForms.clear();
       if (previewSession) {
@@ -275,7 +275,7 @@
       const now = Date.now();
       if (now - lastSeekProbeAt < 500) return;
       lastSeekProbeAt = now;
-      const video = findVideo();
+      const video = ctx.fns.findVideo();
       if (video === seekVideo) return;
       if (seekVideo) {
         seekVideo.removeEventListener("seeking", handleVideoSeeking);
@@ -335,8 +335,8 @@
         if (!data.available) {
           // lastProbe says what the panel itself sees; without it a detection
           // failure is indistinguishable from "nothing is playing yet".
-          contextBar.textContent = lastProbe
-            ? `⚠ ${lastProbe}`
+          contextBar.textContent = ctx.state.lastProbe
+            ? `⚠ ${ctx.state.lastProbe}`
             : (data.error || "还没开始播放");
           return;
         }
