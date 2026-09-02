@@ -394,6 +394,85 @@ class PersonalizedScoringTests(unittest.TestCase):
                 knowledge.VOCAB_FILE = old_vocab
                 knowledge.DIFFICULTY_DB = old_db
 
+    def test_vocab_highlight_scores_are_opt_in_and_preserve_default_shape(self):
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.executescript(
+            """
+            CREATE TABLE user_profile (id INTEGER PRIMARY KEY, vocab_size INTEGER);
+            CREATE TABLE word_knowledge (
+                lemma TEXT PRIMARY KEY, logit REAL, p_known REAL, updated_at INTEGER
+            );
+            INSERT INTO user_profile VALUES (1, 3500);
+            INSERT INTO word_knowledge VALUES ('known', 0, 0.9, 0);
+            """
+        )
+        try:
+            with patch.object(app.knowledge, "open_db", return_value=db), \
+                 patch.object(app, "_lex", return_value=_LexStub()):
+                response = TestClient(app.app).post(
+                    "/api/vocab-highlight", json={"cues": ["known new"]}
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"result": [["new"]]})
+        finally:
+            db.close()
+
+    def test_vocab_highlight_scores_cover_known_words_above_threshold(self):
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.executescript(
+            """
+            CREATE TABLE user_profile (id INTEGER PRIMARY KEY, vocab_size INTEGER);
+            CREATE TABLE word_knowledge (
+                lemma TEXT PRIMARY KEY, logit REAL, p_known REAL, updated_at INTEGER
+            );
+            INSERT INTO user_profile VALUES (1, 3500);
+            INSERT INTO word_knowledge VALUES ('known', 0, 0.9, 0);
+            """
+        )
+        try:
+            with patch.object(app.knowledge, "open_db", return_value=db), \
+                 patch.object(app, "_lex", return_value=_LexStub()):
+                response = TestClient(app.app).post(
+                    "/api/vocab-highlight",
+                    json={"cues": ["known new"], "include_scores": True},
+                )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["result"], [["new"]])
+            details = {entry["word"]: entry for entry in payload["scores"][0]}
+            self.assertAlmostEqual(details["known"]["p_known"], 0.9)
+            self.assertEqual(details["known"]["source"], "word_knowledge")
+            self.assertIn("known", details)
+        finally:
+            db.close()
+
+    def test_vocab_highlight_scores_distinguish_evidence_from_prior(self):
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.executescript(
+            """
+            CREATE TABLE user_profile (id INTEGER PRIMARY KEY, vocab_size INTEGER);
+            CREATE TABLE word_knowledge (
+                lemma TEXT PRIMARY KEY, logit REAL, p_known REAL, updated_at INTEGER
+            );
+            INSERT INTO user_profile VALUES (1, 3500);
+            INSERT INTO word_knowledge VALUES ('recorded', 0, 0.2, 0);
+            """
+        )
+        try:
+            with patch.object(app.knowledge, "open_db", return_value=db), \
+                 patch.object(app, "_lex", return_value=_LexStub()):
+                response = TestClient(app.app).post(
+                    "/api/vocab-highlight",
+                    json={"cues": ["recorded unseen"], "include_scores": True},
+                )
+            self.assertEqual(response.status_code, 200)
+            details = {entry["word"]: entry for entry in response.json()["scores"][0]}
+            self.assertEqual(details["recorded"]["source"], "word_knowledge")
+            self.assertEqual(details["unseen"]["source"], "prior_p_known")
+            self.assertNotEqual(details["recorded"]["source"], details["unseen"]["source"])
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

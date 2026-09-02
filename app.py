@@ -580,6 +580,7 @@ _HIGHLIGHT_TRIM_RE = re.compile(r"^[^\w']+|[^\w']+$")
 
 class VocabHighlightRequest(BaseModel):
     cues: list[str]  # raw cue text, same strings the subtitle cards render
+    include_scores: bool = False
 
 
 @app.post("/api/vocab-highlight")
@@ -599,8 +600,10 @@ def vocab_highlight(body: VocabHighlightRequest):
         db.close()
 
     result = []
+    scores = [] if body.include_scores else None
     for cue_text in body.cues:
         unknown = []
+        cue_scores = [] if body.include_scores else None
         for i, raw in enumerate(cue_text.split()):
             token = _HIGHLIGHT_TRIM_RE.sub("", raw)
             # \w includes digits, so "12" or "1920s" survive the trim above
@@ -622,13 +625,22 @@ def vocab_highlight(body: VocabHighlightRequest):
                 continue
             lemma = lex.lemma_of(norm)
             p = known.get(lemma)
+            source = "word_knowledge"
             if p is None:
                 rank, _band = lex.rank_band(lemma)
                 p = knowledge.prior_p_known(rank, v)
+                source = "prior_p_known"
+            if body.include_scores:
+                cue_scores.append({"word": lower, "p_known": p, "source": source})
             if p < VOCAB_HIGHLIGHT_THRESHOLD:
                 unknown.append(lower)
         result.append(unknown)
-    return {"result": result}
+        if body.include_scores:
+            scores.append(cue_scores)
+    response = {"result": result}
+    if body.include_scores:
+        response["scores"] = scores
+    return response
 
 
 @app.get("/api/difficulty/{video_id}")
