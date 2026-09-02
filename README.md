@@ -166,19 +166,25 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -WithPunctuation
 
 ### 修改代码后扩展没有更新
 
-如果修改的是 `static/tutor-panel.js`，请同步到扩展目录：
+面板代码现在按顺序保存在 `panel-src/` 分片中，由 manifest 驱动构建。请修改分片后重新构建两个产物：
 
 ```powershell
-Copy-Item .\static\tutor-panel.js .\extension\tutor-panel.js
+python tools/build_panel.py
 ```
 
-提交前可用 `tools/check_duplicates.py` 自动检查两份副本。安装仓库提供的 pre-commit hook：
+不要直接编辑 `static/tutor-panel.js` 或 `extension/tutor-panel.js`，因为下次构建会覆盖手工修改。提交前可用以下命令检查产物是否与分片一致：
+
+```powershell
+python tools/build_panel.py --check
+```
+
+也可以安装仓库提供的 pre-commit hook：
 
 ```powershell
 Copy-Item .\tools\hooks\pre-commit .\.git\hooks\pre-commit
 ```
 
-之后每次提交都会检查必须保持一致的文件；若检查失败，请按错误信息运行同步命令。
+之后每次提交都会检查必须保持一致的文件；若检查失败，请先重新构建面板产物。
 
 然后在 `chrome://extensions/` 页面刷新扩展，并刷新 YouTube 页面。
 

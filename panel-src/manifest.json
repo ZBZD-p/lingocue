@@ -1,0 +1,6 @@
+{
+  "fragments": [
+    "00-prelude.js",
+    "99-rest.js"
+  ]
+}

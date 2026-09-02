@@ -19,6 +19,8 @@ jobs:
           node-version: "20"
       - name: Run Python tests
         run: python -m unittest discover -p "test_*.py"
+      - name: Check generated panel bundle
+        run: python tools/build_panel.py --check
       - name: Check duplicate files
         run: python tools/check_duplicates.py
       - name: Check JavaScript syntax
