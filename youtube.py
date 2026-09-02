@@ -1011,7 +1011,21 @@ _CAPTION_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 def _video_id_from_url(url: str) -> str:
-    return urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("v", [""])[0]
+    """Return the video id from a YouTube watch or Shorts URL.
+
+    The extension normally sends the id separately, but the subtitle worker
+    receives the URL and derives it again here. Shorts keep the id in the
+    path (``/shorts/<id>``), unlike the query parameter used by ``/watch``.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.path == "/watch":
+        query_id = urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
+        if query_id:
+            return query_id
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0].lower() == "shorts":
+        return urllib.parse.unquote(parts[1])
+    return ""
 
 
 def _snippets_to_cues(track) -> list[tuple[int, int, str]]:

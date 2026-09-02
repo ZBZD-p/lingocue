@@ -22,14 +22,25 @@
 
   var DEFAULT_BACKEND = "http://127.0.0.1:8420";
   var CARD_SELECTOR = "ytd-rich-item-renderer, ytd-video-renderer, " +
-    "ytd-compact-video-renderer, ytd-grid-video-renderer";
+    "ytd-compact-video-renderer, ytd-grid-video-renderer, " +
+    "ytm-shorts-lockup-view-model-v2";
   var BADGE_CLASS = "lc-difficulty-badge";
+
+  function videoIdFromUrl(href) {
+    var parser = window.__lingocueYouTubeUrl;
+    if (!parser || typeof parser.videoIdFromUrl !== "function") return null;
+    return parser.videoIdFromUrl(href);
+  }
 
   function videoIdOf(card) {
     var a = card.querySelector('a[href*="/watch?v="]');
-    if (!a) return null;
-    try { return new URL(a.href, location.href).searchParams.get("v"); }
-    catch (e) { return null; }
+    if (a) return videoIdFromUrl(a.href);
+    var anchors = card.querySelectorAll("a[href]");
+    for (var i = 0; i < anchors.length; i++) {
+      var id = videoIdFromUrl(anchors[i].href);
+      if (id) return id;
+    }
+    return null;
   }
 
   function channelLinkOf(card) {
@@ -116,6 +127,7 @@
     entries.forEach(function (entry) {
       if (!entry.isIntersecting) return;
       var card = entry.target;
+      if (hasMatchingCardAncestor(card)) return;
       if (card.querySelector("." + BADGE_CLASS)) return;  // already badged
       var videoId = videoIdOf(card);
       if (!videoId) return;
@@ -165,11 +177,21 @@
 
   var lastScanAt = 0;
   var scanTimer = null;
+  function hasMatchingCardAncestor(card) {
+    var ancestor = card.parentElement;
+    while (ancestor) {
+      if (ancestor.matches && ancestor.matches(CARD_SELECTOR)) return true;
+      ancestor = ancestor.parentElement;
+    }
+    return false;
+  }
+
   function scanForCards() {
     scanTimer = null;
     lastScanAt = Date.now();
     document.querySelectorAll(CARD_SELECTOR + ":not([data-lc-observed])").forEach(function (card) {
       card.setAttribute("data-lc-observed", "1");
+      if (hasMatchingCardAncestor(card)) return;
       io.observe(card);
     });
   }

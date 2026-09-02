@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+python "$repo_root/tools/check_duplicates.py"

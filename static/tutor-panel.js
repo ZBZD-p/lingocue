@@ -147,6 +147,11 @@
     { value: "on", label: "开" },
   ];
 
+  const DEVELOPER_MODE_OPTIONS = [
+    { value: "off", label: "关" },
+    { value: "on", label: "开" },
+  ];
+
   // DeepSeek-only -- Claude's extended thinking has no "off" state exposed
   // through the CLI's --effort flag, so this doesn't belong on the shared
   // 思考程度 dropdown (see its showWhen).
@@ -180,6 +185,11 @@
       key: "learning",
       label: "生词学习",
       hint: "决定哪些词会在字幕中作为生词提示。",
+    },
+    {
+      key: "developer",
+      label: "开发者选项",
+      hint: "用于排查掌握度数据，普通使用不需要打开。",
     },
     {
       key: "appearance",
@@ -309,6 +319,22 @@
       storageKey: "english-tutor-vocab-highlight",
     },
     {
+      key: "developerMode",
+      section: "developer",
+      label: "开发者模式",
+      hint: "打开后可以启用用于排查的掌握度诊断信息。",
+      options: DEVELOPER_MODE_OPTIONS,
+      storageKey: "english-tutor-developer-mode",
+    },
+    {
+      key: "showPKnown",
+      section: "developer",
+      label: "显示 p_known",
+      hint: "在词汇弹窗中显示掌握度数值，以及它来自真实证据还是先验估算。",
+      options: DEVELOPER_MODE_OPTIONS,
+      storageKey: "english-tutor-show-p-known",
+    },
+    {
       key: "theme",
       section: "appearance",
       label: "外观",
@@ -429,6 +455,7 @@
       </div>
       <div class="word-popup" id="wordPopup">
         <div class="word-popup-def" id="wordPopupDef"></div>
+        <div class="word-popup-def" id="wordPopupPKnown" hidden></div>
         <div class="word-popup-actions">
           <button class="word-popup-speak" title="朗读">${icon("speaker")}</button>
           <button class="word-popup-save">${icon("star")} 存生词</button>
@@ -577,6 +604,7 @@
     const phraseEmpty = $("phraseEmpty");
     const wordPopup = $("wordPopup");
     const wordPopupDef = $("wordPopupDef");
+    const wordPopupPKnown = $("wordPopupPKnown");
     const difficultyBadge = $("difficultyBadge");
     const previewBar = $("previewBar");
     const previewBarText = $("previewBarText");
@@ -864,6 +892,8 @@
 
     const wordHighlightOn = () => settingValue("wordHighlight") !== "off";
     const vocabHighlightOn = () => settingValue("vocabHighlight") === "on";
+    const showPKnownOn = () => settingValue("developerMode") === "on" &&
+      settingValue("showPKnown") === "on";
 
     /** Same refetch reasoning as reloadForSecondary above -- the per-word
      *  timings ride along in the cue payload and are only asked for when
@@ -899,6 +929,22 @@
         abortVocabHighlight();
         cueUnknownWords = [];
         applyVocabHighlight();
+        if (showPKnownOn()) {
+          refreshVocabHighlight();
+        } else {
+          cueWordScores = [];
+          updateWordPopupPKnown();
+        }
+      }
+    }
+
+    function toggleDeveloperDiagnostics(value, isUserChange) {
+      if (!isUserChange) return;
+      if (showPKnownOn()) {
+        refreshVocabHighlight();
+      } else {
+        cueWordScores = [];
+        updateWordPopupPKnown();
       }
     }
 
@@ -949,6 +995,8 @@
       vocabHighlight: toggleVocabHighlight,
       deepseekKey: pushDeepSeekConfig,
       deepseekModel: pushDeepSeekConfig,
+      developerMode: toggleDeveloperDiagnostics,
+      showPKnown: toggleDeveloperDiagnostics,
       theme: (value) => host.setAttribute("theme", value || "dark"),
       // Not called during the boot-time restore (isUserChange false) --
       // at that point the loop below hasn't reached the later rows yet
@@ -1491,6 +1539,10 @@
     // lowercased words in subtitleCues[i].text flagged likely-unknown, or
     // undefined until /api/vocab-highlight has answered for this render.
     let cueUnknownWords = [];
+    // Parallel to cueUnknownWords -- cueWordScores[i] is a Map keyed by the
+    // lowercased surface word, populated only when the developer diagnostic
+    // setting asks the backend for p_known details.
+    let cueWordScores = [];
     let currentCueIndex = -1;
     // Card-level virtualization: keep the cue data in memory, but only mount
     // a bounded window of cards around the viewport/current line. The old
@@ -1595,6 +1647,7 @@
       lastPositionMs = NaN;
       spokenWordCount = -1;
       cueUnknownWords = [];
+      cueWordScores = [];
       if (subsScroll) subsScroll.innerHTML = "";
     }
 
@@ -1686,6 +1739,7 @@
       subtitleCueSignature = nextSignature;
       subtitleModelVersion++;
       cueUnknownWords = [];
+      cueWordScores = [];
       currentCueIndex = findCueByIdentity(subtitleCues, oldCurrentKey, -1);
       lastPositionMs = NaN;
 
@@ -2538,7 +2592,8 @@
     // progressive rendering already makes elsewhere on this page.
 
     async function refreshVocabHighlight() {
-      if (!vocabHighlightOn() || subtitleCues.length === 0) return;
+      const includeScores = showPKnownOn();
+      if ((!vocabHighlightOn() && !includeScores) || subtitleCues.length === 0) return;
       const generation = subtitleGeneration;
       const modelVersion = subtitleModelVersion;
       const requestId = ++vocabHighlightSeq;
@@ -2550,13 +2605,28 @@
         const res = await fetch(`${API}/api/vocab-highlight`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cues }),
+          body: JSON.stringify(includeScores ? { cues, include_scores: true } : { cues }),
           ...(controller ? { signal: controller.signal } : {}),
         });
         const data = await res.json();
         if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion ||
-            requestId !== vocabHighlightSeq || !vocabHighlightOn()) return;
-        cueUnknownWords = data.result.map((words) => new Set(words));
+            requestId !== vocabHighlightSeq ||
+            (!vocabHighlightOn() && !showPKnownOn()) ||
+            includeScores !== showPKnownOn()) return;
+        cueUnknownWords = vocabHighlightOn() && Array.isArray(data.result)
+          ? data.result.map((words) => new Set(words)) : [];
+        cueWordScores = includeScores && Array.isArray(data.scores)
+          ? data.scores.map((entries) => {
+            const byWord = new Map();
+            if (!Array.isArray(entries)) return byWord;
+            entries.forEach((entry) => {
+              if (!entry || typeof entry.word !== "string") return;
+              const p = Number(entry.p_known);
+              if (!Number.isFinite(p)) return;
+              byWord.set(entry.word.toLowerCase(), { p_known: p, source: entry.source });
+            });
+            return byWord;
+          }) : [];
       } catch (e) {
         return;  // best-effort -- cards just stay unhighlighted
       } finally {
@@ -2564,6 +2634,7 @@
       }
       if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion) return;
       applyVocabHighlight();
+      updateWordPopupPKnown();
     }
 
     function applyVocabHighlight() {
@@ -2596,6 +2667,28 @@
     const defCache = new Map();
     let defRequestId = 0;
     let popupAnchor = null;
+    let popupWord = "";
+    let popupCueIndex = -1;
+
+    function updateWordPopupPKnown() {
+      if (!showPKnownOn()) {
+        wordPopupPKnown.hidden = true;
+        wordPopupPKnown.textContent = "";
+        return;
+      }
+      const norm = popupWord.replace(/^[^\w']+|[^\w']+$/g, "").toLowerCase();
+      const byWord = cueWordScores[popupCueIndex];
+      const detail = byWord && byWord.get(norm);
+      if (!detail || !Number.isFinite(detail.p_known)) {
+        wordPopupPKnown.hidden = true;
+        wordPopupPKnown.textContent = "";
+        return;
+      }
+      const sourceLabel = detail.source === "word_knowledge" ? "真实证据" : "先验估算";
+      wordPopupPKnown.textContent = `p_known: ${detail.p_known.toFixed(3)}（${sourceLabel}）`;
+      wordPopupPKnown.hidden = false;
+      positionPopup();
+    }
 
     async function fillDefinition(word) {
       // Each hover claims a ticket; a slower earlier request that lands
@@ -2695,7 +2788,10 @@
     function showWordPopup(anchorEl, word, sentence, cueIndex) {
       cancelHide();
       popupAnchor = anchorEl;
+      popupWord = word;
+      popupCueIndex = cueIndex;
       wordPopup.classList.add("open");
+      updateWordPopupPKnown();
       fillDefinition(word);
       positionPopup();
 
@@ -3181,6 +3277,11 @@
       if (data && data.ok) {
         entry.streak = data.streak;
         entry.next_review_at = data.next_review_at;
+        if (result === "known") {
+          refreshVocabHighlight();
+          invalidateDifficultyBadge();
+          updateDifficultyBadge();
+        }
       }
       return data;
     }
@@ -3555,7 +3656,11 @@
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(`保存失败（HTTP ${res.status}）`);
-      return res.json();
+      const data = await res.json();
+      refreshVocabHighlight();
+      invalidateDifficultyBadge();
+      updateDifficultyBadge();
+      return data;
     }
 
     async function loadVocabList() {
@@ -3898,7 +4003,7 @@
     /** {video_url, timestamp_seconds} for wherever playback is right now,
      *  YouTube only -- both null on Jellyfin/local video, which has no
      *  external address to hand back to. `location.href` is the actual
-     *  youtube.com watch URL here (this script runs injected into that
+     *  youtube.com video URL here (this script runs injected into that
      *  page itself when it's the YouTube extension), so this just folds
      *  the current position into a `t=` param the same way YouTube's own
      *  share-at-timestamp links do. Read at save time, not click time, so
@@ -3919,12 +4024,19 @@
       return { video_url: url.toString(), timestamp_seconds: seconds };
     }
 
-    /** The `v=` param out of a YouTube watch URL, or null if it isn't one --
+    /** The video id out of a YouTube watch or Shorts URL, or null if it isn't one --
      *  used to tell whether a saved jump target is the video already open
      *  (see buildJumpBtn), so a click there can just seek instead of
      *  reloading the exact page it's already sitting on. */
     function youtubeVideoId(url) {
-      try { return new URL(url).searchParams.get("v"); }
+      try {
+        const parsed = new URL(url, "https://www.youtube.com/");
+        if (parsed.pathname === "/watch") {
+          return parsed.searchParams.get("v") || null;
+        }
+        const match = parsed.pathname.match(/^\/shorts\/([^/]+)(?:\/|$)/);
+        return match ? decodeURIComponent(match[1]) : null;
+      }
       catch (e) { return null; }
     }
 

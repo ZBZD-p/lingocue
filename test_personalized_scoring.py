@@ -252,6 +252,227 @@ class PersonalizedScoringTests(unittest.TestCase):
             finally:
                 knowledge.DIFFICULTY_DB = old_path
 
+    def test_saving_vocab_records_collected_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_vocab = app.VOCAB_FILE
+            old_db = knowledge.DIFFICULTY_DB
+            app.VOCAB_FILE = Path(directory) / "vocab.json"
+            knowledge.DIFFICULTY_DB = Path(directory) / "difficulty.db"
+            try:
+                lex = _LexStub()
+                lex.rank_band = lambda _lemma: (5000, 3)
+                with patch.object(app, "_lex", return_value=lex):
+                    response = TestClient(app.app).post(
+                        "/api/vocab", json={"question": "Rare"}
+                    )
+                self.assertEqual(response.status_code, 200)
+                db = knowledge.open_db()
+                try:
+                    row = db.execute(
+                        "SELECT p_known FROM word_knowledge WHERE lemma = ?", ("rare",)
+                    ).fetchone()
+                    self.assertIsNotNone(row)
+                    self.assertLess(row[0], knowledge.prior_p_known(5000, 3500))
+                finally:
+                    db.close()
+            finally:
+                app.VOCAB_FILE = old_vocab
+                knowledge.DIFFICULTY_DB = old_db
+
+    def test_known_reviews_raise_probability_and_graduate_at_mastery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_vocab = app.VOCAB_FILE
+            old_db = knowledge.DIFFICULTY_DB
+            app.VOCAB_FILE = Path(directory) / "vocab.json"
+            knowledge.DIFFICULTY_DB = Path(directory) / "difficulty.db"
+            try:
+                client = TestClient(app.app)
+                with patch.object(app, "_lex", return_value=_LexStub()):
+                    created = client.post("/api/vocab", json={"question": "Rare"}).json()
+                    db = knowledge.open_db()
+                    try:
+                        before = db.execute(
+                            "SELECT p_known FROM word_knowledge WHERE lemma = ?", ("rare",)
+                        ).fetchone()[0]
+                    finally:
+                        db.close()
+                    first = client.post(
+                        f"/api/vocab/{created['id']}/grade", json={"result": "known"}
+                    )
+                    self.assertEqual(first.status_code, 200)
+                    db = knowledge.open_db()
+                    try:
+                        after_first = db.execute(
+                            "SELECT p_known FROM word_knowledge WHERE lemma = ?", ("rare",)
+                        ).fetchone()[0]
+                    finally:
+                        db.close()
+                    for _ in range(knowledge.MASTERED_STREAK - 1):
+                        graded = client.post(
+                            f"/api/vocab/{created['id']}/grade",
+                            json={"result": "known"},
+                        )
+                    self.assertEqual(graded.json()["streak"], knowledge.MASTERED_STREAK)
+                db = knowledge.open_db()
+                try:
+                    after = db.execute(
+                        "SELECT p_known FROM word_knowledge WHERE lemma = ?", ("rare",)
+                    ).fetchone()[0]
+                finally:
+                    db.close()
+                self.assertGreater(after_first, before)
+                self.assertGreater(after, before)
+                saved = json.loads(app.VOCAB_FILE.read_text(encoding="utf-8"))[0]
+                self.assertEqual(
+                    saved[knowledge.VOCAB_EVIDENCE_KEY]["srs_pass"],
+                    knowledge.MASTERED_STREAK - 1,
+                )
+                self.assertEqual(
+                    saved[knowledge.VOCAB_EVIDENCE_KEY]["srs_graduated"], 1
+                )
+            finally:
+                app.VOCAB_FILE = old_vocab
+                knowledge.DIFFICULTY_DB = old_db
+
+    def test_multiword_vocab_entry_does_not_record_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_vocab = app.VOCAB_FILE
+            old_db = knowledge.DIFFICULTY_DB
+            app.VOCAB_FILE = Path(directory) / "vocab.json"
+            knowledge.DIFFICULTY_DB = Path(directory) / "difficulty.db"
+            try:
+                with patch.object(app, "_lex", return_value=_LexStub()):
+                    response = TestClient(app.app).post(
+                        "/api/vocab", json={"question": "give up"}
+                    )
+                self.assertEqual(response.status_code, 200)
+                db = knowledge.open_db()
+                try:
+                    self.assertEqual(
+                        db.execute("SELECT COUNT(*) FROM word_knowledge").fetchone()[0], 0
+                    )
+                finally:
+                    db.close()
+                self.assertNotIn(knowledge.VOCAB_EVIDENCE_KEY, response.json())
+            finally:
+                app.VOCAB_FILE = old_vocab
+                knowledge.DIFFICULTY_DB = old_db
+
+    def test_backfill_is_idempotent_after_realtime_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_app_vocab = app.VOCAB_FILE
+            old_vocab = knowledge.VOCAB_FILE
+            old_db = knowledge.DIFFICULTY_DB
+            vocab_path = Path(directory) / "vocab.json"
+            app.VOCAB_FILE = vocab_path
+            knowledge.VOCAB_FILE = vocab_path
+            knowledge.DIFFICULTY_DB = Path(directory) / "difficulty.db"
+            try:
+                with patch.object(app, "_lex", return_value=_LexStub()):
+                    client = TestClient(app.app)
+                    created = client.post("/api/vocab", json={"question": "Rare"}).json()
+                    for _ in range(2):
+                        client.post(
+                            f"/api/vocab/{created['id']}/grade",
+                            json={"result": "known"},
+                        )
+                db = knowledge.open_db()
+                try:
+                    knowledge.backfill_from_vocab(db, _LexStub())
+                    first = db.execute(
+                        "SELECT p_known FROM word_knowledge WHERE lemma = ?", ("rare",)
+                    ).fetchone()[0]
+                    knowledge.backfill_from_vocab(db, _LexStub())
+                    second = db.execute(
+                        "SELECT p_known FROM word_knowledge WHERE lemma = ?", ("rare",)
+                    ).fetchone()[0]
+                finally:
+                    db.close()
+                self.assertEqual(first, second)
+            finally:
+                app.VOCAB_FILE = old_app_vocab
+                knowledge.VOCAB_FILE = old_vocab
+                knowledge.DIFFICULTY_DB = old_db
+
+    def test_vocab_highlight_scores_are_opt_in_and_preserve_default_shape(self):
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.executescript(
+            """
+            CREATE TABLE user_profile (id INTEGER PRIMARY KEY, vocab_size INTEGER);
+            CREATE TABLE word_knowledge (
+                lemma TEXT PRIMARY KEY, logit REAL, p_known REAL, updated_at INTEGER
+            );
+            INSERT INTO user_profile VALUES (1, 3500);
+            INSERT INTO word_knowledge VALUES ('known', 0, 0.9, 0);
+            """
+        )
+        try:
+            with patch.object(app.knowledge, "open_db", return_value=db), \
+                 patch.object(app, "_lex", return_value=_LexStub()):
+                response = TestClient(app.app).post(
+                    "/api/vocab-highlight", json={"cues": ["known new"]}
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"result": [["new"]]})
+        finally:
+            db.close()
+
+    def test_vocab_highlight_scores_cover_known_words_above_threshold(self):
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.executescript(
+            """
+            CREATE TABLE user_profile (id INTEGER PRIMARY KEY, vocab_size INTEGER);
+            CREATE TABLE word_knowledge (
+                lemma TEXT PRIMARY KEY, logit REAL, p_known REAL, updated_at INTEGER
+            );
+            INSERT INTO user_profile VALUES (1, 3500);
+            INSERT INTO word_knowledge VALUES ('known', 0, 0.9, 0);
+            """
+        )
+        try:
+            with patch.object(app.knowledge, "open_db", return_value=db), \
+                 patch.object(app, "_lex", return_value=_LexStub()):
+                response = TestClient(app.app).post(
+                    "/api/vocab-highlight",
+                    json={"cues": ["known new"], "include_scores": True},
+                )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["result"], [["new"]])
+            details = {entry["word"]: entry for entry in payload["scores"][0]}
+            self.assertAlmostEqual(details["known"]["p_known"], 0.9)
+            self.assertEqual(details["known"]["source"], "word_knowledge")
+            self.assertIn("known", details)
+        finally:
+            db.close()
+
+    def test_vocab_highlight_scores_distinguish_evidence_from_prior(self):
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.executescript(
+            """
+            CREATE TABLE user_profile (id INTEGER PRIMARY KEY, vocab_size INTEGER);
+            CREATE TABLE word_knowledge (
+                lemma TEXT PRIMARY KEY, logit REAL, p_known REAL, updated_at INTEGER
+            );
+            INSERT INTO user_profile VALUES (1, 3500);
+            INSERT INTO word_knowledge VALUES ('recorded', 0, 0.2, 0);
+            """
+        )
+        try:
+            with patch.object(app.knowledge, "open_db", return_value=db), \
+                 patch.object(app, "_lex", return_value=_LexStub()):
+                response = TestClient(app.app).post(
+                    "/api/vocab-highlight",
+                    json={"cues": ["recorded unseen"], "include_scores": True},
+                )
+            self.assertEqual(response.status_code, 200)
+            details = {entry["word"]: entry for entry in response.json()["scores"][0]}
+            self.assertEqual(details["recorded"]["source"], "word_knowledge")
+            self.assertEqual(details["unseen"]["source"], "prior_p_known")
+            self.assertNotEqual(details["recorded"]["source"], details["unseen"]["source"])
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

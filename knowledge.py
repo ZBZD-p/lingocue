@@ -54,6 +54,37 @@ LOGIT_CLAMP = 4.0
 # clean lemma and is skipped rather than guessed at.
 _WORD_RE = re.compile(r"[A-Za-z']+")
 
+# Stored on each vocab-book entry so real-time events and the one-shot
+# backfill can share a small, durable accounting ledger.  Counts are used
+# rather than a boolean because an entry can be graded more than once.
+VOCAB_EVIDENCE_KEY = "_knowledge_evidence"
+VOCAB_EVIDENCE_KINDS = ("collected", "srs_pass", "srs_graduated")
+
+
+def note_vocab_evidence(entry: dict, kind: str, count: int = 1) -> None:
+    """Record real-time evidence applied for one vocab-book entry."""
+    if kind not in VOCAB_EVIDENCE_KINDS:
+        raise ValueError(f"unsupported vocab evidence kind: {kind}")
+    marker = entry.get(VOCAB_EVIDENCE_KEY)
+    if not isinstance(marker, dict):
+        marker = {}
+    try:
+        previous = max(0, int(marker.get(kind, 0)))
+    except (TypeError, ValueError):
+        previous = 0
+    marker[kind] = previous + count
+    entry[VOCAB_EVIDENCE_KEY] = marker
+
+
+def _vocab_evidence_count(entry: dict, kind: str) -> int:
+    marker = entry.get(VOCAB_EVIDENCE_KEY)
+    if not isinstance(marker, dict):
+        return 0
+    try:
+        return max(0, int(marker.get(kind, 0)))
+    except (TypeError, ValueError):
+        return 0
+
 
 def prior_p_known(rank: int, vocab_size: int, spread: float = 0.35) -> float:
     """vocab_size = estimated vocabulary size. Sigmoid in log-space: word
@@ -182,15 +213,20 @@ def known_map(db: sqlite3.Connection) -> dict[str, float]:
 
 
 def backfill_from_vocab(db: sqlite3.Connection, lex) -> int:
-    """One-shot import from the existing vocab book: a word's *current*
-    streak, not its review history (which isn't recorded per-event), decides
-    how much evidence to apply -- mastered words graduate outright, others
-    get the "collected" penalty plus one "srs_pass" bump per successful
-    review already banked in their streak."""
+    """Import vocab-book evidence, filling only events not already recorded.
+
+    A word's *current* streak, not its review history (which isn't recorded
+    per-event), decides the initial amount of evidence: mastered words
+    graduate outright, others get the ``collected`` penalty plus one
+    ``srs_pass`` bump per successful review already banked in their streak.
+    Each entry keeps a small event-count marker so rerunning this migration,
+    or running it after live endpoint traffic, does not double-count events.
+    """
     if not VOCAB_FILE.exists():
         return 0
     entries = json.loads(VOCAB_FILE.read_text(encoding="utf-8"))
     updated = 0
+    marker_changed = False
     for e in entries:
         toks = _WORD_RE.findall((e.get("question") or ""))
         if len(toks) != 1:
@@ -200,13 +236,24 @@ def backfill_from_vocab(db: sqlite3.Connection, lex) -> int:
         rank, _band = lex.rank_band(lemma)
         streak = e.get("streak", 0)
         if streak >= MASTERED_STREAK:
-            apply_evidence(db, lemma, rank, "srs_graduated")
+            needed = {"srs_graduated": 1}
         else:
-            apply_evidence(db, lemma, rank, "collected")
-            for _ in range(streak):
-                apply_evidence(db, lemma, rank, "srs_pass")
+            needed = {"collected": 1, "srs_pass": max(0, streak)}
+        for kind, total in needed.items():
+            recorded = _vocab_evidence_count(e, kind)
+            for _ in range(max(0, total - recorded)):
+                apply_evidence(db, lemma, rank, kind)
+            if recorded < total:
+                marker_changed = True
+                marker = e.get(VOCAB_EVIDENCE_KEY)
+                if not isinstance(marker, dict):
+                    marker = {}
+                marker[kind] = total
+                e[VOCAB_EVIDENCE_KEY] = marker
         updated += 1
     db.commit()
+    if marker_changed:
+        VOCAB_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
     return updated
 
 
