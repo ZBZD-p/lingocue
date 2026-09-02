@@ -1,3 +1,4 @@
+    function installDictionary(ctx) {
     // ---- dictionary lookups ----
     // Cached per word for the life of the page: hovering back and forth
     // across a line re-requests the same handful of words constantly, and a
@@ -152,7 +153,7 @@
           const answer = def && def.found ? def.translation : "";
           const tags = def && def.found ? def.tags : [];
           const { video_url, timestamp_seconds } = youtubeJumpTarget();
-          await saveVocabEntry({
+          await ctx.fns.saveVocabEntry({
             video_title: lastKnownVideoTitle,
             subtitle_text: sentence,
             question: word,
@@ -175,7 +176,7 @@
         addMessage("user", shown);
         // Same treatment as asking about a whole line: a word's sense often
         // only resolves from the scene around it.
-        runTurn(shown + buildContextBlock(cueIndex == null ? -1 : cueIndex));
+        runTurn(shown + ctx.fns.buildContextBlock(cueIndex == null ? -1 : cueIndex));
       };
     }
 
@@ -207,7 +208,7 @@
       // flashes "current" for that ~150ms on every single lap. While a loop
       // is running, the line being drilled is never actually the one before
       // it, so floor the display at the loop's own start.
-      if (loopActive() && idx < loopStartIdx) idx = loopStartIdx;
+      if (ctx.fns.loopActive() && idx < ctx.state.loopStartIdx) idx = ctx.state.loopStartIdx;
       if (idx !== currentCueIndex) {
         const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
         // A committed progress-bar seek is an explicit navigation command;
@@ -222,7 +223,6 @@
     // How many words of the current line are lit. Kept so the common tick --
     // same word still being spoken -- costs one comparison instead of a
     // classList write per word, which at this poll rate is most ticks.
-    let spokenWordCount = -1;
 
     function updateSpokenWords(positionMs) {
       // No match when the setting is off (nothing was requested, so no cue
@@ -232,17 +232,17 @@
       if (spans.length === 0) return;
       let lit = 0;
       while (lit < spans.length && Number(spans[lit].dataset.start) <= positionMs) lit++;
-      if (lit === spokenWordCount) return;
-      if (lit > spokenWordCount) {
-        for (let i = Math.max(0, spokenWordCount); i < lit; i++) {
+      if (lit === ctx.state.spokenWordCount) return;
+      if (lit > ctx.state.spokenWordCount) {
+        for (let i = Math.max(0, ctx.state.spokenWordCount); i < lit; i++) {
           spans[i].classList.add("spoken");
         }
       } else {
-        for (let i = lit; i < spokenWordCount; i++) {
+        for (let i = lit; i < ctx.state.spokenWordCount; i++) {
           if (spans[i]) spans[i].classList.remove("spoken");
         }
       }
-      spokenWordCount = lit;
+      ctx.state.spokenWordCount = lit;
     }
 
     function highlightCue(idx, autoScroll, immediate = false) {
@@ -259,7 +259,7 @@
       // rather than carried over -- otherwise the first tick on a line that
       // happens to light the same number of words as the last one would be
       // mistaken for "nothing changed" and never paint.
-      spokenWordCount = -1;
+      ctx.state.spokenWordCount = -1;
       if (idx < 0) {
         currentCardEl = null;
         currentWordSpans = [];
@@ -311,3 +311,10 @@
       scheduleVirtualMeasure();
     }
 
+    ctx.fns.showWordPopup = showWordPopup;
+    ctx.fns.speakWord = speakWord;
+    ctx.fns.updateWordPopupPKnown = updateWordPopupPKnown;
+    ctx.fns.updateCurrentCue = updateCurrentCue;
+    ctx.fns.highlightCue = highlightCue;
+    }
+    installDictionary(ctx);

@@ -1,3 +1,4 @@
+    function installVocab(ctx) {
     // ---- vocab ----
 
     // Matches app.py's MASTERED_STREAK -- a word this many consecutive
@@ -17,25 +18,11 @@
       return days <= 0 ? "今天晚些时候" : days === 1 ? "明天" : `${days} 天后`;
     }
 
-    // The full list as last fetched -- kept around (not just handed to
-    // renderVocabList and discarded) so the quiz can build its pool and
-    // mirror a grading's returned streak locally without a second request.
-    let vocabEntries = [];
-
     let quizQueue = [];
     let quizIndex = 0;
     let quizKnown = 0;
     let quizUnknown = 0;
     let quizMissed = [];
-
-    // Vocabulary-size test state -- separate from the review-quiz state
-    // above, since the two run through the same vocabQuiz container but are
-    // otherwise unrelated flows.
-    let vocabTestStage = 1;
-    let vocabTestItems = [];
-    let vocabTestIndex = 0;
-    let vocabTestAnswers = [];
-    let vocabTestStatus = null;  // last /api/vocab-test/status fetch, for the promo line
 
     function shuffled(arr) {
       const a = [...arr];
@@ -95,7 +82,7 @@
       // all, or a word genuinely off all 8 lists), which is the opposite
       // of what "select everything" means to someone using the checkboxes.
       const noFilter = scope.length === 0 || scope.length === QUIZ_TAG_OPTIONS.length;
-      return vocabEntries.filter((e) => {
+      return ctx.state.vocabEntries.filter((e) => {
         if (!e.answer || (e.streak || 0) >= MASTERED_STREAK) return false;
         if (noFilter) return true;
         return (e.tags || []).some((t) => scope.includes(t));
@@ -148,13 +135,13 @@
       const pool = quizPool();
       const scoped = scopedEligible();
       let emptyReason;
-      if (vocabEntries.length === 0) {
+      if (ctx.state.vocabEntries.length === 0) {
         emptyReason = "还没有生词。去生词本页存一些吧。";
       } else {
         // Has an answer and isn't mastered yet, ignoring the scope filter --
         // distinct from "scoped is empty", which could just mean the chosen
         // tags don't match anything even though the book has plenty left.
-        const unscopedEligible = vocabEntries.filter((e) => e.answer && (e.streak || 0) < MASTERED_STREAK);
+        const unscopedEligible = ctx.state.vocabEntries.filter((e) => e.answer && (e.streak || 0) < MASTERED_STREAK);
         if (unscopedEligible.length === 0) {
           emptyReason = "没有可抽查的词——生词都已掌握，或者还没查过意思。";
         } else if (scoped.length === 0) {
@@ -180,10 +167,10 @@
         <button class="quiz-batch-pill${v === batch ? " selected" : ""}" data-batch="${v}">${v === "0" ? "不限" : v}</button>
       `).join("");
 
-      const statusLine = vocabTestStatus
-        ? (vocabTestStatus.is_default
+      const statusLine = ctx.state.vocabTestStatus
+        ? (ctx.state.vocabTestStatus.is_default
             ? "还没测过，视频难度目前按默认水平估计"
-            : `约 ${vocabTestStatus.vocab_size} 词 · ${vocabTestStatus.level_label}`)
+            : `约 ${ctx.state.vocabTestStatus.vocab_size} 词 · ${ctx.state.vocabTestStatus.level_label}`)
         : "加载中…";
 
       vocabQuiz.innerHTML = `
@@ -192,7 +179,7 @@
             <div class="vocab-test-promo-title">你的词汇量</div>
             <div class="vocab-test-promo-sub">${ctx.fns.escapeHtml(statusLine)}</div>
           </div>
-          <button class="vocab-test-start-btn">${vocabTestStatus && !vocabTestStatus.is_default ? "重新测一下" : "测一下"}</button>
+          <button class="vocab-test-start-btn">${ctx.state.vocabTestStatus && !ctx.state.vocabTestStatus.is_default ? "重新测一下" : "测一下"}</button>
         </div>
         <div class="quiz-scope">
           <div class="quiz-scope-row">${scopeHtml}</div>
@@ -238,13 +225,13 @@
 
       const startBtn = vocabQuiz.querySelector(".quiz-start-btn");
       if (startBtn) startBtn.addEventListener("click", () => startQuiz(pool));
-      vocabQuiz.querySelector(".vocab-test-start-btn").addEventListener("click", startVocabTest);
+      vocabQuiz.querySelector(".vocab-test-start-btn").addEventListener("click", ctx.fns.startVocabTest);
     }
 
     async function loadQuizStart() {
       vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">加载中…</div></div>`;
       try {
-        [vocabEntries, vocabTestStatus] = await Promise.all([
+        [ctx.state.vocabEntries, ctx.state.vocabTestStatus] = await Promise.all([
           fetch(`${API}/api/vocab`).then((r) => r.json()),
           fetch(`${API}/api/vocab-test/status`).then((r) => r.json()),
         ]);
@@ -268,7 +255,7 @@
       // the word itself is shown first. Reuses the same pronunciation path
       // as the vocab list's speak button (Youdao audio, falling back to the
       // browser's own TTS).
-      speakWord(entry.question);
+      ctx.fns.speakWord(entry.question);
       vocabQuiz.innerHTML = `
         <div class="quiz-topbar">
           <div class="quiz-progress">${quizIndex + 1} / ${quizQueue.length}</div>
@@ -287,7 +274,7 @@
       // Same word again on reveal -- this click is a direct user gesture
       // (unlike the auto-play on card arrival above), so there's no
       // autoplay-restriction risk here even if the first one got blocked.
-      speakWord(entry.question);
+      ctx.fns.speakWord(entry.question);
       const quizCard = vocabQuiz.querySelector(".quiz-card");
       quizCard.innerHTML = `
         <div class="quiz-word">${ctx.fns.escapeHtml(entry.question)}</div>
@@ -338,3 +325,8 @@
       if (retryBtn) retryBtn.addEventListener("click", () => startQuiz(quizMissed));
     }
 
+    ctx.fns.loadQuizStart = loadQuizStart;
+    ctx.fns.gradeEntry = gradeEntry;
+    ctx.fns.renderQuizStart = renderQuizStart;
+    }
+    installVocab(ctx);

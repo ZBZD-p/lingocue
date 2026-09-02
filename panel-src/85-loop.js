@@ -1,3 +1,4 @@
+    function installLoop(ctx) {
     // ---- Line loop (A-B repeat) ----
     // Hearing a line five times in a row is the drill that actually trains
     // the ear, so this is deliberately dumb: watch the clock and seek back
@@ -29,16 +30,14 @@
     // instead of yanking them back.
     const LOOP_ESCAPE_MS = 5000;
 
-    let loopStartIdx = -1;
-    let loopEndIdx = -1;
     let loopCount = 0;
     let loopTimer = null;
 
-    const loopActive = () => loopStartIdx >= 0;
+    const loopActive = () => ctx.state.loopStartIdx >= 0;
 
     function loopBounds() {
-      const a = subtitleCues[loopStartIdx];
-      const b = subtitleCues[loopEndIdx];
+      const a = subtitleCues[ctx.state.loopStartIdx];
+      const b = subtitleCues[ctx.state.loopEndIdx];
       if (!a || !b) return null;
       const startMs = Math.max(0, a.start_ms - LOOP_LEAD_MS);
       // A very short cue (a one-word "Yes." with barely a beat before the
@@ -53,8 +52,8 @@
     }
 
     function setLoop(startIdx, endIdx) {
-      loopStartIdx = Math.min(startIdx, endIdx);
-      loopEndIdx = Math.max(startIdx, endIdx);
+      ctx.state.loopStartIdx = Math.min(startIdx, endIdx);
+      ctx.state.loopEndIdx = Math.max(startIdx, endIdx);
       loopCount = 0;
       const bounds = loopBounds();
       if (!bounds) { clearLoop(); return; }
@@ -73,7 +72,7 @@
     }
 
     function clearLoop() {
-      loopStartIdx = loopEndIdx = -1;
+      ctx.state.loopStartIdx = ctx.state.loopEndIdx = -1;
       loopCount = 0;
       clearInterval(loopTimer);
       loopTimer = null;
@@ -116,9 +115,9 @@
     function toggleLoopAt(idx) {
       if (!subtitleCues[idx]) return;
       if (!loopActive()) { setLoop(idx, idx); return; }
-      if (loopStartIdx === idx && loopEndIdx === idx) { clearLoop(); return; }
-      if (idx < loopStartIdx) setLoop(idx, loopEndIdx);
-      else if (idx > loopEndIdx) setLoop(loopStartIdx, idx);
+      if (ctx.state.loopStartIdx === idx && ctx.state.loopEndIdx === idx) { clearLoop(); return; }
+      if (idx < ctx.state.loopStartIdx) setLoop(idx, ctx.state.loopEndIdx);
+      else if (idx > ctx.state.loopEndIdx) setLoop(ctx.state.loopStartIdx, idx);
       else setLoop(idx, idx);
     }
 
@@ -131,16 +130,16 @@
       loopPillWrap.hidden = !on;
       if (!on) return;
 
-      for (let i = loopStartIdx; i <= loopEndIdx; i++) {
+      for (let i = ctx.state.loopStartIdx; i <= ctx.state.loopEndIdx; i++) {
         const card = subtitleCardEls[i];
         if (!card) continue;
         card.classList.add("in-loop");
-        if (i === loopStartIdx || i === loopEndIdx) card.classList.add("loop-edge");
+        if (i === ctx.state.loopStartIdx || i === ctx.state.loopEndIdx) card.classList.add("loop-edge");
       }
 
-      const a = subtitleCues[loopStartIdx];
-      const b = subtitleCues[loopEndIdx];
-      const lines = loopEndIdx - loopStartIdx + 1;
+      const a = subtitleCues[ctx.state.loopStartIdx];
+      const b = subtitleCues[ctx.state.loopEndIdx];
+      const lines = ctx.state.loopEndIdx - ctx.state.loopStartIdx + 1;
       loopPillText.textContent =
         (lines === 1 ? ctx.fns.fmt(a.start_ms) : `${ctx.fns.fmt(a.start_ms)} – ${ctx.fns.fmt(b.end_ms)} · ${lines} 句`) +
         (loopCount ? ` · 第 ${loopCount + 1} 遍` : "");
@@ -180,3 +179,11 @@
       runTurn(shown + buildContextBlock(index));
     }
 
+    ctx.fns.loopActive = loopActive;
+    ctx.fns.toggleLoopAt = toggleLoopAt;
+    ctx.fns.clearLoop = clearLoop;
+    ctx.fns.renderLoopState = renderLoopState;
+    ctx.fns.buildContextBlock = buildContextBlock;
+    ctx.fns.askAboutCue = askAboutCue;
+    }
+    installLoop(ctx);

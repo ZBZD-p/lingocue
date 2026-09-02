@@ -61,7 +61,7 @@
         }
         if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion) return;
         applyVocabHighlight();
-        updateWordPopupPKnown();
+        ctx.fns.updateWordPopupPKnown();
       }
 
       function applyVocabHighlight() {
@@ -95,4 +95,3 @@
       ctx.fns.scheduleHideWordPopup = scheduleHideWordPopup;
     }
     installVocabHighlight(ctx);
-

@@ -243,7 +243,7 @@
       const nowMs = p.currentTimeMs();
       if (!Number.isFinite(nowMs)) return;
       lastPositionMs = NaN;
-      updateCurrentCue(nowMs, true);
+      ctx.fns.updateCurrentCue(nowMs, true);
     }
 
     function handleVideoSeeking() {
@@ -305,7 +305,7 @@
         const p = player();
         if (!p) return;
         const nowMs = p.currentTimeMs();
-        if (!isNaN(nowMs)) updateCurrentCue(nowMs, commitSeek);
+        if (!isNaN(nowMs)) ctx.fns.updateCurrentCue(nowMs, commitSeek);
       }, wordHighlightOn() ? POSITION_POLL_WORD_MS : POSITION_POLL_MS);
     }
     startPositionPolling();
@@ -436,4 +436,3 @@
         }
       }
     }
-

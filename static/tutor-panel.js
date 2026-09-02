@@ -601,6 +601,11 @@
     // lowercased surface word, populated only when the developer diagnostic
     // setting asks the backend for p_known details.
     ctx.state.cueWordScores = [];
+    ctx.state.spokenWordCount = -1;
+    ctx.state.loopStartIdx = -1;
+    ctx.state.loopEndIdx = -1;
+    ctx.state.vocabEntries = [];
+    ctx.state.vocabTestStatus = null;
 
     const $ = (id) => root.getElementById(id);
     const chatEl = $("chat");
@@ -748,7 +753,6 @@
     };
     resizer.addEventListener("pointerup", endResize);
     resizer.addEventListener("pointercancel", endResize);
-
     // ---- helpers ----
 
     function installHelpers(ctx) {
@@ -959,7 +963,7 @@
           ctx.fns.refreshVocabHighlight();
         } else {
           ctx.state.cueWordScores = [];
-          updateWordPopupPKnown();
+          ctx.fns.updateWordPopupPKnown();
         }
       }
     }
@@ -970,7 +974,7 @@
         ctx.fns.refreshVocabHighlight();
       } else {
         ctx.state.cueWordScores = [];
-        updateWordPopupPKnown();
+        ctx.fns.updateWordPopupPKnown();
       }
     }
 
@@ -1154,7 +1158,6 @@
         });
       }
     });
-
     // ---- chat history ----
 
     function saveHistory() {
@@ -1534,19 +1537,18 @@
         Object.entries(pages).forEach(([k, el]) => el.classList.toggle("active", k === name));
         composerEl.hidden = name !== "chat";
         if (name === "subs" && subtitleCues.length === 0) loadSubtitleCues();
-        if (name === "vocab") loadVocabList();
+        if (name === "vocab") ctx.fns.loadVocabList();
         if (name === "phrases") ctx.fns.loadPhraseList();
         // Own tab now (not a mode switched into from the vocab list), so
         // entering it always starts fresh at the "开始抽查" prompt rather than
         // trying to resume whatever card a previous visit left off on --
         // same "just reload" philosophy as the vocab list above.
-        if (name === "quiz") loadQuizStart();
+        if (name === "quiz") ctx.fns.loadQuizStart();
       }
       tabBtns.forEach((b) => b.addEventListener("click", () => switchPage(b.dataset.page)));
       ctx.fns.switchPage = switchPage;
     }
     installPages(ctx);
-
     // ---- subtitle cards ----
 
     let subtitleCues = [];
@@ -1659,7 +1661,7 @@
       currentWordSpans = [];
       currentCueIndex = -1;
       lastPositionMs = NaN;
-      spokenWordCount = -1;
+      ctx.state.spokenWordCount = -1;
       ctx.state.cueUnknownWords = [];
       ctx.state.cueWordScores = [];
       if (subsScroll) subsScroll.innerHTML = "";
@@ -1667,7 +1669,7 @@
 
     function resetSubtitleSession() {
       invalidateSubtitleSession();
-      if (typeof clearLoop === "function") clearLoop();
+      ctx.fns.clearLoop();
       clearSubtitleModel();
     }
 
@@ -1743,8 +1745,8 @@
       if (nextSignature === subtitleCueSignature) return false;
       const oldCues = subtitleCues;
       const oldCurrentKey = cueIdentity(oldCues[currentCueIndex]);
-      const oldLoop = typeof loopActive === "function" && loopActive()
-        ? { start: cueIdentity(oldCues[loopStartIdx]), end: cueIdentity(oldCues[loopEndIdx]) }
+      const oldLoop = ctx.fns.loopActive()
+        ? { start: cueIdentity(oldCues[ctx.state.loopStartIdx]), end: cueIdentity(oldCues[ctx.state.loopEndIdx]) }
         : null;
       const savedAnchor = anchor || captureVirtualAnchor();
 
@@ -1761,10 +1763,10 @@
         const start = findCueByIdentity(subtitleCues, oldLoop.start, -1);
         const end = findCueByIdentity(subtitleCues, oldLoop.end, -1);
         if (start >= 0 && end >= 0) {
-          loopStartIdx = Math.min(start, end);
-          loopEndIdx = Math.max(start, end);
+          ctx.state.loopStartIdx = Math.min(start, end);
+          ctx.state.loopEndIdx = Math.max(start, end);
         } else {
-          clearLoop();
+          ctx.fns.clearLoop();
         }
       }
 
@@ -2068,7 +2070,7 @@
       btn.innerHTML = `${icon("retry")} 重试`;
       btn.addEventListener("click", () => { btn.disabled = true; loadSubtitleCues(); });
       subsEmpty.append(text, btn);
-      clearLoop();
+      ctx.fns.clearLoop();
     }
 
     // Virtualized subtitle renderer: the cue data remains in memory, while
@@ -2311,7 +2313,7 @@
           if (currentCardEl === card) {
             currentCardEl = null;
             currentWordSpans = [];
-            spokenWordCount = -1;
+            ctx.state.spokenWordCount = -1;
           }
         }
       }
@@ -2381,9 +2383,9 @@
         currentCardEl = current;
         currentWordSpans = subtitleCues[currentCueIndex].words
           ? (cueWordSpans[currentCueIndex] || []) : [];
-        spokenWordCount = -1;
+        ctx.state.spokenWordCount = -1;
       }
-      renderLoopState();
+      ctx.fns.renderLoopState();
       scheduleVirtualMeasure();
     }
 
@@ -2416,7 +2418,7 @@
       wordObserver = null;
       currentCardEl = null;
       currentWordSpans = [];
-      spokenWordCount = -1;
+      ctx.state.spokenWordCount = -1;
       virtualRangeStart = 0;
       virtualRangeEnd = -1;
       subsScroll.innerHTML = "";
@@ -2427,7 +2429,7 @@
       subsScroll.append(virtualTopSpacer, virtualBottomSpacer);
       renderVirtualWindow(currentCueIndex);
       restoreVirtualAnchor(savedAnchor);
-      renderLoopState();
+      ctx.fns.renderLoopState();
     }
 
     if (typeof ResizeObserver === "function") {
@@ -2498,7 +2500,7 @@
       if (wordSpan) {
         const index = Number(wordSpan.dataset.cueIndex);
         const cue = subtitleCues[index];
-        if (cue) showWordPopup(wordSpan, wordSpan.dataset.word, cue.text, index);
+        if (cue) ctx.fns.showWordPopup(wordSpan, wordSpan.dataset.word, cue.text, index);
         event.stopPropagation();
         return;
       }
@@ -2509,17 +2511,17 @@
       if (!Number.isInteger(index) || !subtitleCues[index]) return;
       if (action) {
         event.stopPropagation();
-        if (action.dataset.subAction === "loop") toggleLoopAt(index);
-        else if (action.dataset.subAction === "ask") askAboutCue(index);
-        else if (action.dataset.subAction === "read") speakWord(subtitleCues[index].text);
+        if (action.dataset.subAction === "loop") ctx.fns.toggleLoopAt(index);
+        else if (action.dataset.subAction === "ask") ctx.fns.askAboutCue(index);
+        else if (action.dataset.subAction === "read") ctx.fns.speakWord(subtitleCues[index].text);
         return;
       }
-      if (loopActive()) { toggleLoopAt(index); return; }
+      if (ctx.fns.loopActive()) { ctx.fns.toggleLoopAt(index); return; }
       const p = player();
       if (p) p.seekMs(subtitleCues[index].start_ms);
       lastUserScrollAt = 0;
       lastPositionMs = NaN;
-      highlightCue(index, true);
+      ctx.fns.highlightCue(index, true);
     });
     subsScroll.addEventListener("mouseout", (event) => {
       const target = event.target && event.target.closest
@@ -2594,7 +2596,6 @@
       makeButton("sub-ask-btn", "ask", `${icon("help")}问这句`, "问一下这句什么意思");
       makeButton("sub-read-btn", "read", `${icon("speaker")}朗读`, "朗读这句");
     }
-
     // ---- vocab-highlight ("生词高亮") -------------------------------------
     //
     // Applied as a second pass over already-rendered .sub-word spans, not
@@ -2658,7 +2659,7 @@
         }
         if (generation !== subtitleGeneration || modelVersion !== subtitleModelVersion) return;
         applyVocabHighlight();
-        updateWordPopupPKnown();
+        ctx.fns.updateWordPopupPKnown();
       }
 
       function applyVocabHighlight() {
@@ -2692,7 +2693,7 @@
       ctx.fns.scheduleHideWordPopup = scheduleHideWordPopup;
     }
     installVocabHighlight(ctx);
-
+    function installDictionary(ctx) {
     // ---- dictionary lookups ----
     // Cached per word for the life of the page: hovering back and forth
     // across a line re-requests the same handful of words constantly, and a
@@ -2847,7 +2848,7 @@
           const answer = def && def.found ? def.translation : "";
           const tags = def && def.found ? def.tags : [];
           const { video_url, timestamp_seconds } = youtubeJumpTarget();
-          await saveVocabEntry({
+          await ctx.fns.saveVocabEntry({
             video_title: lastKnownVideoTitle,
             subtitle_text: sentence,
             question: word,
@@ -2870,7 +2871,7 @@
         addMessage("user", shown);
         // Same treatment as asking about a whole line: a word's sense often
         // only resolves from the scene around it.
-        runTurn(shown + buildContextBlock(cueIndex == null ? -1 : cueIndex));
+        runTurn(shown + ctx.fns.buildContextBlock(cueIndex == null ? -1 : cueIndex));
       };
     }
 
@@ -2902,7 +2903,7 @@
       // flashes "current" for that ~150ms on every single lap. While a loop
       // is running, the line being drilled is never actually the one before
       // it, so floor the display at the loop's own start.
-      if (loopActive() && idx < loopStartIdx) idx = loopStartIdx;
+      if (ctx.fns.loopActive() && idx < ctx.state.loopStartIdx) idx = ctx.state.loopStartIdx;
       if (idx !== currentCueIndex) {
         const quietFor = Date.now() - Math.max(lastUserScrollAt, lastManualScrollAt);
         // A committed progress-bar seek is an explicit navigation command;
@@ -2917,7 +2918,6 @@
     // How many words of the current line are lit. Kept so the common tick --
     // same word still being spoken -- costs one comparison instead of a
     // classList write per word, which at this poll rate is most ticks.
-    let spokenWordCount = -1;
 
     function updateSpokenWords(positionMs) {
       // No match when the setting is off (nothing was requested, so no cue
@@ -2927,17 +2927,17 @@
       if (spans.length === 0) return;
       let lit = 0;
       while (lit < spans.length && Number(spans[lit].dataset.start) <= positionMs) lit++;
-      if (lit === spokenWordCount) return;
-      if (lit > spokenWordCount) {
-        for (let i = Math.max(0, spokenWordCount); i < lit; i++) {
+      if (lit === ctx.state.spokenWordCount) return;
+      if (lit > ctx.state.spokenWordCount) {
+        for (let i = Math.max(0, ctx.state.spokenWordCount); i < lit; i++) {
           spans[i].classList.add("spoken");
         }
       } else {
-        for (let i = lit; i < spokenWordCount; i++) {
+        for (let i = lit; i < ctx.state.spokenWordCount; i++) {
           if (spans[i]) spans[i].classList.remove("spoken");
         }
       }
-      spokenWordCount = lit;
+      ctx.state.spokenWordCount = lit;
     }
 
     function highlightCue(idx, autoScroll, immediate = false) {
@@ -2954,7 +2954,7 @@
       // rather than carried over -- otherwise the first tick on a line that
       // happens to light the same number of words as the last one would be
       // mistaken for "nothing changed" and never paint.
-      spokenWordCount = -1;
+      ctx.state.spokenWordCount = -1;
       if (idx < 0) {
         currentCardEl = null;
         currentWordSpans = [];
@@ -3006,6 +3006,14 @@
       scheduleVirtualMeasure();
     }
 
+    ctx.fns.showWordPopup = showWordPopup;
+    ctx.fns.speakWord = speakWord;
+    ctx.fns.updateWordPopupPKnown = updateWordPopupPKnown;
+    ctx.fns.updateCurrentCue = updateCurrentCue;
+    ctx.fns.highlightCue = highlightCue;
+    }
+    installDictionary(ctx);
+    function installLoop(ctx) {
     // ---- Line loop (A-B repeat) ----
     // Hearing a line five times in a row is the drill that actually trains
     // the ear, so this is deliberately dumb: watch the clock and seek back
@@ -3037,16 +3045,14 @@
     // instead of yanking them back.
     const LOOP_ESCAPE_MS = 5000;
 
-    let loopStartIdx = -1;
-    let loopEndIdx = -1;
     let loopCount = 0;
     let loopTimer = null;
 
-    const loopActive = () => loopStartIdx >= 0;
+    const loopActive = () => ctx.state.loopStartIdx >= 0;
 
     function loopBounds() {
-      const a = subtitleCues[loopStartIdx];
-      const b = subtitleCues[loopEndIdx];
+      const a = subtitleCues[ctx.state.loopStartIdx];
+      const b = subtitleCues[ctx.state.loopEndIdx];
       if (!a || !b) return null;
       const startMs = Math.max(0, a.start_ms - LOOP_LEAD_MS);
       // A very short cue (a one-word "Yes." with barely a beat before the
@@ -3061,8 +3067,8 @@
     }
 
     function setLoop(startIdx, endIdx) {
-      loopStartIdx = Math.min(startIdx, endIdx);
-      loopEndIdx = Math.max(startIdx, endIdx);
+      ctx.state.loopStartIdx = Math.min(startIdx, endIdx);
+      ctx.state.loopEndIdx = Math.max(startIdx, endIdx);
       loopCount = 0;
       const bounds = loopBounds();
       if (!bounds) { clearLoop(); return; }
@@ -3081,7 +3087,7 @@
     }
 
     function clearLoop() {
-      loopStartIdx = loopEndIdx = -1;
+      ctx.state.loopStartIdx = ctx.state.loopEndIdx = -1;
       loopCount = 0;
       clearInterval(loopTimer);
       loopTimer = null;
@@ -3124,9 +3130,9 @@
     function toggleLoopAt(idx) {
       if (!subtitleCues[idx]) return;
       if (!loopActive()) { setLoop(idx, idx); return; }
-      if (loopStartIdx === idx && loopEndIdx === idx) { clearLoop(); return; }
-      if (idx < loopStartIdx) setLoop(idx, loopEndIdx);
-      else if (idx > loopEndIdx) setLoop(loopStartIdx, idx);
+      if (ctx.state.loopStartIdx === idx && ctx.state.loopEndIdx === idx) { clearLoop(); return; }
+      if (idx < ctx.state.loopStartIdx) setLoop(idx, ctx.state.loopEndIdx);
+      else if (idx > ctx.state.loopEndIdx) setLoop(ctx.state.loopStartIdx, idx);
       else setLoop(idx, idx);
     }
 
@@ -3139,16 +3145,16 @@
       loopPillWrap.hidden = !on;
       if (!on) return;
 
-      for (let i = loopStartIdx; i <= loopEndIdx; i++) {
+      for (let i = ctx.state.loopStartIdx; i <= ctx.state.loopEndIdx; i++) {
         const card = subtitleCardEls[i];
         if (!card) continue;
         card.classList.add("in-loop");
-        if (i === loopStartIdx || i === loopEndIdx) card.classList.add("loop-edge");
+        if (i === ctx.state.loopStartIdx || i === ctx.state.loopEndIdx) card.classList.add("loop-edge");
       }
 
-      const a = subtitleCues[loopStartIdx];
-      const b = subtitleCues[loopEndIdx];
-      const lines = loopEndIdx - loopStartIdx + 1;
+      const a = subtitleCues[ctx.state.loopStartIdx];
+      const b = subtitleCues[ctx.state.loopEndIdx];
+      const lines = ctx.state.loopEndIdx - ctx.state.loopStartIdx + 1;
       loopPillText.textContent =
         (lines === 1 ? ctx.fns.fmt(a.start_ms) : `${ctx.fns.fmt(a.start_ms)} – ${ctx.fns.fmt(b.end_ms)} · ${lines} 句`) +
         (loopCount ? ` · 第 ${loopCount + 1} 遍` : "");
@@ -3188,6 +3194,15 @@
       runTurn(shown + buildContextBlock(index));
     }
 
+    ctx.fns.loopActive = loopActive;
+    ctx.fns.toggleLoopAt = toggleLoopAt;
+    ctx.fns.clearLoop = clearLoop;
+    ctx.fns.renderLoopState = renderLoopState;
+    ctx.fns.buildContextBlock = buildContextBlock;
+    ctx.fns.askAboutCue = askAboutCue;
+    }
+    installLoop(ctx);
+    function installVocab(ctx) {
     // ---- vocab ----
 
     // Matches app.py's MASTERED_STREAK -- a word this many consecutive
@@ -3207,25 +3222,11 @@
       return days <= 0 ? "今天晚些时候" : days === 1 ? "明天" : `${days} 天后`;
     }
 
-    // The full list as last fetched -- kept around (not just handed to
-    // renderVocabList and discarded) so the quiz can build its pool and
-    // mirror a grading's returned streak locally without a second request.
-    let vocabEntries = [];
-
     let quizQueue = [];
     let quizIndex = 0;
     let quizKnown = 0;
     let quizUnknown = 0;
     let quizMissed = [];
-
-    // Vocabulary-size test state -- separate from the review-quiz state
-    // above, since the two run through the same vocabQuiz container but are
-    // otherwise unrelated flows.
-    let vocabTestStage = 1;
-    let vocabTestItems = [];
-    let vocabTestIndex = 0;
-    let vocabTestAnswers = [];
-    let vocabTestStatus = null;  // last /api/vocab-test/status fetch, for the promo line
 
     function shuffled(arr) {
       const a = [...arr];
@@ -3285,7 +3286,7 @@
       // all, or a word genuinely off all 8 lists), which is the opposite
       // of what "select everything" means to someone using the checkboxes.
       const noFilter = scope.length === 0 || scope.length === QUIZ_TAG_OPTIONS.length;
-      return vocabEntries.filter((e) => {
+      return ctx.state.vocabEntries.filter((e) => {
         if (!e.answer || (e.streak || 0) >= MASTERED_STREAK) return false;
         if (noFilter) return true;
         return (e.tags || []).some((t) => scope.includes(t));
@@ -3338,13 +3339,13 @@
       const pool = quizPool();
       const scoped = scopedEligible();
       let emptyReason;
-      if (vocabEntries.length === 0) {
+      if (ctx.state.vocabEntries.length === 0) {
         emptyReason = "还没有生词。去生词本页存一些吧。";
       } else {
         // Has an answer and isn't mastered yet, ignoring the scope filter --
         // distinct from "scoped is empty", which could just mean the chosen
         // tags don't match anything even though the book has plenty left.
-        const unscopedEligible = vocabEntries.filter((e) => e.answer && (e.streak || 0) < MASTERED_STREAK);
+        const unscopedEligible = ctx.state.vocabEntries.filter((e) => e.answer && (e.streak || 0) < MASTERED_STREAK);
         if (unscopedEligible.length === 0) {
           emptyReason = "没有可抽查的词——生词都已掌握，或者还没查过意思。";
         } else if (scoped.length === 0) {
@@ -3370,10 +3371,10 @@
         <button class="quiz-batch-pill${v === batch ? " selected" : ""}" data-batch="${v}">${v === "0" ? "不限" : v}</button>
       `).join("");
 
-      const statusLine = vocabTestStatus
-        ? (vocabTestStatus.is_default
+      const statusLine = ctx.state.vocabTestStatus
+        ? (ctx.state.vocabTestStatus.is_default
             ? "还没测过，视频难度目前按默认水平估计"
-            : `约 ${vocabTestStatus.vocab_size} 词 · ${vocabTestStatus.level_label}`)
+            : `约 ${ctx.state.vocabTestStatus.vocab_size} 词 · ${ctx.state.vocabTestStatus.level_label}`)
         : "加载中…";
 
       vocabQuiz.innerHTML = `
@@ -3382,7 +3383,7 @@
             <div class="vocab-test-promo-title">你的词汇量</div>
             <div class="vocab-test-promo-sub">${ctx.fns.escapeHtml(statusLine)}</div>
           </div>
-          <button class="vocab-test-start-btn">${vocabTestStatus && !vocabTestStatus.is_default ? "重新测一下" : "测一下"}</button>
+          <button class="vocab-test-start-btn">${ctx.state.vocabTestStatus && !ctx.state.vocabTestStatus.is_default ? "重新测一下" : "测一下"}</button>
         </div>
         <div class="quiz-scope">
           <div class="quiz-scope-row">${scopeHtml}</div>
@@ -3428,13 +3429,13 @@
 
       const startBtn = vocabQuiz.querySelector(".quiz-start-btn");
       if (startBtn) startBtn.addEventListener("click", () => startQuiz(pool));
-      vocabQuiz.querySelector(".vocab-test-start-btn").addEventListener("click", startVocabTest);
+      vocabQuiz.querySelector(".vocab-test-start-btn").addEventListener("click", ctx.fns.startVocabTest);
     }
 
     async function loadQuizStart() {
       vocabQuiz.innerHTML = `<div class="quiz-start"><div class="quiz-start-count">加载中…</div></div>`;
       try {
-        [vocabEntries, vocabTestStatus] = await Promise.all([
+        [ctx.state.vocabEntries, ctx.state.vocabTestStatus] = await Promise.all([
           fetch(`${API}/api/vocab`).then((r) => r.json()),
           fetch(`${API}/api/vocab-test/status`).then((r) => r.json()),
         ]);
@@ -3458,7 +3459,7 @@
       // the word itself is shown first. Reuses the same pronunciation path
       // as the vocab list's speak button (Youdao audio, falling back to the
       // browser's own TTS).
-      speakWord(entry.question);
+      ctx.fns.speakWord(entry.question);
       vocabQuiz.innerHTML = `
         <div class="quiz-topbar">
           <div class="quiz-progress">${quizIndex + 1} / ${quizQueue.length}</div>
@@ -3477,7 +3478,7 @@
       // Same word again on reveal -- this click is a direct user gesture
       // (unlike the auto-play on card arrival above), so there's no
       // autoplay-restriction risk here even if the first one got blocked.
-      speakWord(entry.question);
+      ctx.fns.speakWord(entry.question);
       const quizCard = vocabQuiz.querySelector(".quiz-card");
       quizCard.innerHTML = `
         <div class="quiz-word">${ctx.fns.escapeHtml(entry.question)}</div>
@@ -3528,6 +3529,19 @@
       if (retryBtn) retryBtn.addEventListener("click", () => startQuiz(quizMissed));
     }
 
+    ctx.fns.loadQuizStart = loadQuizStart;
+    ctx.fns.gradeEntry = gradeEntry;
+    ctx.fns.renderQuizStart = renderQuizStart;
+    }
+    installVocab(ctx);
+    function installVocabTest(ctx) {
+    let vocabTestInOverlay = false;
+    let vocabTestStage = 1;
+    let vocabTestItems = [];
+    let vocabTestIndex = 0;
+    let vocabTestAnswers = [];
+    let vocabTestTotal = null;
+
     // ---- vocabulary-size test -------------------------------------------
     //
     // Two-stage adaptive test (see vocab_test.py): stage 1 samples 5 widely-
@@ -3540,10 +3554,9 @@
       previewOverlay.hidden = true;
       previewOverlay.innerHTML = "";
       vocabTestInOverlay = false;
-      renderQuizStart();
+      ctx.fns.renderQuizStart();
     }
 
-    let vocabTestInOverlay = false;
     const vocabTestHost = () => vocabTestInOverlay ? previewOverlay : vocabQuiz;
 
     async function startVocabTest() {
@@ -3564,8 +3577,6 @@
       vocabTestIndex = 0;
       renderVocabTestCard();
     }
-
-    let vocabTestTotal = null;
 
     function renderVocabTestCard() {
       if (vocabTestIndex >= vocabTestItems.length) {
@@ -3655,7 +3666,7 @@
         host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">提交失败：${ctx.fns.escapeHtml(e.message)}</div></div></div>`;
         return;
       }
-      vocabTestStatus = { vocab_size: result.vocab_size, level_label: result.level_label, is_default: false };
+      ctx.state.vocabTestStatus = { vocab_size: result.vocab_size, level_label: result.level_label, is_default: false };
       host.innerHTML = `
         <div class="vocab-test-modal">
         <div class="quiz-topbar">
@@ -3700,8 +3711,8 @@
       vocabEmpty.hidden = false;
       vocabEmpty.textContent = "正在加载…";
       try {
-        vocabEntries = await (await fetch(`${API}/api/vocab`)).json();
-        renderVocabList(vocabEntries);
+        ctx.state.vocabEntries = await (await fetch(`${API}/api/vocab`)).json();
+        renderVocabList(ctx.state.vocabEntries);
       } catch (e) {
         vocabEmpty.hidden = false;
         vocabEmpty.textContent = `加载生词本失败：${e.message}`;
@@ -3776,8 +3787,8 @@
             badge.addEventListener("click", async () => {
               badge.disabled = true;
               try {
-                await gradeEntry(entry, "unknown");
-                renderVocabList(vocabEntries);
+                await ctx.fns.gradeEntry(entry, "unknown");
+                renderVocabList(ctx.state.vocabEntries);
               } catch (e) { badge.disabled = false; }
             });
             meta.appendChild(badge);
@@ -3804,7 +3815,7 @@
         speak.innerHTML = icon("speaker");
         speak.title = "朗读";
         speak.setAttribute("aria-label", "朗读");
-        speak.addEventListener("click", () => speakWord(entry.question));
+        speak.addEventListener("click", () => ctx.fns.speakWord(entry.question));
         qRow.appendChild(speak);
         const jumpBtn = buildJumpBtn(entry);
         if (jumpBtn) qRow.appendChild(jumpBtn);
@@ -3867,6 +3878,14 @@
       vocabList.appendChild(frag);
     }
 
+    ctx.fns.startVocabTest = startVocabTest;
+    ctx.fns.exitVocabTest = exitVocabTest;
+    ctx.fns.saveVocabEntry = saveVocabEntry;
+    ctx.fns.loadVocabList = loadVocabList;
+    ctx.fns.renderVocabList = renderVocabList;
+    ctx.fns.buildJumpBtn = buildJumpBtn;
+    }
+    installVocabTest(ctx);
     // ---- phrase collection ----
     // Cards reuse the vocab list's own CSS classes (.vocab-card etc.) --
     // same shape (phrase in the question slot, meaning in the answer slot),
@@ -3916,7 +3935,7 @@
           q.className = "vocab-question";
           q.textContent = entry.phrase;
           qRow.appendChild(q);
-          const jumpBtn = buildJumpBtn(entry);
+          const jumpBtn = ctx.fns.buildJumpBtn(entry);
           if (jumpBtn) qRow.appendChild(jumpBtn);
           card.appendChild(qRow);
 
@@ -3949,7 +3968,6 @@
       ctx.fns.renderPhraseList = renderPhraseList;
     }
     installPhrases(ctx);
-
     // ---- Jellyfin playback tracking ----
     // The whole reason for injecting into Jellyfin's page instead of framing
     // it: the real <video> element is reachable, so position is read straight
@@ -4222,7 +4240,7 @@
       const nowMs = p.currentTimeMs();
       if (!Number.isFinite(nowMs)) return;
       lastPositionMs = NaN;
-      updateCurrentCue(nowMs, true);
+      ctx.fns.updateCurrentCue(nowMs, true);
     }
 
     function handleVideoSeeking() {
@@ -4284,7 +4302,7 @@
         const p = player();
         if (!p) return;
         const nowMs = p.currentTimeMs();
-        if (!isNaN(nowMs)) updateCurrentCue(nowMs, commitSeek);
+        if (!isNaN(nowMs)) ctx.fns.updateCurrentCue(nowMs, commitSeek);
       }, wordHighlightOn() ? POSITION_POLL_WORD_MS : POSITION_POLL_MS);
     }
     startPositionPolling();
@@ -4415,7 +4433,6 @@
         }
       }
     }
-
     // ---- 预习卡片 ----------------------------------------------------------
     //
     // YouTube only, same scoping as the difficulty badge and jump-to-moment:
@@ -4586,7 +4603,7 @@
             <button class="preview-btn primary" id="pcNextBtn" type="button">${s.index === s.cards.length - 1 ? "完成" : "下一个 →"}</button>
           </div>
         </div>`;
-      previewOverlay.querySelector(".pc-speak").addEventListener("click", () => speakWord(c.lemma));
+      previewOverlay.querySelector(".pc-speak").addEventListener("click", () => ctx.fns.speakWord(c.lemma));
       $("pcKnownBtn").addEventListener("click", () => advancePreviewCard("known"));
       $("pcNextBtn").addEventListener("click", () => advancePreviewCard("next"));
     }
@@ -4702,7 +4719,7 @@
 
     refreshContext();
     setInterval(refreshContext, 4000);
-    loadVocabList();
+    ctx.fns.loadVocabList();
   }
 
   if (document.readyState === "loading") {

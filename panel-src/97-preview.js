@@ -168,7 +168,7 @@
             <button class="preview-btn primary" id="pcNextBtn" type="button">${s.index === s.cards.length - 1 ? "完成" : "下一个 →"}</button>
           </div>
         </div>`;
-      previewOverlay.querySelector(".pc-speak").addEventListener("click", () => speakWord(c.lemma));
+      previewOverlay.querySelector(".pc-speak").addEventListener("click", () => ctx.fns.speakWord(c.lemma));
       $("pcKnownBtn").addEventListener("click", () => advancePreviewCard("known"));
       $("pcNextBtn").addEventListener("click", () => advancePreviewCard("next"));
     }
@@ -284,7 +284,7 @@
 
     refreshContext();
     setInterval(refreshContext, 4000);
-    loadVocabList();
+    ctx.fns.loadVocabList();
   }
 
   if (document.readyState === "loading") {

@@ -17,6 +17,11 @@
     // lowercased surface word, populated only when the developer diagnostic
     // setting asks the backend for p_known details.
     ctx.state.cueWordScores = [];
+    ctx.state.spokenWordCount = -1;
+    ctx.state.loopStartIdx = -1;
+    ctx.state.loopEndIdx = -1;
+    ctx.state.vocabEntries = [];
+    ctx.state.vocabTestStatus = null;
 
     const $ = (id) => root.getElementById(id);
     const chatEl = $("chat");
@@ -164,4 +169,3 @@
     };
     resizer.addEventListener("pointerup", endResize);
     resizer.addEventListener("pointercancel", endResize);
-

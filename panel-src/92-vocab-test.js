@@ -1,3 +1,11 @@
+    function installVocabTest(ctx) {
+    let vocabTestInOverlay = false;
+    let vocabTestStage = 1;
+    let vocabTestItems = [];
+    let vocabTestIndex = 0;
+    let vocabTestAnswers = [];
+    let vocabTestTotal = null;
+
     // ---- vocabulary-size test -------------------------------------------
     //
     // Two-stage adaptive test (see vocab_test.py): stage 1 samples 5 widely-
@@ -10,10 +18,9 @@
       previewOverlay.hidden = true;
       previewOverlay.innerHTML = "";
       vocabTestInOverlay = false;
-      renderQuizStart();
+      ctx.fns.renderQuizStart();
     }
 
-    let vocabTestInOverlay = false;
     const vocabTestHost = () => vocabTestInOverlay ? previewOverlay : vocabQuiz;
 
     async function startVocabTest() {
@@ -34,8 +41,6 @@
       vocabTestIndex = 0;
       renderVocabTestCard();
     }
-
-    let vocabTestTotal = null;
 
     function renderVocabTestCard() {
       if (vocabTestIndex >= vocabTestItems.length) {
@@ -125,7 +130,7 @@
         host.innerHTML = `<div class="vocab-test-modal"><div class="quiz-start"><div class="quiz-start-empty">提交失败：${ctx.fns.escapeHtml(e.message)}</div></div></div>`;
         return;
       }
-      vocabTestStatus = { vocab_size: result.vocab_size, level_label: result.level_label, is_default: false };
+      ctx.state.vocabTestStatus = { vocab_size: result.vocab_size, level_label: result.level_label, is_default: false };
       host.innerHTML = `
         <div class="vocab-test-modal">
         <div class="quiz-topbar">
@@ -170,8 +175,8 @@
       vocabEmpty.hidden = false;
       vocabEmpty.textContent = "正在加载…";
       try {
-        vocabEntries = await (await fetch(`${API}/api/vocab`)).json();
-        renderVocabList(vocabEntries);
+        ctx.state.vocabEntries = await (await fetch(`${API}/api/vocab`)).json();
+        renderVocabList(ctx.state.vocabEntries);
       } catch (e) {
         vocabEmpty.hidden = false;
         vocabEmpty.textContent = `加载生词本失败：${e.message}`;
@@ -246,8 +251,8 @@
             badge.addEventListener("click", async () => {
               badge.disabled = true;
               try {
-                await gradeEntry(entry, "unknown");
-                renderVocabList(vocabEntries);
+                await ctx.fns.gradeEntry(entry, "unknown");
+                renderVocabList(ctx.state.vocabEntries);
               } catch (e) { badge.disabled = false; }
             });
             meta.appendChild(badge);
@@ -274,7 +279,7 @@
         speak.innerHTML = icon("speaker");
         speak.title = "朗读";
         speak.setAttribute("aria-label", "朗读");
-        speak.addEventListener("click", () => speakWord(entry.question));
+        speak.addEventListener("click", () => ctx.fns.speakWord(entry.question));
         qRow.appendChild(speak);
         const jumpBtn = buildJumpBtn(entry);
         if (jumpBtn) qRow.appendChild(jumpBtn);
@@ -337,3 +342,11 @@
       vocabList.appendChild(frag);
     }
 
+    ctx.fns.startVocabTest = startVocabTest;
+    ctx.fns.exitVocabTest = exitVocabTest;
+    ctx.fns.saveVocabEntry = saveVocabEntry;
+    ctx.fns.loadVocabList = loadVocabList;
+    ctx.fns.renderVocabList = renderVocabList;
+    ctx.fns.buildJumpBtn = buildJumpBtn;
+    }
+    installVocabTest(ctx);

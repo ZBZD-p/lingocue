@@ -110,7 +110,7 @@
       currentWordSpans = [];
       currentCueIndex = -1;
       lastPositionMs = NaN;
-      spokenWordCount = -1;
+      ctx.state.spokenWordCount = -1;
       ctx.state.cueUnknownWords = [];
       ctx.state.cueWordScores = [];
       if (subsScroll) subsScroll.innerHTML = "";
@@ -118,7 +118,7 @@
 
     function resetSubtitleSession() {
       invalidateSubtitleSession();
-      if (typeof clearLoop === "function") clearLoop();
+      ctx.fns.clearLoop();
       clearSubtitleModel();
     }
 
@@ -194,8 +194,8 @@
       if (nextSignature === subtitleCueSignature) return false;
       const oldCues = subtitleCues;
       const oldCurrentKey = cueIdentity(oldCues[currentCueIndex]);
-      const oldLoop = typeof loopActive === "function" && loopActive()
-        ? { start: cueIdentity(oldCues[loopStartIdx]), end: cueIdentity(oldCues[loopEndIdx]) }
+      const oldLoop = ctx.fns.loopActive()
+        ? { start: cueIdentity(oldCues[ctx.state.loopStartIdx]), end: cueIdentity(oldCues[ctx.state.loopEndIdx]) }
         : null;
       const savedAnchor = anchor || captureVirtualAnchor();
 
@@ -212,10 +212,10 @@
         const start = findCueByIdentity(subtitleCues, oldLoop.start, -1);
         const end = findCueByIdentity(subtitleCues, oldLoop.end, -1);
         if (start >= 0 && end >= 0) {
-          loopStartIdx = Math.min(start, end);
-          loopEndIdx = Math.max(start, end);
+          ctx.state.loopStartIdx = Math.min(start, end);
+          ctx.state.loopEndIdx = Math.max(start, end);
         } else {
-          clearLoop();
+          ctx.fns.clearLoop();
         }
       }
 
@@ -519,7 +519,7 @@
       btn.innerHTML = `${icon("retry")} 重试`;
       btn.addEventListener("click", () => { btn.disabled = true; loadSubtitleCues(); });
       subsEmpty.append(text, btn);
-      clearLoop();
+      ctx.fns.clearLoop();
     }
 
     // Virtualized subtitle renderer: the cue data remains in memory, while
@@ -762,7 +762,7 @@
           if (currentCardEl === card) {
             currentCardEl = null;
             currentWordSpans = [];
-            spokenWordCount = -1;
+            ctx.state.spokenWordCount = -1;
           }
         }
       }
@@ -832,9 +832,9 @@
         currentCardEl = current;
         currentWordSpans = subtitleCues[currentCueIndex].words
           ? (cueWordSpans[currentCueIndex] || []) : [];
-        spokenWordCount = -1;
+        ctx.state.spokenWordCount = -1;
       }
-      renderLoopState();
+      ctx.fns.renderLoopState();
       scheduleVirtualMeasure();
     }
 
@@ -867,7 +867,7 @@
       wordObserver = null;
       currentCardEl = null;
       currentWordSpans = [];
-      spokenWordCount = -1;
+      ctx.state.spokenWordCount = -1;
       virtualRangeStart = 0;
       virtualRangeEnd = -1;
       subsScroll.innerHTML = "";
@@ -878,7 +878,7 @@
       subsScroll.append(virtualTopSpacer, virtualBottomSpacer);
       renderVirtualWindow(currentCueIndex);
       restoreVirtualAnchor(savedAnchor);
-      renderLoopState();
+      ctx.fns.renderLoopState();
     }
 
     if (typeof ResizeObserver === "function") {
@@ -949,7 +949,7 @@
       if (wordSpan) {
         const index = Number(wordSpan.dataset.cueIndex);
         const cue = subtitleCues[index];
-        if (cue) showWordPopup(wordSpan, wordSpan.dataset.word, cue.text, index);
+        if (cue) ctx.fns.showWordPopup(wordSpan, wordSpan.dataset.word, cue.text, index);
         event.stopPropagation();
         return;
       }
@@ -960,17 +960,17 @@
       if (!Number.isInteger(index) || !subtitleCues[index]) return;
       if (action) {
         event.stopPropagation();
-        if (action.dataset.subAction === "loop") toggleLoopAt(index);
-        else if (action.dataset.subAction === "ask") askAboutCue(index);
-        else if (action.dataset.subAction === "read") speakWord(subtitleCues[index].text);
+        if (action.dataset.subAction === "loop") ctx.fns.toggleLoopAt(index);
+        else if (action.dataset.subAction === "ask") ctx.fns.askAboutCue(index);
+        else if (action.dataset.subAction === "read") ctx.fns.speakWord(subtitleCues[index].text);
         return;
       }
-      if (loopActive()) { toggleLoopAt(index); return; }
+      if (ctx.fns.loopActive()) { ctx.fns.toggleLoopAt(index); return; }
       const p = player();
       if (p) p.seekMs(subtitleCues[index].start_ms);
       lastUserScrollAt = 0;
       lastPositionMs = NaN;
-      highlightCue(index, true);
+      ctx.fns.highlightCue(index, true);
     });
     subsScroll.addEventListener("mouseout", (event) => {
       const target = event.target && event.target.closest
@@ -1045,4 +1045,3 @@
       makeButton("sub-ask-btn", "ask", `${icon("help")}问这句`, "问一下这句什么意思");
       makeButton("sub-read-btn", "read", `${icon("speaker")}朗读`, "朗读这句");
     }
-

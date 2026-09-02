@@ -47,7 +47,7 @@
           q.className = "vocab-question";
           q.textContent = entry.phrase;
           qRow.appendChild(q);
-          const jumpBtn = buildJumpBtn(entry);
+          const jumpBtn = ctx.fns.buildJumpBtn(entry);
           if (jumpBtn) qRow.appendChild(jumpBtn);
           card.appendChild(qRow);
 
@@ -80,4 +80,3 @@
       ctx.fns.renderPhraseList = renderPhraseList;
     }
     installPhrases(ctx);
-

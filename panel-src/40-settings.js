@@ -167,7 +167,7 @@
           ctx.fns.refreshVocabHighlight();
         } else {
           ctx.state.cueWordScores = [];
-          updateWordPopupPKnown();
+          ctx.fns.updateWordPopupPKnown();
         }
       }
     }
@@ -178,7 +178,7 @@
         ctx.fns.refreshVocabHighlight();
       } else {
         ctx.state.cueWordScores = [];
-        updateWordPopupPKnown();
+        ctx.fns.updateWordPopupPKnown();
       }
     }
 
@@ -362,4 +362,3 @@
         });
       }
     });
-
