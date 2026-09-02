@@ -165,9 +165,33 @@
     { value: "claude", label: "Claude Code（需要安装并登录 CLI）" },
   ];
 
+  const SETTINGS_SECTIONS = [
+    {
+      key: "conversation",
+      label: "AI 对话",
+      hint: "选择对话引擎，并调整回答风格。",
+    },
+    {
+      key: "subtitles",
+      label: "字幕阅读",
+      hint: "控制字幕的显示方式和逐词阅读效果。",
+    },
+    {
+      key: "learning",
+      label: "生词学习",
+      hint: "决定哪些词会在字幕中作为生词提示。",
+    },
+    {
+      key: "appearance",
+      label: "界面外观",
+      hint: "调整面板的配色主题。",
+    },
+  ];
+
   const SETTINGS = [
     {
       key: "engine",
+      section: "conversation",
       label: "对话引擎",
       hint: "Claude Code 每次对话有约 13 秒的固定启动开销；DeepSeek 是直接的 API 调用，没有这层开销，明显更快。" +
         "换了不会丢当前对话历史（会分别记各自的），但两边的回复不会共享上下文。",
@@ -176,6 +200,7 @@
     },
     {
       key: "deepseekKey",
+      section: "conversation",
       label: "DeepSeek API Key",
       hint: "存在本地配置文件里，不会显示已保存的内容。",
       type: "text",
@@ -186,6 +211,7 @@
     },
     {
       key: "deepseekModel",
+      section: "conversation",
       label: "DeepSeek 模型",
       hint: "留空默认用 deepseek-v4-flash（快，均衡）。深度推理可以填 deepseek-v4-pro。",
       type: "text",
@@ -196,6 +222,7 @@
     },
     {
       key: "deepseekThinking",
+      section: "conversation",
       label: "DeepSeek 思考模式",
       hint: "开启时会先想再答（回复里能看到思考过程），关闭更快但准确度可能下降。" +
         "关闭时下面的思考程度设置对 DeepSeek 不生效。",
@@ -205,6 +232,7 @@
     },
     {
       key: "model",
+      section: "conversation",
       label: "AI 模型",
       hint: "换模型不会中断当前对话。",
       options: MODEL_OPTIONS,
@@ -213,6 +241,7 @@
     },
     {
       key: "effort",
+      section: "conversation",
       label: "思考程度",
       hint: "越高回答越细致，但更慢也更贵。解释语法/语境时调高比较值得。" +
         "两边引擎共用这一个设置，但各自的默认不同：Claude 留空按中等算；" +
@@ -222,6 +251,7 @@
     },
     {
       key: "customPrompt",
+      section: "conversation",
       label: "自定义提示词",
       hint: "追加在默认设定后面，不会替换掉工具调用相关的说明。留空则不变。下一条消息开始生效。",
       type: "textarea",
@@ -230,6 +260,7 @@
     },
     {
       key: "subSize",
+      section: "subtitles",
       label: "字幕字号",
       hint: "只影响字幕卡片，不改对话区。",
       options: SUB_SIZE_OPTIONS,
@@ -237,6 +268,7 @@
     },
     {
       key: "subWeight",
+      section: "subtitles",
       label: "字幕粗细",
       hint: "只影响字幕卡片，不改对话区。",
       options: SUB_WEIGHT_OPTIONS,
@@ -244,6 +276,7 @@
     },
     {
       key: "secondaryLang",
+      section: "subtitles",
       label: "副字幕",
       hint: "在每句英文下面显示对应的中文。第一次开启要再扫一遍视频提取中文轨（大文件约半分钟），英文会先显示出来。",
       options: SECONDARY_LANG_OPTIONS,
@@ -251,6 +284,7 @@
     },
     {
       key: "wordHighlight",
+      section: "subtitles",
       label: "逐词高亮",
       hint: "当前这句跟着语音一个词一个词点亮，已经念过的保持亮色。" +
         "只有 YouTube 自动字幕带逐词时间，人工字幕和本地视频没有这个数据，会自动跳过。",
@@ -259,6 +293,7 @@
     },
     {
       key: "wordLiftAnimation",
+      section: "subtitles",
       label: "逐词上移动画",
       hint: "逐词高亮时让当前单词轻微上移并回弹。关闭后仍保留颜色高亮。",
       options: WORD_LIFT_OPTIONS,
@@ -266,6 +301,7 @@
     },
     {
       key: "vocabHighlight",
+      section: "learning",
       label: "生词高亮",
       hint: "按你的词汇量测试结果（没测过就按默认水平），把字幕里大概率不认识的词标出来。" +
         "人名地名这类专有名词不算在内。",
@@ -274,6 +310,7 @@
     },
     {
       key: "theme",
+      section: "appearance",
       label: "外观",
       hint: "切换后立即生效。",
       options: THEME_OPTIONS,
@@ -370,11 +407,17 @@
         </div>
         <div class="page" id="settingsPage">
           <div class="settings-list" id="settingsList">
-            <div class="setting-row">
-              <div class="setting-label">播放状态</div>
-              <div class="context-bar" id="contextBar">还没开始播放</div>
-              <div class="setting-hint">当前视频、播放位置和字幕来源。诊断用，出问题时看这里。</div>
-            </div>
+            <section class="settings-section settings-diagnostic">
+              <div class="settings-section-heading">
+                <h2>播放状态</h2>
+                <p>诊断字幕和播放同步问题时查看。</p>
+              </div>
+              <div class="settings-section-items">
+                <div class="setting-row setting-row-diagnostic">
+                  <div class="context-bar" id="contextBar">还没开始播放</div>
+                </div>
+              </div>
+            </section>
           </div>
         </div>
       </div>
@@ -700,12 +743,18 @@
       const menuEl = dropdownEl.querySelector(".dropdown-menu");
       const itemEls = new Map();
       let currentValue = null;
+      dropdownEl.setAttribute("aria-expanded", "false");
+      menuEl.setAttribute("role", "listbox");
 
       function select(value, persist) {
         currentValue = value;
         const opt = options.find((o) => o.value === value);
         valueEl.textContent = opt ? opt.label : "";
-        itemEls.forEach((el, v) => el.classList.toggle("selected", v === value));
+        itemEls.forEach((el, v) => {
+          const selected = v === value;
+          el.classList.toggle("selected", selected);
+          el.setAttribute("aria-selected", selected ? "true" : "false");
+        });
         if (persist) localStorage.setItem(storageKey, value);
         // `persist` doubles as "a person just picked this", which lets a
         // handler tell a real change from the restore that happens at boot.
@@ -715,11 +764,13 @@
       options.forEach((opt) => {
         const el = document.createElement("div");
         el.className = "dropdown-item";
+        el.setAttribute("role", "option");
         el.textContent = opt.label;
         el.addEventListener("click", (e) => {
           e.stopPropagation();
           select(opt.value, true);
           dropdownEl.classList.remove("open");
+          dropdownEl.setAttribute("aria-expanded", "false");
         });
         menuEl.appendChild(el);
         itemEls.set(opt.value, el);
@@ -727,9 +778,35 @@
 
       dropdownEl.addEventListener("click", () => {
         root.querySelectorAll(".dropdown.open").forEach((el) => {
-          if (el !== dropdownEl) el.classList.remove("open");
+          if (el !== dropdownEl) {
+            el.classList.remove("open");
+            el.setAttribute("aria-expanded", "false");
+          }
         });
-        dropdownEl.classList.toggle("open");
+        const open = dropdownEl.classList.toggle("open");
+        dropdownEl.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+
+      dropdownEl.addEventListener("keydown", (e) => {
+        const index = options.findIndex((option) => option.value === currentValue);
+        if (e.key === "Escape") {
+          dropdownEl.classList.remove("open");
+          dropdownEl.setAttribute("aria-expanded", "false");
+          return;
+        }
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          const open = dropdownEl.classList.toggle("open");
+          dropdownEl.setAttribute("aria-expanded", open ? "true" : "false");
+          return;
+        }
+        if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+        e.preventDefault();
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        const next = (index + delta + options.length) % options.length;
+        select(options[next].value, true);
+        dropdownEl.classList.add("open");
+        dropdownEl.setAttribute("aria-expanded", "true");
       });
 
       Object.defineProperty(dropdownEl, "value", { get: () => currentValue });
@@ -916,6 +993,32 @@
       // plumbing.
     }
 
+    const settingSections = new Map();
+    const diagnosticSection = settingsList.querySelector(".settings-diagnostic");
+    for (const section of SETTINGS_SECTIONS) {
+      const sectionEl = document.createElement("section");
+      sectionEl.className = "settings-section";
+      sectionEl.dataset.section = section.key;
+
+      const heading = document.createElement("div");
+      heading.className = "settings-section-heading";
+      const title = document.createElement("h2");
+      title.textContent = section.label;
+      heading.appendChild(title);
+      if (section.hint) {
+        const description = document.createElement("p");
+        description.textContent = section.hint;
+        heading.appendChild(description);
+      }
+      sectionEl.appendChild(heading);
+
+      const items = document.createElement("div");
+      items.className = "settings-section-items";
+      sectionEl.appendChild(items);
+      settingsList.insertBefore(sectionEl, diagnosticSection);
+      settingSections.set(section.key, items);
+    }
+
     for (const setting of SETTINGS) {
       const row = document.createElement("div");
       row.className = "setting-row";
@@ -929,17 +1032,24 @@
       if (setting.type === "text" || setting.type === "textarea") {
         control = document.createElement(setting.type === "textarea" ? "textarea" : "input");
         if (setting.type === "text") control.type = setting.inputType || "text";
+        control.setAttribute("aria-label", setting.label);
         control.placeholder = setting.placeholder || "";
         control.className = setting.type === "textarea" ? "setting-textarea" : "setting-text-input";
         row.appendChild(control);
-        settingsList.appendChild(row);
+        const items = settingSections.get(setting.section) || settingsList;
+        items.appendChild(row);
         populateText(control, setting);
       } else {
         control = document.createElement("div");
         control.className = "dropdown";
+        control.setAttribute("role", "combobox");
+        control.setAttribute("tabindex", "0");
+        control.setAttribute("aria-label", setting.label);
+        control.setAttribute("aria-haspopup", "listbox");
         control.innerHTML = `<div class="dropdown-value"></div><div class="dropdown-menu"></div>`;
         row.appendChild(control);
-        settingsList.appendChild(row);
+        const items = settingSections.get(setting.section) || settingsList;
+        items.appendChild(row);
         populateSelect(control, setting.options, setting.storageKey,
                        SETTING_HANDLERS[setting.key]);
       }
@@ -955,10 +1065,6 @@
       settingRows.set(setting.key, row);
     }
 
-    // Re-appending moves it below the generated rows: the things you'd
-    // actually change belong above the diagnostic readout.
-    settingsList.appendChild(contextBar.closest(".setting-row"));
-
     const settingValue = (key) => {
       const control = settingControls.get(key);
       return control ? control.value : null;
@@ -967,7 +1073,10 @@
 
     root.addEventListener("click", (e) => {
       if (!e.target.closest(".dropdown")) {
-        root.querySelectorAll(".dropdown.open").forEach((el) => el.classList.remove("open"));
+        root.querySelectorAll(".dropdown.open").forEach((el) => {
+          el.classList.remove("open");
+          el.setAttribute("aria-expanded", "false");
+        });
       }
     });
 

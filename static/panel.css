@@ -385,8 +385,9 @@ button:focus-visible {
 .preview-end .pe-btns { display: flex; gap: 8px; justify-content: center; }
 
 /* ---- settings page ----
-   One generic row shape, rendered from the SETTINGS declaration in
-   tutor-panel.js, so a new setting needs no new CSS. */
+   Sections are generated from SETTINGS_SECTIONS in tutor-panel.js. Rows stay
+   intentionally unboxed so the headings, spacing and dividers carry the
+   hierarchy without turning the page into a stack of nested cards. */
 .settings-list {
   flex: 1;
   min-height: 0;
@@ -394,18 +395,45 @@ button:focus-visible {
   padding: 10px 22px 22px;
 }
 
+.settings-section {
+  padding: 18px 0 8px;
+}
+.settings-section + .settings-section {
+  border-top: 1px solid var(--line);
+}
+.settings-section-heading {
+  padding: 0 0 7px;
+}
+.settings-section-heading h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: var(--ink);
+}
+.settings-section-heading p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-2);
+}
+.settings-section-items .setting-row + .setting-row {
+  border-top: 1px solid var(--line);
+}
+
 .setting-row {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 16px 0;
+  gap: 8px;
+  padding: 14px 0 16px;
 }
-.setting-row:first-child { padding-top: 4px; }
-.setting-row:last-child { padding-bottom: 4px; }
+.settings-section-items .setting-row:first-child { padding-top: 9px; }
+.settings-section-items .setting-row:last-child { padding-bottom: 17px; }
+.setting-row-diagnostic { padding-bottom: 7px; }
 
 .setting-label {
-  font-size: 11.5px;
-  letter-spacing: 0.1em;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--muted);
 }
 .setting-hint { font-size: 12.5px; color: var(--muted-2); line-height: 1.65; }
@@ -421,13 +449,15 @@ button:focus-visible {
   border: none;
   border-bottom: 1px solid var(--line-strong);
   border-radius: 0;
-  padding: 0 0 9px;
+  min-height: 44px;
+  padding: 8px 0 9px;
   box-sizing: border-box;
 }
 .setting-text-input::placeholder { color: var(--muted-3); }
 .setting-text-input:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 1px 0 var(--accent);
 }
 
 .setting-textarea {
@@ -439,7 +469,7 @@ button:focus-visible {
   border-radius: 12px;
   padding: 10px 12px;
   box-sizing: border-box;
-  min-height: 72px;
+  min-height: 88px;
   resize: vertical;
   line-height: 1.6;
 }
@@ -447,6 +477,7 @@ button:focus-visible {
 .setting-textarea:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 /* Custom dropdown rather than <select>: keeps full styling control inside
@@ -464,7 +495,10 @@ button:focus-visible {
   border: none;
   border-bottom: 1px solid var(--line-strong);
   border-radius: 0;
-  padding: 0 20px 9px 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 8px 20px 9px 0;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
@@ -484,6 +518,10 @@ button:focus-visible {
 }
 .dropdown:hover { border-color: var(--accent); }
 .dropdown.open { border-color: var(--accent); }
+.dropdown:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 .dropdown.open::after { transform: rotate(225deg); }
 .dropdown-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dropdown-menu {
@@ -1356,6 +1394,11 @@ button:focus-visible {
   .tabs { gap: 22px; }
   button { padding: 10px 13px; font-size: 14px; }
   .new-chat-btn { width: 44px; height: 44px; }
+  .settings-list { padding: 12px 18px 28px; }
+  .settings-section { padding-top: 20px; }
+  .settings-section-heading h2 { font-size: 15px; }
+  .settings-section-heading p { font-size: 12.5px; }
+  .setting-row { padding-top: 15px; padding-bottom: 17px; }
   .dropdown { padding: 0 24px 11px 0; font-size: 17px; }
   .dropdown-item { padding: 11px 13px; font-size: 14px; }
 
