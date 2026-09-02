@@ -298,6 +298,33 @@ def save_vocab(entries: list[dict]) -> None:
     VOCAB_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _vocab_evidence_target(question: str | None):
+    """Return the lemma/rank for a single-word vocab entry, if unambiguous."""
+    tokens = knowledge._WORD_RE.findall(question or "")
+    if len(tokens) != 1:
+        return None
+    word = tokens[0].lower()
+    lex = _lex()
+    lemma = lex.lemma_of(word)
+    rank, _band = lex.rank_band(lemma)
+    return lemma, rank
+
+
+def _record_vocab_evidence(entry: dict, kind: str) -> bool:
+    target = _vocab_evidence_target(entry.get("question"))
+    if target is None:
+        return False
+    lemma, rank = target
+    db = knowledge.open_db()
+    try:
+        knowledge.apply_evidence(db, lemma, rank, kind)
+        db.commit()
+    finally:
+        db.close()
+    knowledge.note_vocab_evidence(entry, kind)
+    return True
+
+
 @app.get("/")
 def index():
     return FileResponse(ROOT / "static" / "standalone.html")
@@ -915,6 +942,7 @@ def add_vocab(entry: VocabEntry):
         # same as before this field existed.
         "next_review_at": 0,
     }
+    _record_vocab_evidence(record, "collected")
     entries.append(record)
     save_vocab(entries)
     return record
@@ -959,6 +987,13 @@ def grade_vocab(entry_id: str, body: VocabGrade):
             e["streak"] = min(e.get("streak", 0) + 1, MASTERED_STREAK) if body.result == "known" else 0
             days = REVIEW_INTERVAL_DAYS[min(e["streak"], len(REVIEW_INTERVAL_DAYS) - 1)]
             e["next_review_at"] = time.time() + days * 86400
+            # "unknown" also resets a mastered word when its badge is
+            # clicked.  Since it is indistinguishable from a quiz mistake
+            # here, and DELTA has no review-failure event, it carries no
+            # evidence signal; only successful reviews do.
+            if body.result == "known":
+                kind = "srs_graduated" if e["streak"] >= MASTERED_STREAK else "srs_pass"
+                _record_vocab_evidence(e, kind)
             save_vocab(entries)
             return {
                 "ok": True,
