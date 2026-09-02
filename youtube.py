@@ -1018,9 +1018,10 @@ def _video_id_from_url(url: str) -> str:
     path (``/shorts/<id>``), unlike the query parameter used by ``/watch``.
     """
     parsed = urllib.parse.urlparse(url)
-    query_id = urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
-    if query_id:
-        return query_id
+    if parsed.path == "/watch":
+        query_id = urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
+        if query_id:
+            return query_id
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) >= 2 and parts[0].lower() == "shorts":
         return urllib.parse.unquote(parts[1])

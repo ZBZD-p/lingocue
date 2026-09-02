@@ -172,6 +172,14 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -WithPunctuation
 Copy-Item .\static\tutor-panel.js .\extension\tutor-panel.js
 ```
 
+提交前可用 `tools/check_duplicates.py` 自动检查两份副本。安装仓库提供的 pre-commit hook：
+
+```powershell
+Copy-Item .\tools\hooks\pre-commit .\.git\hooks\pre-commit
+```
+
+之后每次提交都会检查必须保持一致的文件；若检查失败，请按错误信息运行同步命令。
+
 然后在 `chrome://extensions/` 页面刷新扩展，并刷新 YouTube 页面。
 
 ### 字幕抓取失败

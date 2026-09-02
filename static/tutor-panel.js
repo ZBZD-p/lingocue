@@ -3925,9 +3925,10 @@
      *  reloading the exact page it's already sitting on. */
     function youtubeVideoId(url) {
       try {
-        const parsed = new URL(url);
-        const queryId = parsed.searchParams.get("v");
-        if (queryId) return queryId;
+        const parsed = new URL(url, "https://www.youtube.com/");
+        if (parsed.pathname === "/watch") {
+          return parsed.searchParams.get("v") || null;
+        }
         const match = parsed.pathname.match(/^\/shorts\/([^/]+)(?:\/|$)/);
         return match ? decodeURIComponent(match[1]) : null;
       }

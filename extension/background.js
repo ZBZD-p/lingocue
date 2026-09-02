@@ -88,7 +88,7 @@ async function runContentBridge(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    files: ["content.js"],
+    files: ["youtube-url.js", "content.js"],
   });
 }
 

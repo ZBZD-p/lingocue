@@ -71,8 +71,14 @@
     return players[0] || null;
   }
 
+  function videoIdFromUrl(href) {
+    var parser = window.__lingocueYouTubeUrl;
+    if (!parser || typeof parser.videoIdFromUrl !== "function") return null;
+    return parser.videoIdFromUrl(href);
+  }
+
   function currentMoviePlayer() {
-    return playerFor(videoIdFromUrl());
+    return playerFor(videoIdFromUrl(location.href));
   }
 
   // Every accessor below re-queries through this instead of holding an
@@ -130,15 +136,6 @@
         if (v) v.play().catch(function () {});
       },
     };
-  }
-
-  function videoIdFromUrl() {
-    try {
-      var url = new URL(location.href);
-      var match = url.pathname.match(/^\/shorts\/([^/]+)(?:\/|$)/);
-      if (match) return decodeURIComponent(match[1]);
-      return url.pathname === "/watch" ? url.searchParams.get("v") : null;
-    } catch (e) { return null; }
   }
 
   function titleFromPage() {
@@ -571,7 +568,7 @@
     session: session,
   }));
 
-  var id = videoIdFromUrl();
+  var id = videoIdFromUrl(location.href);
   if (!id || session.isClaimed(id)) return;
   session.claim(id);
 
