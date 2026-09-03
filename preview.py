@@ -15,6 +15,7 @@ are worth 30 seconds of this user's attention right now".
 import math
 import re
 from collections import Counter
+from collections.abc import Callable
 
 import dictionary
 import indexer
@@ -60,7 +61,18 @@ SWEET_SPOT_WIDTH = 0.08
 # "before minute N" cutoff, so there's no arbitrary cliff -- the bonus just
 # fades smoothly the later a word's first occurrence is.
 EARLY_BONUS_WEIGHT = 2.0
-EARLY_DECAY_MS = 5 * 60 * 1000  # ~5 minutes: a word first appearing well after this earns little of it
+
+# A score below this is generally a one-off, late, or far-out-of-range word.
+# Useful candidates in normal videos score around 5-6, while filler
+# candidates in sparse videos cluster around 1.
+MIN_PREVIEW_SCORE = 3.0
+
+
+def adaptive_card_count(total_candidates: int) -> int:
+    """Scale a preview round to its candidate pool, with practical bounds."""
+    if total_candidates <= 0:
+        return 0
+    return max(3, min(12, round(1.6 * math.sqrt(total_candidates))))
 
 
 def _first_occurrences(cues: list[tuple[int, int, str]], lex: indexer.LemmaRanks,
@@ -92,12 +104,15 @@ def _first_occurrences(cues: list[tuple[int, int, str]], lex: indexer.LemmaRanks
 
 
 def preview_words(cues: list[tuple[int, int, str]], db, lex: indexer.LemmaRanks,
-                   vocab_lemmas: set[str], top_n: int = 4, exclude: frozenset = frozenset()):
+                   vocab_lemmas: set[str],
+                   top_n: int | Callable[[int], int] | None = adaptive_card_count,
+                   exclude: frozenset = frozenset()):
     """Score and rank candidate words from a video's cues.
 
-    Returns (cards, total_candidates): cards is the top `top_n`
-    (score, lemma, hits, rank, forms, sentence) tuples, sorted highest-
-    scoring first, where `forms` is the set of surface spellings this
+    Returns (cards, total_candidates): cards are dicts sorted by score.
+    Each dict includes total `score` and a `score_breakdown`, along with
+    the lemma, hit count, rank, forms, and sentence. The `forms` value is
+    the set of surface spellings this
     lemma actually appeared as (for matching real subtitle-card words back
     to the card later -- see app.py's /api/preview response and
     appendWordSpans' caller in tutor-panel.js) and `sentence` is a real
@@ -140,6 +155,7 @@ def preview_words(cues: list[tuple[int, int, str]], db, lex: indexer.LemmaRanks,
 
     first = _first_occurrences(cues, lex, counts.keys())
     video_end_ms = max((c[1] for c in cues), default=1)
+    early_decay_ms = max(60_000, video_end_ms * 0.15)
 
     scored = []
     for lemma, n in counts.items():
@@ -155,12 +171,39 @@ def preview_words(cues: list[tuple[int, int, str]], db, lex: indexer.LemmaRanks,
         # (shouldn't happen -- same normalization -- but not worth a crash
         # over) falls back to "as if it only appeared at the very end".
         first_ms, sentence = first.get(lemma, (video_end_ms, ""))
-        score = (
-            3.0 * min(n, 5) / 5                                            # occurrence count, capped
-            + 2.0 * (lemma in vocab_lemmas)                                 # already collected -> free review
-            + 1.5 * math.exp(-((p - SWEET_SPOT_CENTER) ** 2) / SWEET_SPOT_WIDTH)  # difficulty sweet spot
-            + EARLY_BONUS_WEIGHT * math.exp(-first_ms / EARLY_DECAY_MS)     # appears early -> more likely reached
+        # Clamp at 3: dozens of repetitions still matter without swamping
+        # the vocab-book, difficulty, and reachability signals.
+        occurrence_score = min(
+            3.0, 3.0 * math.log1p(n) / math.log1p(20)
         )
-        scored.append((score, lemma, n, rank, forms[lemma], sentence))
-    scored.sort(key=lambda t: t[0], reverse=True)
-    return scored[:top_n], len(scored)
+        vocab_score = 2.0 * (lemma in vocab_lemmas)
+        sweet_spot_score = 1.5 * math.exp(
+            -((p - SWEET_SPOT_CENTER) ** 2) / SWEET_SPOT_WIDTH
+        )
+        early_score = EARLY_BONUS_WEIGHT * math.exp(-first_ms / early_decay_ms)
+        score_breakdown = {
+            "occurrence": occurrence_score,
+            "vocab_book": vocab_score,
+            "sweet_spot": sweet_spot_score,
+            "early": early_score,
+        }
+        score = sum(score_breakdown.values())
+        if score < MIN_PREVIEW_SCORE:
+            continue
+        scored.append({
+            "score": score,
+            "lemma": lemma,
+            "hits": n,
+            "rank": rank,
+            "forms": forms[lemma],
+            "sentence": sentence,
+            "score_breakdown": score_breakdown,
+        })
+    scored.sort(key=lambda card: card["score"], reverse=True)
+    total_candidates = len(scored)
+    if top_n is None:
+        limit = adaptive_card_count(total_candidates)
+    else:
+        limit = top_n(total_candidates) if callable(top_n) else top_n
+    limit = max(0, int(limit))
+    return scored[:limit], total_candidates

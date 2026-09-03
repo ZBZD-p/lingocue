@@ -770,7 +770,6 @@ def get_difficulty_batch(body: DifficultyBatchRequest):
 # padding breaks the first time it happens. Not shown at all beats shown
 # with filler.
 MIN_PREVIEW_CANDIDATES = 2
-PREVIEW_CARDS_PER_ROUND = 4
 
 
 @app.get("/api/preview/{video_id}")
@@ -796,26 +795,35 @@ def get_preview(video_id: str, exclude: str = ""):
     try:
         lex = _lex()
         vocab_lemmas = preview.vocab_book_lemmas(load_vocab(), lex)
-        scored, total = preview.preview_words(cues, db, lex, vocab_lemmas,
-                                               top_n=PREVIEW_CARDS_PER_ROUND, exclude=excluded)
+        scored, total = preview.preview_words(
+            cues, db, lex, vocab_lemmas,
+            top_n=preview.adaptive_card_count,
+            exclude=excluded,
+        )
         if total < MIN_PREVIEW_CANDIDATES:
             return {"should_show": False}
 
         cards = []
-        for _score, lemma, hits, _rank, forms, sentence in scored:
+        for card in scored:
+            lemma = card["lemma"]
             entry = dictionary.define(lemma)
             cards.append({
                 "lemma": lemma,
                 "phonetic": entry["phonetic"] if entry else "",
                 "definition": entry["translation"] if entry else "",
-                "sentence": sentence,
-                "hits": hits,
+                "sentence": card["sentence"],
+                "hits": card["hits"],
                 "tags": entry["tags"] if entry else [],
                 "in_wordbook": lemma in vocab_lemmas,
+                "score": round(card["score"], 3),
+                "score_breakdown": {
+                    name: round(value, 3)
+                    for name, value in card["score_breakdown"].items()
+                },
                 # Surface spellings this lemma actually appeared as -- lets
                 # the panel match real subtitle-card words back to this
                 # card for the highlight-after-preview closing loop.
-                "forms": sorted(forms),
+                "forms": sorted(card["forms"]),
             })
         return {"should_show": True, "cards": cards, "more": max(0, total - len(cards))}
     finally:

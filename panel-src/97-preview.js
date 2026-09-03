@@ -148,6 +148,16 @@
     function renderPreviewCard() {
       const s = ctx.state.previewSession;
       const c = s.cards[s.index];
+      const breakdown = c.score_breakdown || {};
+      const scoreValue = Number(c.score);
+      const scorePart = (name) => {
+        const value = Number(breakdown[name]);
+        return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+      };
+      const scoreDebug = ctx.fns.settingValue("developerMode") === "on" &&
+        Number.isFinite(scoreValue)
+        ? `<div class="pc-score-debug">score ${scoreValue.toFixed(2)} / occurrence ${scorePart("occurrence")} / vocab ${scorePart("vocab_book")} / sweet spot ${scorePart("sweet_spot")} / early ${scorePart("early")}</div>`
+        : "";
       const tagsText = c.tags && c.tags.length ? ` · ${c.tags.join("/")}` : "";
       previewOverlay.innerHTML = `
         <div class="preview-card">
@@ -162,6 +172,7 @@
           <p class="pc-def">${ctx.fns.escapeHtml(c.definition || "词典里没查到这个词")}</p>
           ${c.sentence ? `<p class="pc-quote">${ctx.fns.escapeHtml(c.sentence)}</p>` : ""}
           <div class="pc-facts">本视频出现 ${c.hits} 次${c.in_wordbook ? " · 已在生词本" : ""}${tagsText}</div>
+          ${scoreDebug}
           <div class="pc-acts">
             <button class="preview-btn" id="pcKnownBtn" type="button">我认识这个</button>
             <button class="preview-btn primary" id="pcNextBtn" type="button">${s.index === s.cards.length - 1 ? "完成" : "下一个 →"}</button>
@@ -217,10 +228,10 @@
         finishPreviewSession();
         return;
       }
-      // Matches app.py's PREVIEW_CARDS_PER_ROUND -- the server always
-      // returns up to that many regardless of what's asked for, so the
-      // button promising a different number would be a lie half the time.
-      const nextBatch = Math.min(4, s.more);
+      const nextBatch = Math.min(
+        s.more,
+        Math.max(3, Math.min(12, Math.round(1.6 * Math.sqrt(s.more))))
+      );
       previewOverlay.innerHTML = `
         <div class="preview-end">
           <div class="pe-text">还有 <b>${s.more}</b> 个词没过。这 ${s.cards.length} 个已经在字幕里标出来了。</div>
